@@ -57,6 +57,13 @@ if [ ! -f "$AF2/params/params_model_1_multimer_v3.npz" ]; then
 fi
 echo "  AF2 params: $(ls "$AF2/params" | grep -c npz) npz (set AF2_DIR=$AF2 in .env)"
 
+# [6d] External tools for the analyze stage's diversity metrics (foldseek + mmseqs, via bioconda).
+#   Point FOLDSEEK_EXEC / MMSEQS_EXEC (or the UV_* vars in .env) at these. Without them the pipeline
+#   still completes but logs "Foldseek/MMseqs diversity failed" and skips clustering.
+command -v mamba >/dev/null 2>&1 && "$CONDA" install -y -p "$ENV_DIR" -c conda-forge -c bioconda foldseek mmseqs2 \
+  || echo "  (install foldseek + mmseqs2 into the env for diversity metrics)"
+echo "  set in .env: UV_FOLDSEEK_EXEC=$ENV_DIR/bin/foldseek  UV_MMSEQS_EXEC=$ENV_DIR/bin/mmseqs"
+
 # [7] Model checkpoints — PUBLIC on NGC (no key). Protein-binder pair (~7 GB); validated loadable.
 CK="$REPO/ckpts"; mkdir -p "$CK"
 MOD="https://api.ngc.nvidia.com/v2/models/org/nvidia/team/clara/proteina_complexa/1.0/files?redirect=true&path="

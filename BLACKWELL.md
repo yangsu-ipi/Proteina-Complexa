@@ -50,10 +50,16 @@ proteinfoundation.generate ...` directly (no `-W ignore`) to surface reward-mode
 - **Binder generation** (single-pass) → binder-target complexes for PD-L1.
 - **Reward-guided generation** (best-of-n) → AF2 folds candidates and returns real scores
   (mean reward ≈ −0.71; a single fold scored `total_reward = −0.7191`).
+- **Full 4-stage pipeline** (`complexa design`) → generate → filter → evaluate → analyze runs
+  **clean end-to-end (zero errors)** for the PD-L1 quick test. Output CSVs carry real AF2 metrics
+  (`af2folding_i_pae`, `_i_ptm`, `_plddt`, `_ptm`, `_rmsd`), plus ESM/monomer metrics and
+  foldseek/mmseqs diversity clustering.
 
-**Remaining (untried):** the `filter → evaluate → analyze` stages (evaluate refolds with AF2/RF3/
-Boltz-2 and needs foldseek/dssp/sc + `CCD/PDB_MIRROR_PATH`). The **generate** stage — the core of the
-design loop — is fully working.
+**Notes.** evaluate defaults to `binder_folding_method: colabdesign` (the AF2 stack above) — **no RF3
+needed** for the protein-binder pipeline (rf3_latest / boltz2_default / esmfold are selectable but
+untried here). The analyze diversity metrics need `foldseek` + `mmseqs` (bioconda; wire via
+`FOLDSEEK_EXEC`/`MMSEQS_EXEC` or the `UV_*` vars in `.env`). Pre-refolding bioinformatics (sc/dssp)
+are off by default.
 
 ## Scope / provenance
 
