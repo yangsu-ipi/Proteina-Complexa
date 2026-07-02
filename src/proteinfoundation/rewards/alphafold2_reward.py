@@ -379,7 +379,7 @@ class AF2RewardModel(BaseRewardModel):
         """Clean up JAX caches and backends."""
         # TODO: I don't know but this gives me an error.
         jax.clear_caches()
-        jax.clear_backends()
+        jax.clear_caches()
 
     def cleanup(self) -> None:
         """Explicit cleanup of JAX and model memory.

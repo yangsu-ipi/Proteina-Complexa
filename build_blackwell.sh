@@ -34,6 +34,29 @@ for m in ["proteinfoundation","atomworks","tmol","graphein","biotite","torch","n
 print("Proteina-Complexa (Blackwell): all core imports OK")
 PYEOF
 
+# [6b] JAX + colabdesign AF2 reward stack — required even for GENERATION (search/__init__.py imports
+#   colabdesign at module load) AND for the reward-guided search. torch cu128 + jax 0.10 coexist ONLY
+#   with cudnn 9.24: jax needs it, torch cu128 runs fine on it (torch's ==9.7.1.26 pin is stricter than
+#   reality). VALIDATED: reward-guided binder design produces real AF2 scores on Blackwell.
+"$PIP" install "jax[cuda12]==0.10.2"
+"$PIP" install "nvidia-cudnn-cu12==9.24.0.43"
+"$PIP" install optax flax chex dm-haiku
+# colabdesign is vendored here; its bundled AlphaFold + this repo's AF2 reward carry jax-0.10 fixes
+# committed on this branch: clip min=/max= (af/loss.py, af/alphafold/model/modules{,_multimer}.py),
+# a jax.tree_*/jax.util compat shim (community_models/colabdesign/__init__.py), and
+# jax.clear_backends -> jax.clear_caches (src/proteinfoundation/rewards/alphafold2_reward.py).
+( cd "$REPO/community_models/colabdesign" && "$PIP" install -e . )
+"$PY" -c "from colabdesign import mk_afdesign_model; print('  colabdesign import OK (jax 0.10 / Blackwell)')"
+
+# [6c] AF2 params for the reward model — PUBLIC (Google storage, no key). Needs the MULTIMER set
+#   (2022-12-06) for binder-complex folding; our older 2021 monomer store is NOT sufficient.
+AF2="$REPO/community_models/ckpts/AF2"; mkdir -p "$AF2/params"
+if [ ! -f "$AF2/params/params_model_1_multimer_v3.npz" ]; then
+  wget -qO "$AF2/af2.tar" "https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar"
+  tar -xf "$AF2/af2.tar" -C "$AF2/params" && rm -f "$AF2/af2.tar"
+fi
+echo "  AF2 params: $(ls "$AF2/params" | grep -c npz) npz (set AF2_DIR=$AF2 in .env)"
+
 # [7] Model checkpoints — PUBLIC on NGC (no key). Protein-binder pair (~7 GB); validated loadable.
 CK="$REPO/ckpts"; mkdir -p "$CK"
 MOD="https://api.ngc.nvidia.com/v2/models/org/nvidia/team/clara/proteina_complexa/1.0/files?redirect=true&path="

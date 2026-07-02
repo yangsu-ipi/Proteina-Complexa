@@ -1,50 +1,61 @@
 # Proteina-Complexa on NVIDIA Blackwell (sm_120) — IPI internal fork
 
-This branch (`blackwell`) documents how to build **Proteina-Complexa** for NVIDIA Blackwell /
-RTX PRO 6000 (`sm_120`). It is the hardest of the NVIDIA design tools to port; used on IPI **gnode2**.
+This branch (`blackwell`) makes **Proteina-Complexa** run on NVIDIA Blackwell / RTX PRO 6000
+(`sm_120`). It is the hardest of the NVIDIA design tools to port (a torch **and** JAX stack in one
+env). Used on IPI **gnode2**. **Validated end-to-end 2026-07-02**: reward-guided binder generation
+for target `02_PDL1` (PD-L1) produces real AF2 reward scores on the Blackwell GPU.
 
-## What changes (and what doesn't)
-
-**No source changes are required** — only the environment, but the environment is fiddly:
+## Environment (the hard part)
 
 1. **Python ≥ 3.12** — `proteinfoundation` requires it (3.11 fails at install).
-2. **torch cu128** — upstream `env/build_uv_env.sh` installs `torch 2.7.0+cu126` (sm ≤ 90);
-   Blackwell needs `torch 2.7.1` / **cu128** or CUDA kernels fail with *"no kernel image."*
-3. **`tmol` from source** — builds cleanly on py3.12 + cu128 (the flagged risk did not materialise).
-4. **Over-constrained deps** — `atomworks`, `proteinfoundation`, and `tmol`(numba) disagree on
-   `biotite`/`numpy`. The fix (mirroring upstream's own end-of-script reconciliation) is to apply
-   two pins **last, after `pip install -e .`**, in this order:
-   - `biotite==1.6.0` (atomworks needs ≥1.4; the editable install pins it down to 0.41)
-   - `numpy==2.4.6` (numba, used by tmol, needs `numpy < 2.5`; biotite 1.6.0 pulls 2.5)
+2. **torch cu128** — upstream pins `torch 2.7.0+cu126` (sm ≤ 90); Blackwell needs `torch 2.7.1`/**cu128**.
+3. **`tmol` from source** — builds cleanly on py3.12 + cu128.
+4. **Over-constrained torch deps** — apply `biotite==1.6.0` then `numpy==2.4.6` **last**, after
+   `pip install -e .` (atomworks wants biotite ≥1.4; numba/tmol want numpy < 2.5).
+5. **JAX + colabdesign AF2 reward stack** (the crux): the search code imports `colabdesign` (AF2/JAX)
+   at module load, and reward-guided search folds candidates with AF2. So JAX must run **alongside
+   torch in the same env**. That works **only with cudnn 9.24**: jax 0.10.2 needs it, and torch cu128
+   runs fine on it at runtime (torch's `==9.7.1.26` pin is stricter than reality). Then `optax`,
+   `flax`, `chex`, `dm-haiku`, and the vendored `colabdesign` (editable).
 
-The proven recipe is in [`build_blackwell.sh`](build_blackwell.sh):
+The whole recipe is in [`build_blackwell.sh`](build_blackwell.sh): `bash build_blackwell.sh`.
 
-```bash
-bash build_blackwell.sh            # creates ./.venv-blackwell (py3.12) and installs everything
-```
+## Source patches (vs upstream)
+
+Contrary to a pure recipe, Blackwell (jax ≥ 0.10) needs these code fixes, all on this branch:
+
+- **colabdesign's bundled AlphaFold — `jnp.clip` kwargs** `a_min=`/`a_max=` → `min=`/`max=`
+  (`community_models/colabdesign/af/loss.py`, `.../af/alphafold/model/modules.py`, `modules_multimer.py`).
+- **colabdesign `__init__.py` compat shim** — jax ≥ 0.10 removed `jax.tree_map`/`jax.tree_multimap`
+  (→ `jax.tree_util`) and `jax.util` (→ `jax._src.util`); the shim restores them before submodules load.
+- **AF2 reward — `jax.clear_backends()` → `jax.clear_caches()`** (removed in jax 0.10)
+  in `src/proteinfoundation/rewards/alphafold2_reward.py`.
+
+Debugging note: the reward's exceptions were **triple-hidden** — swallowed by `CompositeRewardModel`'s
+`try/except → warnings.warn`, then silenced by the CLI's `-W ignore`. Run `python -m
+proteinfoundation.generate ...` directly (no `-W ignore`) to surface reward-model errors.
+
+## Checkpoints & AF2 params — all PUBLIC on NGC/Google (no key)
+
+- **Complexa checkpoints**: `complexa download` is an unauthenticated `wget ...?redirect=true`;
+  `build_blackwell.sh` fetches the protein-binder pair (~7 GB) into `ckpts/`.
+- **AF2 reward params**: needs the **MULTIMER** set `alphafold_params_2022-12-06` (public, Google
+  storage, ~5.3 GB) — a 2021 monomer store is **not** enough (binder-complex folding needs
+  `*_multimer_v3`). `build_blackwell.sh` fetches it into `community_models/ckpts/AF2`; set `AF2_DIR` there.
 
 ## Verified (2026-07-02, gnode2)
 
-- `torch 2.7.1+cu128` on sm_120, real GPU matmul OK.
-- All core modules import: `proteinfoundation`, `atomworks`, `tmol`, `graphein`, `biotite 1.6.0`.
+- Core imports (`proteinfoundation`/`atomworks`/`tmol`/`graphein`/`biotite`) + torch matmul on sm_120.
+- Checkpoints validated loadable (`complexa.ckpt` 415M + `complexa_ae.ckpt` 256M).
+- **Binder generation** (single-pass) → binder-target complexes for PD-L1.
+- **Reward-guided generation** (best-of-n) → AF2 folds candidates and returns real scores
+  (mean reward ≈ −0.71; a single fold scored `total_reward = −0.7191`).
 
-- Model checkpoints downloaded + validated loadable: `complexa.ckpt` (415M params) +
-  `complexa_ae.ckpt` (256M), valid PyTorch-Lightning checkpoints.
-
-## Checkpoints & running
-
-Checkpoints are **PUBLIC on NGC — no account or API key needed** (`complexa download` is just a
-`wget ...?redirect=true` with no auth header; `build_blackwell.sh` fetches the protein-binder pair,
-~7 GB, into `ckpts/`). The three variants (protein / ligand / AME) live at
-`catalog.ngc.nvidia.com/orgs/nvidia/teams/clara/models/proteina_complexa[_ligand|_ame]`.
-
-A **full binder-design run** (`complexa design configs/search_binder_local_pipeline.yaml`) is a
-4-stage pipeline (generate → filter → evaluate → analyze). Beyond the checkpoints it needs a target
-spec, the community reward/refolding models (ESM2 via a **free** HF token; AF2/RF3/Boltz2), external
-tools (foldseek/mmseqs/dssp), and `CCD_MIRROR_PATH`/`PDB_MIRROR_PATH` for atomworks I/O — a larger
-setup than the generation checkpoints alone. Not run here.
+**Remaining (untried):** the `filter → evaluate → analyze` stages (evaluate refolds with AF2/RF3/
+Boltz-2 and needs foldseek/dssp/sc + `CCD/PDB_MIRROR_PATH`). The **generate** stage — the core of the
+design loop — is fully working.
 
 ## Scope / provenance
 
 - Internal fork for IPI hardware. **Not** submitted upstream (by choice).
-- This branch adds only `BLACKWELL.md` + `build_blackwell.sh` on top of stock upstream.
+- Adds the source patches above + `BLACKWELL.md` + `build_blackwell.sh` on top of stock upstream.
