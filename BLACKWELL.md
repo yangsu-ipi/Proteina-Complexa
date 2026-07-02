@@ -28,9 +28,21 @@ bash build_blackwell.sh            # creates ./.venv-blackwell (py3.12) and inst
 - `torch 2.7.1+cu128` on sm_120, real GPU matmul OK.
 - All core modules import: `proteinfoundation`, `atomworks`, `tmol`, `graphein`, `biotite 1.6.0`.
 
-Full **binder design** additionally needs NGC checkpoints (`complexa init && complexa download
---complexa-all`, requires an NGC key) and, for atomworks structure I/O, `CCD_MIRROR_PATH` /
-`PDB_MIRROR_PATH`; those steps were not run here.
+- Model checkpoints downloaded + validated loadable: `complexa.ckpt` (415M params) +
+  `complexa_ae.ckpt` (256M), valid PyTorch-Lightning checkpoints.
+
+## Checkpoints & running
+
+Checkpoints are **PUBLIC on NGC — no account or API key needed** (`complexa download` is just a
+`wget ...?redirect=true` with no auth header; `build_blackwell.sh` fetches the protein-binder pair,
+~7 GB, into `ckpts/`). The three variants (protein / ligand / AME) live at
+`catalog.ngc.nvidia.com/orgs/nvidia/teams/clara/models/proteina_complexa[_ligand|_ame]`.
+
+A **full binder-design run** (`complexa design configs/search_binder_local_pipeline.yaml`) is a
+4-stage pipeline (generate → filter → evaluate → analyze). Beyond the checkpoints it needs a target
+spec, the community reward/refolding models (ESM2 via a **free** HF token; AF2/RF3/Boltz2), external
+tools (foldseek/mmseqs/dssp), and `CCD_MIRROR_PATH`/`PDB_MIRROR_PATH` for atomworks I/O — a larger
+setup than the generation checkpoints alone. Not run here.
 
 ## Scope / provenance
 

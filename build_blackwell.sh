@@ -33,4 +33,19 @@ for m in ["proteinfoundation","atomworks","tmol","graphein","biotite","torch","n
     importlib.import_module(m)
 print("Proteina-Complexa (Blackwell): all core imports OK")
 PYEOF
-echo "Ready in $ENV_DIR. Checkpoints: complexa init && complexa download --complexa-all (NGC)."
+
+# [7] Model checkpoints — PUBLIC on NGC (no key). Protein-binder pair (~7 GB); validated loadable.
+CK="$REPO/ckpts"; mkdir -p "$CK"
+MOD="https://api.ngc.nvidia.com/v2/models/org/nvidia/team/clara/proteina_complexa/1.0/files?redirect=true&path="
+[ -f "$CK/complexa.ckpt" ]    || wget -qO "$CK/complexa.ckpt"    "${MOD}complexa.ckpt"
+[ -f "$CK/complexa_ae.ckpt" ] || wget -qO "$CK/complexa_ae.ckpt" "${MOD}complexa_ae.ckpt"
+echo "  checkpoints in $CK: $(du -h "$CK"/*.ckpt 2>/dev/null | cut -f1 | tr '\n' ' ')"
+
+cat <<EOF
+=== Proteina-Complexa (Blackwell) env + checkpoints ready.
+  Checkpoints (PUBLIC NGC, no key) are in $CK; the binder pipeline config points ckpt_path there.
+  A FULL binder-design run (complexa design configs/search_binder_local_pipeline.yaml) additionally
+  needs: a target spec, the community reward/refolding models (ESM2 via a free HF token, AF2/RF3/Boltz2),
+  and external tools (foldseek/mmseqs/dssp). See docs/INFERENCE.md. Generation-only uses just the
+  checkpoints above.
+EOF
