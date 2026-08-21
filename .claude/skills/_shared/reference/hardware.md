@@ -28,21 +28,31 @@ Notes:
 |---------------------|--------------:|----------------------------------|----------------------------|
 | ColabDesign / AF2   |            16 | JAX + ColabFold; `AF2_DIR`       | ~30–60 s (empirical)       |
 | RoseTTAFold3 (rf3)  |            24 | `RF3_EXEC_PATH`, `RF3_CKPT_PATH` | ~60–180 s (empirical)      |
-| ESMFold             |            16 | `fair-esm`, internet/cache OK    | ~5–15 s (empirical)        |
+| ESMFold (monomer only) |         16 | `fair-esm`, internet/cache OK    | ~5–15 s (empirical)        |
 
-Selected via `++metric.binder_folding_method=colabdesign|rf3_latest|esmfold`.
+Binder / complex folding is selected via
+`++metric.binder_folding_method=colabdesign|rf3_latest` — those are the only two accepted
+values (`binder_eval.py:96-116` raises `ValueError: Folding model '<x>' not supported` for
+anything else). ESMFold is **not** a valid binder backend; it is accepted only for the
+separate monomer key `++metric.monomer_folding_models=[esmfold]`
+(`monomer_eval_utils.py:30`, `VALID_FOLDING_MODELS = ["esmfold", "colabfold"]`).
 
 ## Search-algorithm cost multipliers
 
 Relative to `single-pass` (= 1.0×) at fixed `nsteps` and `dataloader.batch_size`.
 
+The algorithm name is **hyphenated** — `src/proteinfoundation/search/search_factory.py:30-40` matches `single-pass`,
+`best-of-n`, `beam-search`, `fk-steering`, `mcts` and raises
+`ValueError: Unknown search algorithm` on anything else. The *sub-config block* names stay
+underscored (`search.beam_search.beam_width`, `search.fk_steering.n_branch`, …).
+
 | Algorithm    | Override key                                | Wall-clock | Peak VRAM |
 |--------------|---------------------------------------------|-----------:|----------:|
-| single-pass  | `++generation.search.algorithm=single_pass` |        1.0× |     1.0× |
-| best-of-n    | `…=best_of_n` + `n=N`                       |        N×  |     1.0× |
-| beam-search  | `…=beam_search` + `beam_width=W,n_branch=B` |     W·B× ≈ W× |  ~1.1× |
-| FK-steering  | `…=fk_steering` + `num_particles=N`         |       ~2N× |     1.2× |
-| MCTS         | `…=mcts` + `beam_width=W`                   |       ≥W×  |     1.2× |
+| single-pass  | `++generation.search.algorithm=single-pass` |        1.0× |     1.0× |
+| best-of-n    | `…=best-of-n` + `best_of_n.replicas=N`      |        N×  |     1.0× |
+| beam-search  | `…=beam-search` + `beam_search.beam_width=W,beam_search.n_branch=B` |     W·B× ≈ W× |  ~1.1× |
+| FK-steering  | `…=fk-steering` + `fk_steering.beam_width=W,fk_steering.n_branch=B` |     W·B× ≈ W× |     1.2× |
+| MCTS         | `…=mcts` + `mcts.n_simulations=S`           |       ≥S×  |     1.2× |
 
 Memory is roughly constant — search algorithms reuse the same model forward;
 only beam/FK/MCTS retain extra candidate tensors per branch.
@@ -53,9 +63,9 @@ Defaults pulled from `configs/search_*_local_pipeline.yaml`:
 
 | Pipeline           | `ncpus_` | `gen_njobs` | `eval_njobs` | RAM (rec.) | Output disk / 100 designs |
 |--------------------|---------:|------------:|-------------:|-----------:|--------------------------:|
-| Protein Binder     |       24 |           2 |            2 |  32 GB (empirical) | ~10–20 GB (empirical) |
-| Ligand Binder      |       24 |           2 |            2 |  32 GB (empirical) | ~15–30 GB (empirical) |
-| AME                |       24 |           2 |            2 |  32 GB (empirical) | ~20–50 GB (empirical) |
+| Protein Binder     |       24 |           1 |            1 |  32 GB (empirical) | ~10–20 GB (empirical) |
+| Ligand Binder      |       24 |           1 |            1 |  32 GB (empirical) | ~15–30 GB (empirical) |
+| AME                |       24 |           1 |            1 |  32 GB (empirical) | ~20–50 GB (empirical) |
 
 `keep_folding_outputs=true` (eval default) roughly doubles the output disk
 footprint — set to `false` if disk is tight.
@@ -72,8 +82,10 @@ Try these in order — cheapest mitigations first:
   `++generation.search.beam_search.n_branch`.
 - Set `++metric.keep_folding_outputs=false` to free fold-stage RAM/disk
   pressure (helps when an OOM lands during evaluation).
-- Switch fold backend: `++metric.binder_folding_method=esmfold` is the
-  cheapest; `rf3_latest` is the heaviest.
+- Switch fold backend to the cheaper of the two valid ones:
+  `++metric.binder_folding_method=colabdesign` (~16 GB) instead of
+  `rf3_latest` (~24 GB). There is no lighter third option — ESMFold is not a
+  valid `binder_folding_method` (see above).
 - For AME: confirm `USE_V2_COMPLEXA_ARCH=True` matches the AME checkpoint —
   loading the wrong arch wastes ~10–20% VRAM (empirical).
 - Multi-GPU host: set `CUDA_VISIBLE_DEVICES=<idx>` to pin the run to a single

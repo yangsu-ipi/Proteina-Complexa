@@ -52,12 +52,13 @@ model or the evaluator tries to resolve `${oc.env:AF2_DIR}`.
 default `binder_folding_method: colabdesign` both read `AF2_DIR` from the
 environment. If `.env` does not define it, Hydra interpolation fails.
 
-**Fix:** Add `AF2_DIR=/path/to/af2_params` to `.env`, or switch the eval
-backend to ESMFold (does not need AF2 weights):
-
-```bash
-++metric.binder_folding_method=esmfold
-```
+**Fix:** Add `AF2_DIR=/path/to/af2_params` to `.env`. There is no cheaper
+backend to fall back to: `metric.binder_folding_method` accepts only
+`colabdesign` or a name containing `rf3` (`binder_eval.py:96-116`), so
+`colabdesign` is the only AF2 path. (`esmfold` is valid only for the different
+key `metric.monomer_folding_models`.) If the GPU is the problem rather than the
+weights, lower `++generation.dataloader.batch_size`, `++eval_njobs`, or
+`++metric.num_redesign_seqs`.
 
 Run `complexa download --all` to fetch AF2 weights into the canonical
 location. Reference: `docs/INFERENCE.md` "Missing Model Weights".
@@ -65,12 +66,20 @@ location. Reference: `docs/INFERENCE.md` "Missing Model Weights".
 ## Missing `RF3_CKPT_PATH` / `RF3_EXEC_PATH` (rf3_latest fails)
 
 **Symptom:** `InterpolationKeyError: RF3_CKPT_PATH` or `RF3_EXEC_PATH` during
-generate (ligand binder) or evaluate (ligand binder, AME).
+the **generate** step of the ligand binder pipeline; or RF3 failing to load at
+refold time on ligand binder / AME.
 
-**Cause:** Ligand binder and AME pipelines bake `${oc.env:RF3_CKPT_PATH}` and
-`${oc.env:RF3_EXEC_PATH}` into the RF3 reward and refold paths. RF3 is not
-downloaded by `complexa download --complexa-*`; it ships with the community
-model bundle.
+**Cause:** Only the ligand binder pipeline interpolates these vars —
+`ligand_binder_generate.yaml:82-83` bakes `${oc.env:RF3_CKPT_PATH}` and
+`${oc.env:RF3_EXEC_PATH}` into its RF3 reward model, so an unset var is a hard
+Hydra error there. AME does **not**: `ame_generate.yaml:85` is
+`reward_model: null` with the RF3 block commented out (`:88-110`), and
+`ame_evaluate.yaml` contains no `oc.env` at all. At refold time RF3 resolves via
+`os.environ.get(...)` with a fallback under `DATA_PATH`
+(`binder_eval.py:105-110`), so the evaluate stage cannot raise an
+`InterpolationKeyError` — it fails later with a missing-file error instead. RF3
+is not downloaded by `complexa download --complexa-*`; it ships with the
+community model bundle.
 
 **Fix:** Export both env vars (or set them in `.env`):
 
@@ -146,37 +155,54 @@ generation; or the ligand silently disappears from the refolded structure.
 `0` (canonical AME convention). PDBs downloaded from RCSB usually have
 arbitrary ligand residue names (e.g. `OQO`, `FAD`, `ATP`).
 
-**Fix:** Use `atomworks` (the renaming tool) to rewrite the ligand residue:
+**Fix:** There is no `atomworks` CLI for this. Rewrite the residue name with
+`atomworks.io` in Python — note it is a single residue *name* string `"L:0"`,
+not a resname plus a resnum, and `load_any` returns a list so the `[0]` index is
+required (`README.md:326-335`):
 
-```bash
-python -m atomworks rename_ligand \
-    --in /path/to/target.pdb \
-    --out /path/to/target_renamed.pdb \
-    --target-resname L \
-    --target-resnum 0
+```python
+from atomworks.io import load_any, to_pdb_file
+
+atom_array = load_any("my_design.pdb")[0]
+
+# Select chain A (ligand) and rename residues
+ligand_mask = atom_array.chain_id == "A"
+atom_array.res_name[ligand_mask] = "L:0"
+
+to_pdb_file(atom_array, "my_design_rf3_ready.pdb")
 ```
 
 Update the AME task in `configs/design_tasks/ame_dict_v2.yaml` to point at the
-renamed PDB. Reference: README in `target_data/` and the AME task definitions.
+renamed PDB. Reference: `README.md` "Evaluating AME Designs with Ligand Targets
+(RF3)" and `assets/target_data/README.md`.
 
 ## Override key not recognized
 
 **Symptom:** Hydra raises `InterpolationKeyError`, `MissingMandatoryValue`,
 or "Could not override 'X'" when launching the pipeline.
 
-**Cause:** Hydra `+` requires the key to already exist in the merged config;
-`++` forces a new key. If a typo lands inside an existing key path, the error
-looks like a missing value.
+**Cause:** Prefix semantics. Bare `key=value` requires the key to already exist
+in the merged config; `+key=value` **adds** the key and errors if it already
+exists; `++key=value` adds-or-overrides and never errors.
 
 **Fix:** Always use `++` for design pipeline overrides (the pipeline composes
 multiple configs and key existence varies by stage). Re-check the key against
-`reference/overrides.md`. Validate the run before launching:
+`reference/overrides.md`.
+
+> **A typo'd `++` key is a silent no-op, not an error.** Because `++` creates
+> missing keys, `++metric.num_redesign_seq=8` (missing `s`) runs happily with
+> the default and warns about nothing. If an override appears to have no effect,
+> check the resolved config in the stage log.
+
+Validating first catches missing ckpts and env vars, but **not** override keys —
+`validate.py` has no config-key validation, and `complexa validate` accepts no
+Hydra overrides at all (its subparser has only `type`, `config`, `--target`;
+`cli_runner.py:1296-1318`), so appending `++...` aborts with
+`unrecognized arguments`:
 
 ```bash
-complexa validate design <pipeline_config> ++<overrides>
+complexa validate design <pipeline_config>
 ```
-
-The validator surfaces every unknown key before the pipeline starts.
 
 ## Missing checkpoint reported by `complexa download --status`
 
@@ -260,25 +286,40 @@ at very short lengths.
 
 ## 0 designs pass success thresholds
 
-**Symptom:** Pipeline completes, `res_filter_*_pass_*.csv` shows
-`pass_rate: 0.0`. Per-design metrics look plausible but nothing passes.
+**Symptom:** Pipeline completes and the `_res_{seq_type}_pass_rate_{filter_name}_{suffix}`
+columns in `filter_results/res_filter_*_pass_*.csv` are all `0.0` (there is no
+column literally named `pass_rate`). Per-design metrics look plausible but
+nothing passes.
 
 **Cause:** Default thresholds are tuned for the published targets (PDL1,
 TrkA, etc.) and may be too strict for harder targets or smaller search
 budgets.
 
-**Fix:** Loosen the thresholds via the aggregation overrides:
+**Fix:** Loosen the thresholds — but you must supply the **complete**
+`success_thresholds` dict. `binder_analysis.py:317-318` uses
+`DEFAULT_PROTEIN_BINDER_THRESHOLDS` only when the key is entirely absent, so a
+per-metric override such as
+`++aggregation.success_thresholds.i_pAE.threshold=10.0` replaces the whole dict:
+it drops the `pLDDT` and `scRMSD_ca` criteria, and `parse_threshold_spec`
+(`analysis_utils.py:124-129`) fills the missing `scale` with `1.0` so a
+0-1-scaled column is compared against `10.0`. Everything passes and the reported
+success rate becomes 100% — the opposite failure, and much harder to notice.
 
-```bash
-++aggregation.success_thresholds.i_pAE.threshold=10.0       # was 7.0
-++aggregation.success_thresholds.pLDDT.threshold=0.8        # was 0.9
-++aggregation.success_thresholds.scRMSD.threshold=2.0       # was 1.5
+Put the full dict in the analyze config (or a YAML overlay you compose in). Note
+the key is `scRMSD_ca`, not `scRMSD`:
+
+```yaml
+aggregation:
+  success_thresholds:
+    i_pAE:     {threshold: 10.0, op: "<=", scale: 31.0, column_prefix: complex}
+    pLDDT:     {threshold: 0.8,  op: ">=", scale: 1.0,  column_prefix: complex}
+    scRMSD_ca: {threshold: 2.0,  op: "<",  scale: 1.0,  column_prefix: binder}
 ```
 
-Or re-run analyze alone with the new thresholds — no need to re-generate:
+Then re-run analyze alone — no need to re-generate:
 
 ```bash
-complexa analyze configs/search_binder_local_pipeline.yaml ++run_name=<same> ++aggregation.success_thresholds.i_pAE.threshold=10.0
+complexa analyze configs/search_binder_local_pipeline.yaml ++run_name=<same>
 ```
 
 Reference: `docs/EVALUATION_METRICS.md` "Customizing Binder Thresholds".
