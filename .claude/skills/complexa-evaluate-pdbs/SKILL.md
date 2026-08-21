@@ -9,7 +9,7 @@ description: >
   PDBs", "complexa analysis", "complexa evaluate from a PDB directory",
   "evaluate from pdb dir", or score third-party outputs (BindCraft, AlphaProteo,
   RFdiffusion, hand-curated decoys). It picks the correct `evaluate_*.yaml`
-  config, wires `++dataset.pdb_dir` and the folding backend, runs
+  config, wires `++sample_storage_path` and the folding backend, runs
   `complexa analysis` (the evaluate → analyze chain), parses the result CSV,
   reports pass-rates against the right `result_type` thresholds, and emits a
   replayable `eval_manifest.json`. Reach for this skill before hand-rolling
@@ -24,7 +24,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 
 ## What this skill enables
 
-- Re-fold a directory of designed PDBs with AF2 (`colabdesign`), RF3 (`rf3_latest`), ESMFold (`esmfold`), or Boltz2 (`boltz2_default`).
+- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:96-116` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` is valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:30`: `VALID_FOLDING_MODELS = ["esmfold", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
 - For motif inputs: motif RMSD (CA + all-atom), motif-region designability/codesignability, sequence recovery.
@@ -40,11 +40,11 @@ bash .claude/skills/_shared/scripts/preflight.sh
 
 Surface from `preflight.json`:
 
-- `gpu.available` and `gpu.vram_gb` — colabdesign/RF3 need ≥40 GB; ESMFold tolerates ≥24 GB.
+- `gpu.available` and `gpu.vram_gb` — colabdesign/RF3 need ≥40 GB; the optional monomer ESMFold stage tolerates ≥24 GB.
 - `env.missing_required` — must include the keys for the chosen folding backend:
   - `colabdesign` → `AF2_DIR`
-  - `rf3_latest` → `RF3_CKPT_PATH`, `RF3_EXEC_PATH`
-  - `esmfold` → ESMFold weights resolvable
+  - `rf3_latest` (or any `*rf3*` name) → `RF3_CKPT_PATH`, `RF3_EXEC_PATH`
+  - ESMFold weights matter only if you additionally enable monomer metrics (`metric.compute_monomer_metrics=true` + `metric.monomer_folding_models=[esmfold]`). ESMFold is not a `binder_folding_method`; there is no third refolding backend to preflight for.
 - `tools.{foldseek,mmseqs}` — required by `aggregation.compute_diversity` / `compute_mmseqs_diversity` (both default `true`).
 
 If any required key is missing, route the user to the `complexa-setup` skill.
@@ -67,19 +67,58 @@ complexa analysis configs/evaluate_from_pdb_dir.yaml \
 
 Use this when the user's PDBs are protein-binder designs (multi-chain, binder is the last chain) or third-party outputs from BindCraft / AlphaProteo / RFdiffusion. Pulls thresholds for `protein_binder` (`i_pAE * 31 ≤ 7.0`, `pLDDT ≥ 0.9`, `scRMSD_ca < 1.5 Å`).
 
+> **Defect in the shipped config — read before running the command above.**
+> `configs/evaluate_from_pdb_dir.yaml:22` composes `defaults: - generation/targets_dict@dataset`,
+> but there is no `configs/generation/targets_dict.yaml` (`configs/generation/` ships only
+> `base_gen_data.yaml`, `validation.yaml`, `validation_local_latents.yaml`). Hydra fails to
+> compose the config before any GPU work starts. The real dicts are
+> `configs/targets/targets_dict.yaml` and `configs/targets/ligand_targets_dict.yaml`, and the
+> group is fixed by the defaults list, so it **cannot** be redirected from the CLI. Two working
+> routes:
+>
+> - **Protein-binder targets** — use `configs/evaluate.yaml`, which composes the right dict
+>   (`:31`, `- /targets/targets_dict@dataset`), and add `++input_mode=pdb_dir`. It defines no
+>   `result_type`, so set it explicitly:
+>   `complexa analysis configs/evaluate.yaml ++input_mode=pdb_dir ++sample_storage_path=<dir> ++dataset.task_name=02_PDL1 ++result_type=protein_binder ++metric.binder_folding_method=colabdesign ++metric.inverse_folding_model=soluble_mpnn ++run_name=<run>`
+>   (its shipped `dataset.task_name: COM03_NIPAH` at `:88` is not a key in `targets_dict.yaml`,
+>   so the override is mandatory).
+> - **Ligand targets** — no shipped evaluate config composes `ligand_targets_dict.yaml` at all.
+>   Copy `configs/evaluate_from_pdb_dir.yaml` and change line 22 to
+>   `- /targets/ligand_targets_dict@dataset`. Without the right dict, `get_target_info` raises
+>   `target_task_name <name> not found in target_dict_cfg` (`binder_eval_utils.py:238-252`).
+
 ### Extensions — pick the matching config
 
-| Design type | Use the protein-binder default? | Evaluate config | Analyze config | `result_type` | Default backend |
-|---|---|---|---|---|---|
-| Protein binder | **Yes (default)** | `configs/evaluate_from_pdb_dir.yaml` | `configs/analyze.yaml` | `protein_binder` | `colabdesign` (AF2) |
-| Ligand binder (binder + small-molecule) | Same evaluate config, swap 3 overrides | `configs/evaluate_from_pdb_dir.yaml` | `configs/analyze.yaml` | `ligand_binder` | `rf3_latest` |
-| AME / motif + ligand (enzyme outputs) | No — needs motif-aware config | `configs/evaluate_ame_from_pdb_dir.yaml` | `configs/analyze_motif_binder.yaml` | `motif_ligand_binder` | `rf3_latest` |
-| Motif protein binder (standalone) | No — no `_from_pdb_dir` variant | `configs/evaluate_motif_binder.yaml` + `++input_mode=pdb_dir` | `configs/analyze_motif_binder.yaml` | `motif_protein_binder` | `colabdesign` / `rf3_latest` |
+One config drives both steps, so there is no separate "analyze config" to choose. `complexa
+analysis` takes a single config and threads the same overrides through `evaluate` and `analyze`
+(`cli_runner.py:1021-1042`), and the `analyze` step locates the per-job CSVs by that config's
+stem (`find_result_files(results_dir, config_name, …)`) — pass the **evaluate** config to both.
+The standalone `configs/analyze*.yaml` files are not runnable on their own: they define neither
+`results_dir` nor `output_dir`, so `complexa analyze configs/analyze.yaml` auto-constructs
+`./evaluation_results/analyze` and exits 1 with `results_dir does not exist`
+(`analyze.py:2921, :2946-2958`; `validate_config` at `:390-409`).
 
-**Extending to ligand binder** (same evaluate config as default, three override swaps):
+| Design type | Use the protein-binder default? | Config (drives `evaluate` **and** `analyze`) | `result_type` | Backend as shipped |
+|---|---|---|---|---|
+| Protein binder | **Yes (default)** | `configs/evaluate_from_pdb_dir.yaml` (see the defect note above) | `protein_binder` — **must be overridden** | `rf3_latest` (`:72`) |
+| Ligand binder (binder + small-molecule) | Same config, no overrides needed | `configs/evaluate_from_pdb_dir.yaml` | `ligand_binder` (shipped default, `:139`) | `rf3_latest` (`:72`) |
+| AME / motif + ligand (enzyme outputs) | No — needs motif-aware config | `configs/evaluate_ame_from_pdb_dir.yaml` | `motif_ligand_binder` | `rf3_latest` |
+| Motif protein binder (standalone) | No — no `_from_pdb_dir` variant | `configs/example/evaluate_motif_binder.yaml` + `++input_mode=pdb_dir` | `motif_protein_binder` — override; the config's own default is `motif_ligand_binder` | `rf3_latest` (`:75`) |
+
+`configs/evaluate_from_pdb_dir.yaml` as shipped is a **ligand-binder** config:
+`binder_folding_method: rf3_latest` (`:72`), `inverse_folding_model: ligand_mpnn` (`:84`),
+`result_type: ligand_binder` (`:139`), `aggregation.analysis_modes: [binder]` (`:146`). Omit the
+overrides in the protein-binder command above and you get a ligand-binder run, not an AF2
+protein-binder one.
+
+**Extending to ligand binder** — the three `metric.*`/`result_type` values below are already
+the shipped defaults, so they document intent rather than change behaviour. What you *do* have to
+change is the target dict: run against a copy of the config whose defaults line names
+`- /targets/ligand_targets_dict@dataset` (see the note above), not
+`configs/evaluate_from_pdb_dir.yaml` itself.
 
 ```bash
-complexa analysis configs/evaluate_from_pdb_dir.yaml \
+complexa analysis configs/evaluate_from_pdb_dir_ligand.yaml \
     ++sample_storage_path=/abs/path/to/pdbs \
     ++dataset.task_name=39_7V11_LIGAND \
     ++result_type=ligand_binder \
@@ -87,6 +126,13 @@ complexa analysis configs/evaluate_from_pdb_dir.yaml \
     ++metric.inverse_folding_model=ligand_mpnn \
     ++run_name=eval_v11_rf3
 ```
+
+Run against the pristine `configs/evaluate_from_pdb_dir.yaml`, this fails twice: the
+`generation/targets_dict` group does not exist (above), and even if it did, `39_7V11_LIGAND`
+lives in `configs/targets/ligand_targets_dict.yaml:2` — not `targets_dict.yaml` — so
+`get_target_info` would raise `not found in target_dict_cfg`
+(`binder_eval_utils.py:238-252`). Nothing in the code dispatches between the two dicts by task
+name; the lookup uses whatever `dataset.target_dict_cfg` Hydra composed.
 
 **Extending to AME** (different config; ligand auto-completion gotcha — see Step 4):
 
@@ -105,7 +151,7 @@ Ask in one batched `AskUserQuestion`:
 
 1. **`pdb_dir`** — absolute path to the directory of PDBs to evaluate.
 2. **Design type** — protein binder / ligand binder / AME (motif + ligand).
-3. **Folding backend** — `colabdesign` (AF2, protein binders), `rf3_latest` (ligand / AME), `boltz2_default` (alternative).
+3. **Folding backend** — `colabdesign` (AF2, protein binders) or `rf3_latest` (ligand / AME). Offer exactly these two; every other value raises `ValueError` in `binder_eval.py:96-116`.
 4. **Target / task name** — must match a key in `configs/targets/targets_dict.yaml`, `configs/targets/ligand_targets_dict.yaml`, or `configs/design_tasks/ame_dict_v2.yaml`. Required for binder + AME evaluation (needed to identify the target reference and, for AME, the motif contigs).
 5. **AME-only**: confirm ligand residue name is already renamed to `L:0` in every PDB (see Troubleshooting). If not, do that rename first.
 
@@ -161,11 +207,34 @@ overrides through two `python -m` calls.
 
 ## Step 5: Parse results
 
-Output lands under `./evaluation_results/${run_name}/`:
+Output lands in the config's `output_dir`, with `run_name` appended unless it is already the
+suffix (`evaluate.py:766-768`; `analyze.py:2956-2958` does the same for `results_dir`). For
+`evaluate_from_pdb_dir.yaml` that resolves to `./evaluation_results/${run_name}` because
+`output_dir: ./evaluation_results/${run_name}` (`:39`).
 
-- Per-PDB metrics CSV — `*_results_*.csv` (one row per input PDB × `sequence_types`).
-- Pass-rate summaries — written by the `analyze` step (e.g. `res_designability.csv`, `res_filter_ligand_pass_*.csv`, `success_criteria_*.json`).
-- Diversity output — FoldSeek/MMseqs2 cluster files when `aggregation.compute_diversity=true` (default).
+- **Per-job CSV** from `evaluate` — `binder_results_{config_name}_{job_id}.csv`
+  (`evaluate.py:881`). The other flavours are `monomer_results_*` (`:853`), `motif_results_*`
+  (`:904`) and `motif_binder_results_*` (`:930`). `{config_name}` is the config file stem
+  (`cli_runner.py:650` passes `++base_config_name=<stem>`).
+- **Primary CSV** from `analyze` — `RAW_{result_type}_results_{config_name}_combined.csv`
+  (`analyze.py:3036`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
+  enumerate index over the file walk (`binder_eval.py:193, :216`). `sequence_types` are column
+  **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
+  `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
+  lists (`binder_eval.py:277-311`; `binder_analysis_utils.py:160-171` builds
+  `{seq}_{prefix}_{metric}_all`).
+- **Pass-rate summaries and everything else are moved into subdirectories** by
+  `organize_results` (`analyze.py:2802-2880`), so do not glob the top level:
+  `res_filter_*` → `filter_results/`, `res_div_*` → `diversity/`, `res_monomer_*` →
+  `monomer_metrics/`, `res_ss_*` → `secondary_structure/`, `res_aa_*` →
+  `amino_acid_distribution/`, `res_motif_*` → `motif_metrics/`,
+  `res_motif_binder_*` / `res_filter_motif_binder_*` → `motif_binder_metrics/`, and the
+  `clusters_*` directories → `clusters/`. The binder pass-rate file is
+  `filter_results/res_filter_binder_pass_*.csv` for `protein_binder` and
+  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:548`);
+  motif runs write `res_filter_motif_binder_pass_*.csv` (`motif_binder_analysis.py:252`).
+- Diversity output — FoldSeek/MMseqs2 cluster files under `diversity/` and `clusters/` when
+  `aggregation.compute_diversity=true` (default).
 
 Summarize to the user:
 
@@ -185,7 +254,17 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
   --out ./eval_manifest.json
 ```
 
-The manifest pins: resolved config, git SHA, ckpt SHA-256s, the result CSV paths, and the user-stated `result_type` for replay.
+The manifest pins `timestamp`, `skill`, `command`, `output_dir`, `git_sha`, `repo_root`, the CSV
+pointers it finds by walking `--output-dir`, and the invocation environment
+(`write_manifest.py:179-200`). Two caveats:
+
+- There is **no** `result_type` field. If you want it replayable, put it in the `--command` string
+  (the `++result_type=…` override above already does).
+- `config`, `config_path` and `checkpoints` are read from `<output-dir>/.hydra/config.yaml`
+  (`write_manifest.py:79-80`), and no `complexa` stage writes `.hydra/` under the output dir —
+  `cli_runner.py` sets no `hydra.run.dir` override for `evaluate`/`analyze`, and the pipeline
+  configs point Hydra at `./logs/hydra_outputs/…`. So all three come out `null`, and no
+  checkpoint hashes are recorded.
 
 ## Most common overrides
 
@@ -193,11 +272,11 @@ The manifest pins: resolved config, git SHA, ckpt SHA-256s, the result CSV paths
 |------------------------------------------------|-----------------------------------------------------------------------|
 | `++sample_storage_path=<dir>`                  | The directory of PDBs to evaluate (required).                         |
 | `++dataset.task_name=<name>`                   | Target / AME task name (binders, AME). Resolves target PDB + contigs. |
-| `++metric.binder_folding_method=<backend>`     | `colabdesign` / `rf3_latest` / `boltz2_default`.                      |
+| `++metric.binder_folding_method=<backend>`     | `colabdesign`, or any name containing `rf3` (e.g. `rf3_latest`). Nothing else is accepted (`binder_eval.py:96-116`). |
 | `++metric.inverse_folding_model=<model>`       | `protein_mpnn` / `soluble_mpnn` / `ligand_mpnn`.                      |
 | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which sequence flavors to refold.                                   |
 | `++metric.num_redesign_seqs=N`                 | ProteinMPNN/LigandMPNN redesign count.                                |
-| `++metric.compute_pre_refolding_metrics=true`  | Add bioinformatics/TMOL/HBPLUS metrics on the input structures.       |
+| `++metric.compute_pre_refolding_metrics=true`  | Add bioinformatics/TMOL metrics on the input structures. The only sub-toggles are `metric.pre_refolding.{bioinformatics,tmol}` — `evaluate.py:401-403` reads no others, and there is no `hbplus` reward or key anywhere in `src/`. |
 | `++metric.keep_folding_outputs=true`           | Save the refolded PDBs (large, but useful for inspection).            |
 | `++result_type=<type>`                         | Override default thresholds: `protein_binder` / `ligand_binder` / `motif_protein_binder` / `motif_ligand_binder`. |
 | `++aggregation.success_thresholds.<…>`         | Tighten or loosen specific thresholds (see `reference/eval_configs.md`). |
@@ -207,7 +286,7 @@ The manifest pins: resolved config, git SHA, ckpt SHA-256s, the result CSV paths
 
 ## Hardware
 
-- **GPU**: ≥1 CUDA GPU. AF2 (`colabdesign`) and RF3 (`rf3_latest`) need ≥40 GB VRAM (A100/H100/L40S). ESMFold runs on ≥24 GB. Multi-GPU via `++eval_njobs=N`.
+- **GPU**: ≥1 CUDA GPU. Both refolding backends — AF2 (`colabdesign`) and RF3 (`rf3_latest`) — need ≥40 GB VRAM (A100/H100/L40S). The optional monomer ESMFold stage runs on ≥24 GB. Multi-GPU via `++eval_njobs=N`.
 - **CPU/disk**: 24 CPUs default (`ncpus_: 24`). Each refolded PDB + intermediate output is ~1–5 MB; `keep_folding_outputs=true` can balloon to tens of GB for thousands of inputs.
 - See `_shared/reference/hardware.md` for per-backend wall-clock and VRAM tables.
 

@@ -28,9 +28,9 @@ user (or a future agent) can re-read instead of re-deriving state.
 
 | Step | Preferred path | Why |
 |---|---|---|
-| `.env` creation (Step 2) | **File edit** (`cp .env_example .env` + 3 line swaps) or `complexa init` | `complexa init` is a thin wrapper around `cp + 3 regex swaps` (`_swap_runtime_in_env` in `cli_runner.py`). Either path works; pick CLI for new humans, direct edit for agents. |
+| `.env` creation (Step 2) | **CLI** (`complexa init`, then `complexa init <uv\|docker>`) | Two phases in `handle_init` (`cli_runner.py`): the first copies `.env_example` → `.env`, the second writes an `env.sh` that exports `COMPLEXA_INIT`. Every later `design`/`generate`/`evaluate`/`analyze` command hard-exits without it, so a hand-rolled `cp` is *not* equivalent. |
 | `.env` value edits (Step 3) | **File edit** (StrReplace `LOCAL_CODE_PATH=…` etc.) | No CLI for this — the values are user-specific paths. |
-| Download model weights (Step 4) | **CLI** (`complexa download --…`) | Dispatches to `env/download_startup.sh` (~1000 lines of bash with NGC URLs, retries, checksum-style skip-if-present). Don't try to replicate. |
+| Download model weights (Step 4) | **CLI** (`complexa download --…`) | Dispatches to `env/download_startup.sh` (~900 lines of bash with NGC URLs, retries, checksum-style skip-if-present). Don't try to replicate. |
 | Validate env (Step 5) | **CLI** (`complexa validate env`) or `test -f .env && test -d $DATA_PATH` | CLI prints a nicer report; the manual check is one-liner-safe. |
 | Validate full design config (after picking a pipeline) | **CLI** (`complexa validate design CONFIG`) | Non-trivial Hydra defaults traversal + ckpt + env-var checks; not worth replicating. |
 
@@ -39,7 +39,7 @@ user (or a future agent) can re-read instead of re-deriving state.
 - A correctly-shaped `.env` for either UV or Docker runtime.
 - Model checkpoints (Complexa protein/ligand/AME plus community models) downloaded to known paths.
 - A `preflight.json` snapshot of the host (GPU, disk, .env, ckpts, tool binaries).
-- A `run_manifest.json` capturing exactly which `complexa init` + `complexa download` invocations were used (replay-friendly).
+- A `run_manifest.json` capturing the `complexa init` + `complexa download` invocation as one command string, plus skill name, timestamp, and git SHA (replay-friendly).
 - A pass/fail report from `complexa validate env` with clear next-step hints.
 
 ## Step 1: Pre-flight check
@@ -52,11 +52,13 @@ the host can run Complexa at all.
 bash .claude/skills/_shared/scripts/preflight.sh
 ```
 
-The script writes `./complexa_setup/preflight.json`. Read it and surface:
+The script writes `./preflight.json` (pass `--out PATH` to put it elsewhere).
+Read it and surface:
 
 - `gpu.available` — if `false`, design / evaluate steps will fail; warn the user.
-- `gpu.vram_gb` — Complexa needs ≥40 GB (A100/H100/L40S).
-- `disk.free_gb` at `CKPT_PATH` — minimum ~50 GB for the full Complexa + community model set.
+- `gpu.vram_gb` — Complexa needs ≥24 GB; 40–80 GB recommended (A100/H100/L40S).
+- `disk.free_gb` at `CKPT_PATH` — the full Complexa + community model set is ≈20 GB of
+  weights; budget ~50 GB to leave room for tar extraction and run outputs.
 - `env.missing_required` — anything listed here must be edited in `.env` before validation passes.
 - `tools.{foldseek,mmseqs,dssp,hbplus,sc}.exists` — missing tools degrade evaluation but do not block generation.
 
@@ -89,50 +91,62 @@ Use AskUserQuestion if it is not obvious from context:
 
 > "Which runtime do you want to configure? `uv` (recommended, faster) or `docker` (use if you do not have a UV venv built locally)?"
 
-### Path A: file edit (preferred for agents)
+### Path A: CLI (recommended — this is the only path that produces `env.sh`)
 
-`complexa init` only does three things — copy `.env_example` → `.env` and
-swap the `COMPLEXA_RUNTIME=` line plus the `UV_*` ↔ `DOCKER_*` prefixes on the
-tool/data/cache path block. You can do the same with `cp` + StrReplace and skip
-the CLI:
+`complexa init` runs in two phases (`handle_init` in `cli_runner.py`), and the
+runtime is a **positional** argument, not a flag:
 
 ```bash
-cp .env_example .env
-# Then StrReplace these lines in .env:
-#   COMPLEXA_RUNTIME=uv          → COMPLEXA_RUNTIME=<runtime>
-#   FOLDSEEK_EXEC=${UV_FOLDSEEK_EXEC}  → FOLDSEEK_EXEC=${DOCKER_FOLDSEEK_EXEC}   (and same for RF3_EXEC_PATH, SC_EXEC, HBPLUS_EXEC, MMSEQS_EXEC, DSSP_EXEC, TMOL_PATH)
-#   DATA_PATH=${LOCAL_DATA_PATH} → DATA_PATH=${DOCKER_DATA_PATH}                  (and same for CACHE_DIR, CKPT_PATH)
+complexa init                    # Phase 1: copy .env_example → .env, then stop
+#   ... now do the Step 3 edits to .env ...
+complexa init uv                 # Phase 2: write env.sh for the UV runtime
+complexa init docker             # Phase 2: write env.sh for the Docker runtime
+source env.sh                    # REQUIRED — exports COMPLEXA_INIT
+complexa init docker --force     # Overwrite an existing env.sh
 ```
 
-Skip the prefix swap entirely if you're staying on UV (the `.env_example`
-already targets UV).
+`complexa init --runtime docker` exits with `unrecognized arguments` — there is
+no `--runtime` flag.
 
-### Path B: CLI
+Phase 2 never touches `.env`. It writes a separate `env.sh` that sources `.env`,
+repoints the six tool vars (`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`,
+`MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH`) at the chosen runtime's `UV_*` /
+`DOCKER_*` values, and exports `COMPLEXA_INIT="<runtime>"`. For `docker` it also
+overrides `LOCAL_CODE_PATH`, `COMMUNITY_MODELS_PATH`, `LOCAL_CACHE_DIR`,
+`CKPT_PATH`, and `DATA_PATH` with the container paths. Your Step 3 edits survive
+runtime flips because `.env` is only ever read, never rewritten.
 
-```bash
-complexa init                    # UV runtime (default)
-complexa init --runtime docker   # Docker runtime
-complexa init --force            # Recreate .env from .env_example (drops any edits)
-```
+**`source env.sh` is not optional.** `_check_complexa_init` (`cli_runner.py`)
+hard-exits `design`, `generate`, `filter`, `evaluate`, `analyze`, `analysis`, and
+`target` with "Environment not initialized" unless `COMPLEXA_INIT` is in the
+environment. Only `init`, `demo`, `download`, `validate`, and `status` are exempt.
 
-If `.env` already exists and `--force` is not passed, only the runtime-dependent
-lines are swapped — user edits in Step 3 are preserved across runtime flips.
+### Path B: file edit (covers Phase 1 only)
+
+`cp .env_example .env` is a fine substitute for Phase 1 — but you must still run
+`complexa init <uv|docker>` and `source env.sh` afterwards, because nothing else
+generates `env.sh`. There is no all-file-edit path.
+
+Once `.env` exists, re-running `complexa init` with no runtime positional just
+prints the usage block and `sys.exit(1)`; it swaps nothing. `--force` on its own
+re-copies `.env_example` over `.env`, dropping your edits.
 
 ### Verify either way
 
 ```bash
-test -f .env && echo "OK: .env present" || echo "MISSING"
-grep -E '^COMPLEXA_RUNTIME=' .env
+test -f .env   && echo "OK: .env present"   || echo "MISSING: run complexa init"
+test -f env.sh && echo "OK: env.sh present" || echo "MISSING: run complexa init <uv|docker>"
+source env.sh && echo "COMPLEXA_INIT=$COMPLEXA_INIT"
 ```
 
 ## Step 3: Edit .env
 
-No CLI for this — Step 2 only set the runtime; you still need to write your
-machine-specific paths into `.env` by hand (StrReplace or your editor). The two
-absolutely-required edits are:
+No CLI for this — Step 2 Phase 1 only copied the template; you still need to
+write your machine-specific paths into `.env` by hand (StrReplace or your
+editor), before running Phase 2. The two absolutely-required edits are:
 
 ```bash
-LOCAL_CODE_PATH=/absolute/path/to/protein-foundation-models
+LOCAL_CODE_PATH=/absolute/path/to/Proteina-Complexa
 LOCAL_DATA_PATH=/absolute/path/to/PFM_data
 ```
 
@@ -153,11 +167,11 @@ Quick decision table for the four edits most users make:
 ## Step 4: Download checkpoints
 
 **Always use the CLI here.** `complexa download` dispatches to
-`env/download_startup.sh` (~1000 lines of bash with NGC URLs, retries, and
-skip-if-present logic across ~6 community-model families). Rolling your own
+`env/download_startup.sh` (~900 lines of bash with NGC URLs, retries, and
+skip-if-present logic across 5 community-model families). Rolling your own
 wget loop is a recipe for partial downloads and wrong destination paths.
 
-Ask which models the user actually needs — downloading everything is ~100+ GB.
+Ask which models the user actually needs — `--everything` is ≈20 GB.
 Pick from the three Complexa variants and the community-model set. Each
 Complexa variant unlocks exactly one `complexa design` pipeline; AF2 / RF3
 inside the community-model set are what `evaluate` (and reward-guided search)
@@ -169,8 +183,8 @@ need at run time.
 | `--complexa-ligand` | Ligand-binder model + AE (`complexa_ligand.ckpt`, `complexa_ligand_ae.ckpt`) | Ligand binder — `configs/search_ligand_binder_local_pipeline.yaml` | `./ckpts/` | ~3 GB |
 | `--complexa-ame` | AME motif-scaffolding model + AE (`complexa_ame.ckpt`, `complexa_ame_ae.ckpt`) | AME (enzyme) — `configs/search_ame_local_pipeline.yaml` | `./ckpts/` | ~3 GB |
 | `--complexa-all` | All three Complexa variants | All three pipelines | `./ckpts/` | ~9 GB |
-| `--all` | All community models (ProteinMPNN + LigandMPNN + AF2 + ESM2 + ESMFold + RF3) | Needed by **evaluate / reward**: AF2 (protein binder), RF3 (ligand binder + AME), MPNNs (inverse folding for every pipeline). | `./community_models/` | ~50 GB |
-| `--everything` | Complexa + community + optional (Boltz2 / Protenix) | Everything plus alternative refold backends | both | ~100+ GB |
+| `--all` | The 5 community models: ProteinMPNN + LigandMPNN + AF2 + ESM2 + RF3 (no ESMFold — it has no download function here) | Needed by **evaluate / reward**: AF2 (protein binder), RF3 (ligand binder + AME), MPNNs (inverse folding for every pipeline). | `./community_models/` | ≈10.7 GB |
+| `--everything` | All 3 Complexa variants + the same 5 community models. Nothing else — the script has no Boltz2 or Protenix downloader. | All three pipelines, plus evaluate / reward | both | ≈20 GB |
 | `--status` | Show install state — does not download | (none) | (none) | n/a |
 
 **Minimum download per pipeline:**
@@ -179,6 +193,9 @@ need at run time.
 - Ligand binder: `complexa download --complexa-ligand --all`
 - AME / enzyme: `complexa download --complexa-ame --all`
 - All three: `complexa download --everything`
+
+ESMFold is not part of any `complexa download` flag; fetch it with
+`python script_utils/download/download_esmfold_model.py` if you need it.
 
 For the full per-model destination breakdown and per-flag NGC sources, see
 [reference/downloads.md](reference/downloads.md).
@@ -201,9 +218,10 @@ Verify what landed:
 complexa download --status
 ```
 
-The status output groups by family (Complexa / community / optional) and prints
-"Installed" or "Missing" per ckpt. Re-run the specific flag if a ckpt is
-flagged missing.
+The status output has exactly two groups — `Complexa Models (Required):` and
+`Core Models:` — and prints either `✓ Installed (<dir>)` or a `○ Missing (<dir>):`
+header followed by one indented `✗ <filename>` line per absent file. Re-run the
+specific flag for anything flagged missing.
 
 ## Step 5: Validate
 
@@ -222,9 +240,11 @@ Common failures and fixes:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `.env file: No .env file found` | `complexa init` not run | Run `complexa init` first |
+| `Environment not initialized` on `design`/`generate`/`evaluate` | `env.sh` never generated or never sourced | `complexa init <uv\|docker>` then `source env.sh` |
 | `DATA_PATH: Not set in .env` | Placeholder not edited | Edit `LOCAL_DATA_PATH` in `.env` |
 | `DATA_PATH: Directory not found` | Path edited but does not exist on disk | `mkdir -p $LOCAL_DATA_PATH` or copy target data there |
 | Hydra error `InterpolationKeyError: AF2_DIR` | Reward/eval config wants AF2 but `.env` does not define it | Download AF2 weights or remove AF2 from the config |
+| Hydra error `InterpolationKeyError: CACHE_DIR` | `.env_example` ships **no** `CACHE_DIR=` line (only `LOCAL_CACHE_DIR` / `DOCKER_CACHE_DIR`), yet `configs/dataset/unified/plinder.yaml:35` requires `${oc.env:CACHE_DIR}` | Add `CACHE_DIR=${LOCAL_CACHE_DIR}` to `.env` by hand — nothing generates it for you |
 
 ## Step 6: Emit setup artifact
 
@@ -234,11 +254,17 @@ describing the resulting state. The shared helper writes it for you:
 ```bash
 mkdir -p ./complexa_setup
 python .claude/skills/_shared/scripts/write_manifest.py \
-    --kind setup \
-    --runtime "$(grep -E '^COMPLEXA_RUNTIME=' .env | cut -d= -f2)" \
-    --preflight ./complexa_setup/preflight.json \
+    --output-dir ./ckpts \
+    --command "complexa init docker && complexa download --complexa --all" \
+    --skill complexa-setup \
     --out ./complexa_setup/run_manifest.json
 ```
+
+`--output-dir`, `--command`, and `--skill` are all **required**; there is no
+`--kind`, `--runtime`, or `--preflight` flag. `--output-dir` is only where the
+script looks for `.hydra/config.yaml` — setup produces no Hydra run dir, so the
+manifest's `config` and `checkpoints` fields come back `null`. That is expected
+here; keep `preflight.json` as the record of on-disk state.
 
 Surface the resulting files to the user:
 
@@ -249,9 +275,9 @@ ls -la ./complexa_setup/
 Expected contents:
 
 ```
+./preflight.json            # GPU / disk / .env / ckpt / tool snapshot (repo root)
 complexa_setup/
-├── preflight.json      # GPU / disk / .env / ckpt / tool snapshot
-└── run_manifest.json   # init + download invocations + git SHA + runtime
+└── run_manifest.json       # one --command string + skill + timestamp + git SHA
 ```
 
 ## Hardware requirements
@@ -260,12 +286,12 @@ complexa_setup/
 |----------|---------|-------------|
 | GPU | 1× CUDA GPU, ≥24 GB VRAM | A100 / H100 / L40S, 40–80 GB VRAM |
 | CUDA | 12.0 | 12.4+ |
-| Disk (CKPT_PATH) | 50 GB | 150 GB (covers `--everything`) |
+| Disk (CKPT_PATH) | 50 GB | 150 GB (`--everything` is ≈20 GB; the rest is samples / eval output) |
 | RAM | 16 GB | 64 GB+ |
 | OS | Ubuntu 22.04+ (UV) | Ubuntu 22.04+ or Docker on any host |
 
 Ubuntu 20.04 throws GLIBC errors with the UV runtime — use `complexa init
---runtime docker` on those hosts. See `.claude/skills/_shared/reference/hardware.md`
+docker` on those hosts. See `.claude/skills/_shared/reference/hardware.md`
 for per-pipeline (binder vs ligand vs AME) requirements.
 
 ## Troubleshooting
@@ -274,10 +300,10 @@ for per-pipeline (binder vs ligand vs AME) requirements.
 |---------|-------|-----|
 | `complexa: command not found` | Package not installed in active env | `source .venv/bin/activate` then `pip install -e .` |
 | `complexa init` says `.env_example not found` | Running outside repo root | `cd` to the project root (where `.env_example` lives) |
-| `.env_example not found. Cannot initialize .env.` | Not in project root | `cd` into `protein-foundation-models/` and retry |
+| `.env_example not found. Cannot initialize .env.` | Not in project root | `cd` into `Proteina-Complexa/` and retry |
 | `complexa download` fails on NGC URL | Behind firewall / no internet | Configure a proxy for the download script, or download the model `.ckpt`s manually from the NGC pages linked in the main `README.md` and drop them into `./ckpts/` |
 | `complexa download --status` shows ckpts present but `validate` fails | `.env` `CKPT_PATH` points elsewhere | Either move ckpts or edit `LOCAL_CHECKPOINT_PATH` in `.env` |
-| GLIBC error on import | Ubuntu 20.04 with UV runtime | Re-run `complexa init --runtime docker` and use `./env/docker-ops.sh run` |
+| GLIBC error on import | Ubuntu 20.04 with UV runtime | Re-run `complexa init docker --force`, `source env.sh`, and use `./env/docker-ops.sh run` |
 
 ---
 

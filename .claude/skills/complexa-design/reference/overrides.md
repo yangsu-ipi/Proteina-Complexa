@@ -5,9 +5,16 @@ example, what it controls. Defaults come from the actual YAML files under
 `configs/pipeline/` — when this doc disagrees with the config, the config
 wins.
 
-All overrides use Hydra `++` (forced) syntax — `+` would error on keys not
-already in the config. Apply to a `complexa design` invocation; they propagate
-to all four stages (generate, filter, evaluate, analyze).
+All overrides use Hydra `++` (forced) syntax. The three prefixes are: bare
+`key=value` requires the key to already exist in the merged config; `+key=value`
+**adds** the key and errors if it already exists; `++key=value` adds-or-overrides
+and never errors. Apply to a `complexa design` invocation; they propagate to all
+four stages (generate, filter, evaluate, analyze).
+
+> **Because `++` creates missing keys silently, a typo'd key is a silent
+> no-op** — the run proceeds with the default and nothing warns you. Copy keys
+> from the tables below rather than typing them, and check the resolved config
+> in the stage log if a setting appears to have no effect.
 
 ## Top-level (pipeline YAML)
 
@@ -15,14 +22,14 @@ These live at the root of `configs/search_*_pipeline.yaml`.
 
 | Key | Type | Default | Example override | What it controls |
 |-----|------|---------|------------------|------------------|
-| `run_name` | str | (config stem, e.g. `search_binder_local`) | `++run_name=pdl1_v1` | Suffix for output dirs and log file names |
-| `ckpt_path` | str | `${oc.env:CKPT_PATH}` | `++ckpt_path=/data/ckpts` | Directory containing the model and AE checkpoints |
+| `run_name` | str | the config's own `run_name:` field (`search_binder_local` / `search_ligand_binder_local` / `search_ame_local`) — **not** the config stem, which is `search_binder_local_pipeline` | `++run_name=pdl1_v1` | Suffix for output dirs and log file names (the config stem appears in the same path separately) |
+| `ckpt_path` | str | literal `./ckpts` in all three local pipelines (no `oc.env` interpolation) | `++ckpt_path=/data/ckpts` | Directory containing the model and AE checkpoints |
 | `ckpt_name` | str | per pipeline: `complexa.ckpt` / `complexa_ligand.ckpt` / `complexa_ame.ckpt` | `++ckpt_name=complexa.ckpt` | Which model checkpoint to load |
-| `autoencoder_ckpt_path` | str | `${oc.env:CKPT_PATH}/complexa[_ligand\|_ame]_ae.ckpt` | `++autoencoder_ckpt_path=/data/my_ae.ckpt` | AE checkpoint path |
+| `autoencoder_ckpt_path` | str | literal `./ckpts/complexa[_ligand\|_ame]_ae.ckpt` | `++autoencoder_ckpt_path=/data/my_ae.ckpt` | AE checkpoint path |
 | `seed` | int | `5` | `++seed=42` | Sampling RNG seed |
 | `ncpus_` | int | `24` | `++ncpus_=16` | CPU count for dataloader workers |
-| `gen_njobs` | int | `2` (binder/ligand/AME) | `++gen_njobs=4` | Number of parallel generate jobs |
-| `eval_njobs` | int | `2` (binder/ligand/AME) | `++eval_njobs=4` | Number of parallel evaluate jobs |
+| `gen_njobs` | int | `1` (binder/ligand/AME) | `++gen_njobs=4` | Number of parallel generate jobs |
+| `eval_njobs` | int | `1` (binder/ligand/AME) | `++eval_njobs=4` | Number of parallel evaluate jobs |
 | `lora.r` | int | `32` (ligand/AME), (unset for protein binder) | `++lora.r=64` | LoRA rank |
 | `lora.lora_alpha` | float | `64.0` | `++lora.lora_alpha=128.0` | LoRA scaling factor (typically 2x rank) |
 | `lora.lora_dropout` | float | `0.0` | `++lora.lora_dropout=0.1` | Dropout on LoRA inputs |
@@ -71,7 +78,7 @@ From `configs/pipeline/model_sampling.yaml`.
 | `generation.search.beam_search.beam_width` | int | `4` | `++generation.search.beam_search.beam_width=8` | Beam-search width |
 | `generation.search.beam_search.n_branch` | int | `4` | `++generation.search.beam_search.n_branch=8` | Beam-search branch factor |
 | `generation.search.beam_search.keep_lookahead_samples` | bool | `true` | `++generation.search.beam_search.keep_lookahead_samples=false` | Keep intermediate beam samples |
-| `generation.search.beam_search.save_intermediate_states` | bool | `false` | `++generation.search.beam_search.save_intermediate_states=true` | Save PDBs at each checkpoint (expensive) |
+| `generation.search.beam_search.save_intermediate_states` | bool | `false` (**protein binder only** — the key exists in `binder_generate.yaml`; on ligand/AME `++` just creates a dead key) | `++generation.search.beam_search.save_intermediate_states=true` | Save PDBs at each checkpoint (expensive) |
 | `generation.search.fk_steering.beam_width` | int | `4` | `++generation.search.fk_steering.beam_width=8` | FK-steering beam width |
 | `generation.search.fk_steering.n_branch` | int | `4` | `++generation.search.fk_steering.n_branch=8` | FK-steering branch factor |
 | `generation.search.fk_steering.temperature` | float | `0.1` | `++generation.search.fk_steering.temperature=0.5` | FK-steering softmax temperature |
@@ -85,6 +92,11 @@ From `configs/pipeline/model_sampling.yaml`.
 
 Refinement is disabled by default. Enable `sequence_hallucination` for AF2-loss
 post-hoc optimization of the binder sequence.
+
+> **Protein binder only.** The `refinement.*` block is defined in
+> `binder_generate.yaml`. `ligand_binder_generate.yaml` and `ame_generate.yaml`
+> do not have it, so `++generation.refinement.*` on those pipelines creates a
+> dead key that nothing reads.
 
 | Key | Type | Default | Example override | What it controls |
 |-----|------|---------|------------------|------------------|
@@ -113,9 +125,9 @@ post-hoc optimization of the binder sequence.
 
 Reward weights apply to the named sub-model inside the `CompositeRewardModel`.
 The protein binder pipeline uses `af2folding`; ligand binder and AME (when
-reward is enabled) use `rf3folding`. Other reward models (`tmol`,
-`bioinformatics`, `hbplus`, `boltz2folding`, `hbplus_af2`, `hbplus_boltz2`,
-`rf3folding`) are pre-wired but commented out — uncomment in the YAML or add
+reward is enabled) use `rf3folding`. The other reward models that exist in
+`src/proteinfoundation/rewards/` (`tmol`, `bioinformatics`, `rf3folding`,
+`af2folding`) are pre-wired but commented out — uncomment in the YAML or add
 via override.
 
 ### `af2folding` reward weights (protein binder)
@@ -158,20 +170,19 @@ From `binder_evaluate.yaml`, `ligand_binder_evaluate.yaml`, `ame_evaluate.yaml`.
 | `input_mode` | enum | `generated` | `++input_mode=pdb_dir` | `generated` for design pipeline; `pdb_dir` for external PDBs |
 | `metric.compute_binder_metrics` | bool | `true` (binder/ligand) | `++metric.compute_binder_metrics=true` | Run binder refolding |
 | `metric.compute_motif_binder_metrics` | bool | (AME only) `true` | `++metric.compute_motif_binder_metrics=false` | Run joint motif + binder metrics |
-| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=esmfold` | Refold backend: `colabdesign`, `rf3_latest`, `boltz2_default`, `esmfold` |
+| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=rf3_latest` | Refold backend. Only `colabdesign` or a name containing `rf3` (e.g. `rf3_latest`) is accepted; anything else raises `ValueError` (`binder_eval.py:96-116`). `colabdesign` is the only AF2 path, and it rejects ligand targets. `esmfold` belongs to the *different* key `metric.monomer_folding_models`. |
 | `metric.sequence_types` | list | `[self]` (binder default), `[self, mpnn]` (ligand), `[self, mpnn_fixed]` (AME) | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which inverse-folding outputs to evaluate |
-| `metric.num_redesign_seqs` | int | `2` | `++metric.num_redesign_seqs=8` | Sequences generated per design by the inverse folder |
+| `metric.num_redesign_seqs` | int | `8` (protein target) / `1` (ligand target) — code defaults `DEFAULT_NUM_REDESIGN_SEQS_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:50-51`); `ame_evaluate.yaml` does not set the key at all | `++metric.num_redesign_seqs=8` | Sequences generated per design by the inverse folder |
 | `metric.inverse_folding_model` | enum | `soluble_mpnn` (binder), `ligand_mpnn` (ligand, AME) | `++metric.inverse_folding_model=protein_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` |
-| `metric.interface_cutoff` | float | (binder/ligand) `8.0` | `++metric.interface_cutoff=6.0` | Interface-residue distance cutoff in Angstroms |
+| `metric.interface_cutoff` | float | `8.0` (protein target) / `6.0` (ligand target) — code defaults `DEFAULT_INTERFACE_CUTOFF_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:48-49`); `ame_evaluate.yaml` does not set the key at all | `++metric.interface_cutoff=6.0` | Interface-residue distance cutoff in Angstroms |
 | `metric.ranking_criteria` | dict\|null | `null` (default: minimize i_pAE for protein, min_ipAE for ligand) | `++metric.ranking_criteria.i_pAE.scale=1.0` | Custom composite-score ranking |
 | `metric.motif_ranking_criteria` | dict\|null | `null` | `++metric.motif_ranking_criteria.motif_rmsd_pred.scale=1.0` | Custom motif-binder ranking (AME) |
 | `metric.compute_esm_metrics` | bool | `true` (binder, ligand, AME) | `++metric.compute_esm_metrics=false` | Compute ESM pseudo-perplexity |
-| `metric.compute_pre_refolding_metrics` | bool | `false` (binder, ligand), `true` (AME) | `++metric.compute_pre_refolding_metrics=true` | Pre-refolding bioinformatics/TMOL/HBPLUS |
-| `metric.pre_refolding.bioinformatics` | bool | `true` | `++metric.pre_refolding.bioinformatics=false` | SC, SASA, hydrophobicity on generated |
-| `metric.pre_refolding.tmol` | bool | `true` | `++metric.pre_refolding.tmol=false` | TMOL forcefield on generated |
-| `metric.pre_refolding.hbplus` | bool | `true` | `++metric.pre_refolding.hbplus=false` | HBPLUS H-bond on generated |
-| `metric.compute_refolded_structure_metrics` | bool | `false` (binder, ligand), `true` (AME) | `++metric.compute_refolded_structure_metrics=true` | Same set on refolded |
-| `metric.refolded.{bioinformatics,tmol,hbplus}` | bool | `true` | `++metric.refolded.tmol=false` | Same toggles, refolded structure |
+| `metric.compute_pre_refolding_metrics` | bool | `false` (binder, ligand, AME) | `++metric.compute_pre_refolding_metrics=true` | Pre-refolding bioinformatics/TMOL |
+| `metric.pre_refolding.bioinformatics` | bool | `false` (all three) | `++metric.pre_refolding.bioinformatics=true` | SC, SASA, hydrophobicity on generated |
+| `metric.pre_refolding.tmol` | bool | `false` (all three) | `++metric.pre_refolding.tmol=true` | TMOL forcefield on generated |
+| `metric.compute_refolded_structure_metrics` | bool | `false` (binder, ligand, AME) | `++metric.compute_refolded_structure_metrics=true` | Same set on refolded |
+| `metric.refolded.{bioinformatics,tmol}` | bool | `false` (all three) | `++metric.refolded.tmol=true` | Same toggles, refolded structure |
 | `metric.compute_monomer_metrics` | bool | `true` (binder, ligand), `false` (AME) | `++metric.compute_monomer_metrics=true` | Run monomer designability / codesignability |
 | `metric.monomer_folding_models` | list | `[esmfold]` | `++metric.monomer_folding_models=[esmfold,colabfold]` | Folding models for monomer metrics |
 | `metric.compute_designability` | bool | `true` | `++metric.compute_designability=false` | Designability (ProteinMPNN -> fold) |
@@ -191,26 +202,57 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 | Key | Type | Default | Example override | What it controls |
 |-----|------|---------|------------------|------------------|
-| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `motif_protein_binder`, `motif_ligand_binder` |
+| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `monomer_motif`, `motif_protein_binder`, `motif_ligand_binder` (`analyze.py:137-144`) |
 | `aggregation.limit` | int\|null | `null` | `++aggregation.limit=200` | Limit number of result files merged (null = all) |
 | `aggregation.analysis_modes` | list | `[binder, monomer]` (binder, ligand), `[motif_binder, monomer]` (AME) | `++aggregation.analysis_modes=[binder]` | Which analysis functions to run |
-| `aggregation.success_thresholds.i_pAE.threshold` | float | `7.0` (protein_binder) | `++aggregation.success_thresholds.i_pAE.threshold=10.0` | Interface PAE threshold (after `* scale`) |
-| `aggregation.success_thresholds.i_pAE.op` | str | `<=` | `++aggregation.success_thresholds.i_pAE.op=<` | Comparison operator |
-| `aggregation.success_thresholds.i_pAE.scale` | float | `31.0` | `++aggregation.success_thresholds.i_pAE.scale=1.0` | Scale factor applied before comparison |
-| `aggregation.success_thresholds.i_pAE.column_prefix` | str | `complex` | `++aggregation.success_thresholds.i_pAE.column_prefix=complex` | Column-name prefix |
-| `aggregation.success_thresholds.pLDDT.threshold` | float | `0.9` (protein_binder), `0.8` (AME) | `++aggregation.success_thresholds.pLDDT.threshold=0.85` | pLDDT threshold |
-| `aggregation.success_thresholds.pLDDT.op` | str | `>=` | `++aggregation.success_thresholds.pLDDT.op=>=` | Comparison operator |
-| `aggregation.success_thresholds.scRMSD.threshold` | float | `1.5` (protein_binder), `2.0` (ligand_binder, AME) | `++aggregation.success_thresholds.scRMSD.threshold=2.0` | scRMSD threshold |
-| `aggregation.success_thresholds.scRMSD.op` | str | `<` | `++aggregation.success_thresholds.scRMSD.op=<=` | Comparison operator |
-| `aggregation.success_thresholds.scRMSD.column_prefix` | str | `binder` | `++aggregation.success_thresholds.scRMSD.column_prefix=binder` | Column-name prefix |
-| `aggregation.motif_binder_success_thresholds.motif_rmsd_pred.threshold` | float | `1.5` (motif_ligand_binder), `2.0` (motif_protein_binder) | `++aggregation.motif_binder_success_thresholds.motif_rmsd_pred.threshold=1.0` | Motif RMSD in refolded structure |
-| `aggregation.motif_binder_success_thresholds.motif_seq_recovery.threshold` | float | `0.5` (AME default), `1.0` (motif protein binder default) | `++aggregation.motif_binder_success_thresholds.motif_seq_recovery.threshold=0.8` | Motif sequence recovery threshold |
+| `aggregation.success_thresholds` | dict\|null | `null` -> `DEFAULT_PROTEIN_BINDER_THRESHOLDS`: `i_pAE` (7.0, `<=`, scale 31.0, prefix `complex`), `pLDDT` (0.9, `>=`, scale 1.0, prefix `complex`), `scRMSD_ca` (1.5, `<`, scale 1.0, prefix `binder`) | supply the **whole dict** — see the warning below | Per-metric binder success criteria |
+| `aggregation.motif_binder_success_thresholds` | dict\|null | `null` -> `DEFAULT_MOTIF_LIGAND_BINDER_SUCCESS` for AME / `DEFAULT_MOTIF_PROTEIN_BINDER_SUCCESS` (`motif_binder_analysis_utils.py:40-89`) | supply the **whole dict** — see the warning below | Joint binder + motif success criteria |
 | `aggregation.designability_thresholds.ca.esmfold.threshold` | float | `2.0` | `++aggregation.designability_thresholds.ca.esmfold.threshold=1.5` | Designability CA-scRMSD threshold |
 | `aggregation.ca_codesignability_thresholds.ca.esmfold.threshold` | float | `2.0` | `++aggregation.ca_codesignability_thresholds.ca.esmfold.threshold=1.5` | CA codesignability threshold |
 | `aggregation.allatom_codesignability_thresholds.all_atom.esmfold.threshold` | float | `2.0` | `++aggregation.allatom_codesignability_thresholds.all_atom.esmfold.threshold=2.5` | All-atom codesignability threshold |
 | `aggregation.require_all_thresholds` | bool | `false` | `++aggregation.require_all_thresholds=true` | AND vs OR across thresholds |
 | `aggregation.compute_diversity` | bool | `true` (AME), unset elsewhere | `++aggregation.compute_diversity=false` | FoldSeek diversity |
 | `aggregation.compute_mmseqs_diversity` | bool | `true` (AME) | `++aggregation.compute_mmseqs_diversity=true` | MMseqs2 sequence diversity |
+
+### Threshold overrides must be complete dicts
+
+`binder_analysis.py:317-318` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+only when `success_thresholds` is *entirely absent*. Supplying a single metric
+replaces the whole dict, and `parse_threshold_spec`
+(`analysis_utils.py:124-129`) then fills the missing `scale` with `1.0`. So
+`++aggregation.success_thresholds.i_pAE.threshold=10.0` drops the `pLDDT` and
+`scRMSD_ca` criteria *and* compares a 0-1-scaled column against `10.0` — every
+sample passes and the reported success rate becomes 100%.
+
+Always write the full dict, and note the key is `scRMSD_ca`
+(`binder_analysis_utils.py:88`), not `scRMSD`:
+
+```yaml
+aggregation:
+  success_thresholds:
+    i_pAE:     {threshold: 10.0, op: "<=", scale: 31.0, column_prefix: complex}
+    pLDDT:     {threshold: 0.9,  op: ">=", scale: 1.0,  column_prefix: complex}
+    scRMSD_ca: {threshold: 1.5,  op: "<",  scale: 1.0,  column_prefix: binder}
+```
+
+`motif_binder_success_thresholds` uses a different, two-part schema
+(`motif_binder_analysis_utils.py:40-89`): a `binder` *map* of metric -> spec and
+a `motif` *list* of `{column, threshold, op}` entries, read via `.get("binder")`
+/ `.get("motif")` (`:282, :287`). A flat dict yields an empty binder map, and
+`motif_binder_analysis.py:217-218` then skips the sequence type entirely — **no
+pass rates are computed at all**. `motif_seq_recovery` is not a criterion; the
+column is `{seq_type}_correct_motif_sequence_all` with threshold `1.0`.
+
+```yaml
+aggregation:
+  motif_binder_success_thresholds:
+    binder:
+      scRMSD_bb3: {threshold: 2.0, op: "<=", scale: 1.0, column_prefix: binder}
+    motif:
+      - {column: "{seq_type}_motif_rmsd_pred_all", threshold: 1.5, op: "<="}
+      - {column: "{seq_type}_correct_motif_sequence_all", threshold: 1.0, op: ">="}
+      - {column: "{seq_type}_has_ligand_clashes_all", threshold: 0.5, op: "<"}
+```
 
 ## Common override patterns
 
@@ -230,14 +272,22 @@ Cheat-sheet of full overrides users run frequently.
 ++generation.dataloader.dataset.nres.nsamples=2 \
 ++run_name=quick_test
 
-# Cheap iteration with ESMFold eval
-++metric.binder_folding_method=esmfold \
+# Cheap iteration (keep the default backend — colabdesign is the only AF2 path,
+# and only colabdesign / rf3* are accepted at all)
+++metric.num_redesign_seqs=1 \
+++generation.dataloader.batch_size=8 \
+++generation.filter.filter_samples_limit=100 \
 ++metric.compute_pre_refolding_metrics=false \
 ++metric.compute_refolded_structure_metrics=false
 
-# Stricter success thresholds for top-N filtering
-++aggregation.success_thresholds.i_pAE.threshold=5.0 \
-++aggregation.success_thresholds.scRMSD.threshold=1.0
+# Stricter success thresholds for top-N filtering — thresholds cannot be
+# overridden key-by-key (see "Threshold overrides must be complete dicts"), so
+# put the full dict in a YAML overlay and compose it, or edit the analyze config:
+#   aggregation:
+#     success_thresholds:
+#       i_pAE:     {threshold: 5.0, op: "<=", scale: 31.0, column_prefix: complex}
+#       pLDDT:     {threshold: 0.9, op: ">=", scale: 1.0,  column_prefix: complex}
+#       scRMSD_ca: {threshold: 1.0, op: "<",  scale: 1.0,  column_prefix: binder}
 
 # Lower VRAM (40GB GPU)
 ++generation.dataloader.batch_size=8 \

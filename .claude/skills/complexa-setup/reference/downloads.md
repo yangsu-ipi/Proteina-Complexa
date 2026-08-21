@@ -20,32 +20,37 @@ The Python argparse explicitly defines these flags:
 | `--complexa-ligand` | `complexa_ligand.ckpt` + `complexa_ligand_ae.ckpt` (ligand binder) | `./ckpts/` | ~3 GB | NGC `proteina_complexa_ligand` |
 | `--complexa-ame` | `complexa_ame.ckpt` + `complexa_ame_ae.ckpt` (motif scaffolding) | `./ckpts/` | ~3 GB | NGC `proteina_complexa_ame` |
 | `--complexa-all` | All three Complexa pairs | `./ckpts/` | ~9 GB | NGC (3 models) |
-| `--all` | ProteinMPNN + LigandMPNN + AF2 + ESM2 + ESMFold + RF3 | `./community_models/...` | ~50 GB | Mixed (GitHub + AWS + HF + NGC) |
-| `--everything` | All Complexa + community + Boltz2 | both | ~100+ GB | Mixed |
+| `--all` | ProteinMPNN + LigandMPNN + AF2 + ESM2 + RF3 (exactly these 5 — no ESMFold) | `./community_models/...` | ≈10.7 GB | Mixed (GitHub + AWS + HF + NGC) |
+| `--everything` | The 3 Complexa pairs + the same 5 community models. No Boltz2, no Protenix. | both | ≈20 GB | Mixed |
 | `--status` | Show install state; downloads nothing | (none) | n/a | n/a |
 
 The underlying bash script also accepts per-model flags (`--pmpnn`,
-`--ligmpnn`, `--af2`, `--esm2`, `--esmfold`, `--rf3`, `--boltz2`) that pass
-through unchanged. They are listed in `env/download_startup.sh:show_help` but
-not in the Python argparse — they still work because of the `sys.argv[2:]`
-passthrough.
+`--ligmpnn`, `--af2`, `--esm2`, `--rf3`) that pass through unchanged. All five
+are listed in `env/download_startup.sh:show_help` (`:776-805`) but not in the
+Python argparse — they still work because of the `sys.argv[2:]` passthrough.
+
+That list is exhaustive. Anything else — including `--esmfold` and `--boltz2` —
+falls through to the `*)` branch, which prints `Unknown option: <arg>`, dumps the
+help, and exits 1. ESMFold has no downloader in this script at all; use
+`python script_utils/download/download_esmfold_model.py`. Boltz2 and Protenix
+appear nowhere in the repo's download tooling.
 
 | Passthrough flag | Destination | Approx size |
 |------------------|-------------|-------------|
 | `--pmpnn` | `./community_models/ProteinMPNN/{ca,vanilla}_model_weights/` | ~50 MB |
 | `--ligmpnn` | `./community_models/LigandMPNN/model_params/` | ~500 MB |
-| `--af2` | `./community_models/ckpts/AF2/params/` | ~3 GB |
+| `--af2` | `./community_models/ckpts/AF2/` (tar extracted in place — no `params/` subdir) | ~5 GB |
 | `--esm2` | `./community_models/ckpts/ESM2/` | ~2.5 GB |
-| `--esmfold` | `./community_models/ckpts/ESMFold/` | ~8.5 GB |
-| `--rf3` | `./community_models/ckpts/RF3/` | ~10 GB |
-| `--boltz2` | `./community_models/ckpts/Boltz2/` | ~5 GB |
+| `--rf3` | `./community_models/ckpts/RF3/` | ~2.5 GB |
 
 ---
 
 ## Default destinations
 
-All downloads land relative to the *current working directory* (the script
-`cd`s to project root, derived from `PROJECT_ROOT` inside `download_startup.sh`).
+All paths below are relative to `PROJECT_ROOT` (derived inside
+`download_startup.sh`), **not** to your shell's CWD — `main()` does
+`cd "$PROJECT_ROOT"` (`:817`) before parsing any flag, so where you invoke
+`complexa download` from makes no difference.
 
 ```
 $PROJECT_ROOT/
@@ -62,18 +67,19 @@ $PROJECT_ROOT/
     │   └── vanilla_model_weights/           ← full-backbone weights
     ├── LigandMPNN/model_params/             ← LigandMPNN weights
     └── ckpts/
-        ├── AF2/params/                      ← AlphaFold2 .npz / .pkl params
+        ├── AF2/                             ← AlphaFold2 params_model_*.npz, flat
         ├── ESM2/                            ← ESM2-650M weights
-        ├── ESMFold/                         ← ESMFold model
-        ├── RF3/                             ← RoseTTAFold3 ckpt
-        └── Boltz2/                          ← Boltz2 (optional)
+        └── RF3/                             ← RoseTTAFold3 ckpt
 ```
 
-Note: `LOCAL_CHECKPOINT_PATH` in `.env` defaults to `${LOCAL_CODE_PATH}/ckpts`,
-which matches where `complexa download` writes Complexa ckpts. If you edit
-`LOCAL_CHECKPOINT_PATH` to point elsewhere, you must also move (or symlink)
-the existing `./ckpts/` contents — `complexa download` always writes to
-`$PROJECT_ROOT/ckpts/` regardless of the `.env` setting.
+**Mismatch to fix by hand:** `LOCAL_CHECKPOINT_PATH` defaults to
+`${LOCAL_CODE_PATH}/checkpoints` (`.env_example:28`) — a *different* directory
+from where `complexa download` writes, which is always `$PROJECT_ROOT/ckpts`
+(`download_startup.sh:238`) regardless of the `.env` setting. They do **not**
+line up out of the box, so `${oc.env:CKPT_PATH}` resolves to an empty
+`checkpoints/` even after a successful download. Either set
+`LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` after downloading, or
+move/symlink `./ckpts/*` into `checkpoints/`.
 
 ---
 
@@ -113,27 +119,34 @@ complexa design configs/search_binder_local_pipeline.yaml \
 
 ## `complexa download --status` output
 
-Example output (post `--complexa-all` + `--af2`, no RF3 or ESMFold):
+Example output (post `--complexa-all` + `--af2`, no MPNNs, ESM2, or RF3):
 
 ```
-═══════════════════════════════════════════
-  Installation Status
-═══════════════════════════════════════════
-    Complexa (Protein): ✓ Installed (./ckpts/)
-    Complexa (Ligand):  ✓ Installed (./ckpts/)
-    Complexa (AME):     ✓ Installed (./ckpts/)
-    ProteinMPNN:     ○ Missing (community_models/ProteinMPNN/)
-    LigandMPNN:      ○ Missing (community_models/LigandMPNN/model_params/)
-    AF2:             ✓ Installed (community_models/ckpts/AF2/)
+  Current Installation Status
+  Complexa Models (Required):
+    Complexa (Protein): ✓ Installed (ckpts/)
+    Complexa (Ligand):  ✓ Installed (ckpts/)
+    Complexa (AME):     ✓ Installed (ckpts/)
+
+  Core Models:
+    ProteinMPNN:     ○ Missing (community_models/ProteinMPNN/):
+      ✗ ca_model_weights/v_48_002.pt
+      ✗ vanilla_model_weights/v_48_002.pt
+    LigandMPNN:      ○ Missing (community_models/LigandMPNN/model_params/):
+      ✗ proteinmpnn_v_48_002.pt
+    AlphaFold2:      ✓ Installed (community_models/ckpts/AF2/)
     ESM2:            ○ Not installed (community_models/ckpts/ESM2/)
-    ESMFold:         ○ Not installed (community_models/ckpts/ESMFold/)
-    RF3:             ○ Missing (community_models/ckpts/RF3/)
-    Boltz2:          ○ Missing (community_models/ckpts/Boltz2/)
-═══════════════════════════════════════════
+    RF3:             ○ Missing (community_models/ckpts/RF3/):
+      ✗ rf3_foundry_01_24_latest_remapped.ckpt
 ```
 
-Read each row as: `<Model name>: <✓ Installed | ○ Missing> (<destination>)`.
-Re-run `complexa download --<flag>` for any row that is missing.
+There are exactly two groups (`Complexa Models (Required):` and `Core Models:`)
+and exactly eight rows — no `ESMFold:` or `Boltz2:` row exists. An installed row
+is a single `✓ Installed (<dir>)`; a missing row is a `○ Missing (<dir>):` header
+followed by one indented `✗ <filename>` line per absent file (`:607-614`), so the
+missing lists above are truncated for brevity. ESM2 is the exception: its check is
+a directory-size heuristic and prints `○ Not installed (…)` with no file list.
+Re-run `complexa download --<flag>` for anything not installed.
 
 ---
 
@@ -141,6 +154,6 @@ Re-run `complexa download --<flag>` for any row that is missing.
 
 - Run `complexa download --status` **before** any download — it shows what is already on disk and saves re-downloading.
 - Re-running `complexa download --<flag>` is idempotent: existing non-empty ckpts are skipped (`download_complexa_weights` checks `[ -f "$fm_ckpt" ] && [ -s "$fm_ckpt" ]`).
-- Failed downloads leave a zero-byte file then `rm -f` it — safe to retry without manual cleanup.
-- For ESM2 / ESMFold specifically: set `HF_TOKEN` in `.env` before downloading to avoid HF Hub rate limits.
-- `complexa download --everything` will fetch every model the script supports (~100 GB). Prefer the targeted flags unless you actually need all variants.
+- **Failed downloads are *not* cleaned up.** The only `rm` in the script (`:228`) removes the AF2 tar *after* a successful extract. A truncated `.ckpt` is left in place, and because the skip check is `[ -f "$f" ] && [ -s "$f" ]` (`:245`) — file exists and is non-empty — a retry silently treats the partial file as installed. Delete the offending file yourself before re-running.
+- For ESM2: set `HF_TOKEN` in `.env` before downloading to avoid HF Hub rate limits. (ESMFold is not downloadable through this script — see the flag matrix above.)
+- `complexa download --everything` fetches every model the script supports (≈20 GB: 3 Complexa pairs + 5 community models). Prefer the targeted flags unless you actually need all variants.

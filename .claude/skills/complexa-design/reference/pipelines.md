@@ -25,7 +25,7 @@ When this doc disagrees with the configs, the configs win — re-read them.
 | Evaluation folding | `colabdesign` (AF2) | `rf3_latest` | `rf3_latest` |
 | Analysis `result_type` | `protein_binder` | `ligand_binder` | `motif_ligand_binder` |
 | Analysis modes | `[binder, monomer]` | `[binder, monomer]` | `[motif_binder, monomer]` |
-| Default `gen_njobs` / `eval_njobs` | 2 / 2 | 2 / 2 | 2 / 2 |
+| Default `gen_njobs` / `eval_njobs` | 1 / 1 | 1 / 1 | 1 / 1 |
 | Default `dataloader.batch_size` | 16 | 16 | 16 |
 
 ## Protein binder
@@ -39,7 +39,10 @@ inverse folding so the redesigned binder is soluble.
   `avg_ipsae`, `max_ipsae`, `min_ipsae_10`, `max_ipsae_10`, `avg_ipsae_10`)
   default to 0.0 and can be enabled by override.
 - Default success thresholds: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca <
-  1.5` Å.
+  1.5` Å (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:75-94`).
+  The key is `scRMSD_ca`, not `scRMSD`, and these thresholds can only be
+  overridden as a complete dict — see
+  [overrides.md](overrides.md) "Threshold overrides must be complete dicts".
 - Quick command:
   ```bash
   complexa design configs/search_binder_local_pipeline.yaml \
@@ -82,12 +85,19 @@ ligand and let the model build the rest of the protein around them.
 - `env_vars.USE_V2_COMPLEXA_ARCH: "True"` is set in
   `search_ame_local_pipeline.yaml`. The CLI runner injects this into the
   subprocess environment.
-- Default success thresholds (`motif_ligand_binder`): `i_pAE * 31 <= 10.0`,
-  `pLDDT >= 0.8`, `scRMSD < 2.0`, `motif_rmsd_pred < 1.5`, `motif_seq_recovery
-  >= 0.5`. The analysis is *joint*: a sample passes only when one redesign
-  satisfies binder + motif criteria simultaneously.
-- Pre- and post-refolding interface metrics are enabled (bioinformatics, TMOL,
-  HBPLUS).
+- Default success thresholds (`motif_ligand_binder`), from
+  `DEFAULT_MOTIF_LIGAND_BINDER_SUCCESS` (`motif_binder_analysis_utils.py:72-89`):
+  the binder side is **only** `scRMSD_bb3 <= 2.0`; the motif side is
+  `motif_rmsd_pred <= 1.5`, `correct_motif_sequence >= 1.0`, and
+  `has_ligand_clashes < 0.5`. There is no `i_pAE` and no `pLDDT` criterion — the
+  comment at `ame_analyze.yaml:27-29` that says otherwise is stale. The analysis
+  is *joint*: a sample passes only when one redesign satisfies binder + motif
+  criteria simultaneously.
+- Pre- and post-refolding interface metrics are **disabled**:
+  `compute_pre_refolding_metrics` and `compute_refolded_structure_metrics` are
+  both `false` (`ame_evaluate.yaml:28, :36`), as are all four sub-toggles
+  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:401-403`
+  reads only `bioinformatics` and `tmol`.
 - Quick command:
   ```bash
   complexa design configs/search_ame_local_pipeline.yaml \
@@ -143,10 +153,14 @@ success thresholds apply*. They are paired:
 | AME | `motif_binder` | `motif_ligand_binder` |
 | Motif protein binder (standalone, not a `design` pipeline) | `motif_binder` | `motif_protein_binder` |
 
-The motif protein binder evaluation is not a top-level `design` pipeline; it
-runs via the standalone `evaluate_motif_binder.yaml` config on the outputs of a
-protein binder pipeline. Use the `complexa-evaluate-pdbs` skill for that
-workflow.
+The motif protein binder evaluation is not a top-level `design` pipeline, and
+**no motif-protein-binder evaluate config ships in `configs/`**. There is no
+`configs/evaluate_motif_binder.yaml`; the only related files are the
+fully-commented template `configs/example/evaluate_motif_binder.yaml` (which
+defaults to the AME dict, i.e. `motif_ligand_binder`) and
+`configs/evaluate_motif_from_pdb_dir.yaml`, which is `monomer_motif` — a
+different task. Running `motif_protein_binder` means writing your own evaluate
+config; the `complexa-evaluate-pdbs` skill covers the configs that do ship.
 
 ## Evaluation types (summary)
 
@@ -154,7 +168,7 @@ From `docs/EVALUATION_METRICS.md`, the types reachable from the three design
 pipelines:
 
 1. **Protein binder** (`protein_type: binder`, `result_type: protein_binder`) —
-   AF2 / RF3 / Boltz2 refold + SolubleMPNN redesign. Metrics: i_pAE, i_pTM,
+   AF2 (ColabDesign) or RF3 refold + SolubleMPNN redesign. Metrics: i_pAE, i_pTM,
    pLDDT, binder scRMSD, complex scRMSD.
 2. **Ligand binder** (`protein_type: binder`, `result_type: ligand_binder`) —
    RF3 refold + LigandMPNN. Adds min_ipAE, ipSAE, has_clash, ligand_scRMSD,
@@ -164,12 +178,16 @@ pipelines:
    evaluation.
 4. **Motif protein binder** (`protein_type: motif_binder`, `result_type:
    motif_protein_binder`) — Standalone variant of #1 + motif RMSD / sequence
-   recovery on the refolded structure. Run via `evaluate_motif_binder.yaml` on
-   protein-binder outputs, not a top-level design pipeline.
+   recovery on the refolded structure. Reachable in code, but **no shipped
+   config selects it** (see the note above) — you must author one. Not a
+   top-level design pipeline.
 5. **Motif ligand binder / AME** (`protein_type: motif_binder`, `result_type:
    motif_ligand_binder`) — #2 + motif overlay + ligand clash detection on the
    refolded structure. This is what `search_ame_local_pipeline.yaml` runs.
 
-Pass-rate columns land in `res_filter_*_pass_*.csv`; diversity columns in
-`res_div_foldseek_*.csv` and `res_div_mmseqs_*.csv`; per-design metrics in the
-combined CSV.
+Pass-rate columns land in `filter_results/res_filter_*_pass_*.csv` (AME's
+`res_filter_motif_binder_pass_*.csv` goes to `motif_binder_metrics/` instead);
+diversity columns in `diversity/res_div_foldseek_*.csv` and
+`diversity/res_div_mmseqs_*.csv`; per-design metrics in the combined CSV. The
+subdirectories are created by `organize_results()` (`analyze.py:2812-2855`),
+which moves these files out of the results-dir root.

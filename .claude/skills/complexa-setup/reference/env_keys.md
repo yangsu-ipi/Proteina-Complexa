@@ -1,10 +1,14 @@
 # `.env` Key Reference
 
-Complete reference for every variable in `.env_example`. Sections mirror the
-ones in `.env_example` itself. Each entry says: required vs optional, default,
-what reads it, and the failure mode if it is missing or wrong.
+Reference for the `.env_example` variables you are likely to edit. Each entry
+says: required vs optional, default, what reads it, and the failure mode if it is
+missing or wrong.
 
-`.env` is loaded by `python-dotenv` via `proteinfoundation/cli/validate.py:load_env_config`
+> Not exhaustive: the `CLUSTER_*` SLURM block (`.env_example:110-154`, ~19 keys)
+> and `CLUSTER_USER` (`:37`) are not covered here — they only matter for remote
+> SLURM submission. Section order here does not track `.env_example` exactly.
+
+`.env` is loaded by `python-dotenv` via `src/proteinfoundation/cli/validate.py:load_env_config`
 and resolved into Hydra configs via `${oc.env:VARIABLE_NAME}` interpolation.
 Missing required variables surface as Hydra `InterpolationKeyError` at config
 resolution time — intentional, so you see exactly which key is missing.
@@ -14,22 +18,22 @@ resolution time — intentional, so you see exactly which key is missing.
 ## Section 1 — Required
 
 You must set these before running any pipeline command. `complexa init` does
-not fill these in; it only copies `.env_example` and rewrites runtime-dependent
-lines.
+not fill these in — Phase 1 copies `.env_example` to `.env` verbatim and Phase 2
+(`complexa init <uv|docker>`) writes a separate `env.sh` without touching `.env`.
 
 ### `LOCAL_CODE_PATH`
 
 - **Required.** No default — `.env_example` ships with a placeholder.
 - Absolute path to this repo checkout on the host.
-- Read by: `COMMUNITY_MODELS_PATH`, `AF2_DIR`, `ESM_DIR`, `ESMFOLD_DIR`, `RF3_DIR`, `RF3_CKPT_PATH`, `UV_VENV` (all derived via `${LOCAL_CODE_PATH}/...`).
-- **Failure mode**: every community-model and tool path resolves to `/path/to/protein-foundation-models/...` which does not exist → `complexa validate evaluate` / Hydra `FileNotFoundError`.
-- Fix: edit to an absolute path, e.g. `LOCAL_CODE_PATH=/home/me/code/protein-foundation-models`.
+- Read by: `COMMUNITY_MODELS_PATH`, `AF2_DIR`, `ESM_DIR`, `RF3_DIR`, `RF3_CKPT_PATH`, `UV_VENV` (all derived via `${LOCAL_CODE_PATH}/...`).
+- **Failure mode**: every community-model and tool path resolves to `/path/to/Proteina-Complexa/...` (the `.env_example:25` placeholder) which does not exist → `complexa validate evaluate` / Hydra `FileNotFoundError`.
+- Fix: edit to an absolute path, e.g. `LOCAL_CODE_PATH=/home/me/code/Proteina-Complexa`.
 
 ### `LOCAL_DATA_PATH`
 
 - **Required.** Default placeholder `/path/to/PFM_data`.
 - Absolute path to the PFM data directory (target PDBs under `target_data/`, datasets, etc.).
-- Read by: `DATA_PATH` (active alias rewritten by `complexa init`); `complexa validate env` requires this to point at an existing directory.
+- Read by: `DATA_PATH` (`.env_example:105` ships `DATA_PATH=${LOCAL_DATA_PATH}`; the generated `env.sh` re-exports it from `DOCKER_DATA_PATH` on the docker runtime only); `complexa validate env` requires this to point at an existing directory.
 - **Failure mode**: `complexa validate env` reports `DATA_PATH: Directory not found`; `complexa validate target` fails to locate `target_data/`.
 - Fix: edit, then `mkdir -p $LOCAL_DATA_PATH` and populate it with the target PDBs you plan to design against (the bundled examples ship under `assets/target_data/`, or build your own with the `complexa-target` skill).
 
@@ -47,17 +51,18 @@ lines.
 ### `WANDB_API_KEY` / `WANDB_ENTITY`
 
 - **Optional.** Default placeholders `YOUR_WANDB_KEY` / `YOUR_WANDB_ENTITY`.
-- Used by training code (`proteinfoundation.train`) for run logging.
-- Placeholder values are explicitly *not* injected — W&B logging is silently disabled when either is a placeholder.
+- `WANDB_API_KEY` is forwarded into the container by `env/docker-ops.sh:352`; `WANDB_ENTITY` by `:355`.
+- **The placeholder guard does not work as shipped.** Those two lines skip the value only when it equals `"YOUR WANDB KEY"` / `"YOUR WANDB ENTITY"` (spaces), while `.env_example:20-21` ships `YOUR_WANDB_KEY` / `YOUR_WANDB_ENTITY` (underscores) — so the untouched placeholders **are** injected. Blank them out if you do not want that.
+- `WANDB_ENTITY` is not what training reads for the entity: `train.py:384` takes it from `cfg_exp.log.wandb_entity`. The env var only reaches the W&B SDK's own default resolution.
 - **Failure mode if missing**: no W&B logging; training still runs.
-- Fix: set both if you want training runs tracked.
+- Fix: set both if you want training runs tracked, or clear them entirely.
 
 ### `HF_TOKEN`
 
 - **Optional.** Default placeholder `HF_TOKEN_HERE`.
-- Read by `env/download_startup.sh` (the script behind `complexa download`) when pulling ESM2 / ESMFold from Hugging Face Hub.
+- Read by `env/download_startup.sh` (the script behind `complexa download`) when pulling ESM2 from Hugging Face Hub, and by `script_utils/download/download_esmfold_model.py` for ESMFold.
 - **Failure mode if missing**: ESM2 / ESMFold downloads may hit anonymous rate limits or fail for gated repos. Other downloads (NGC, GitHub) work without it.
-- Fix: set if `--esm2` or `--esmfold` downloads fail with 401/429.
+- Fix: set if `complexa download --esm2` fails with 401/429. Note there is no `--esmfold` flag — the bash script rejects it with `Unknown option` and exits 1.
 
 ---
 
@@ -65,9 +70,9 @@ lines.
 
 ### `LOCAL_CACHE_DIR`
 
-- **Optional.** Default `${LOCAL_CODE_PATH}/.cache`.
-- Active alias `CACHE_DIR` resolves to this for UV runtime.
+- **Optional.** Default `${LOCAL_CODE_PATH}/.cache` (`.env_example:27`).
 - Used for Hydra cache, foldseek temp, HuggingFace hub cache.
+- **Gap worth knowing:** there is **no** `CACHE_DIR=` line anywhere in `.env_example` — only `LOCAL_CACHE_DIR` and `DOCKER_CACHE_DIR`. Nothing in `complexa init` creates one either: the generated `env.sh` re-exports `LOCAL_CACHE_DIR` (docker branch) and never defines `CACHE_DIR`. But `configs/dataset/unified/plinder.yaml:35` interpolates `${oc.env:CACHE_DIR}`, so any run composing that dataset raises `InterpolationKeyError: CACHE_DIR` until you add `CACHE_DIR=${LOCAL_CACHE_DIR}` to `.env` by hand.
 - **Failure mode if missing**: defaults work for almost everyone; set only if `.cache` should live on a faster / larger disk.
 
 ### `LOCAL_CHECKPOINT_PATH`
@@ -125,30 +130,41 @@ These are read by `env/docker-ops.sh build/pull/run`.
 
 ---
 
-## Auto-managed — do not edit by hand
+## Active aliases and runtime-selected keys
 
-These are rewritten by `complexa init` based on the `--runtime` flag. Editing
-them manually will be overwritten the next time `complexa init` runs (without
-`--force`, it still swaps the runtime-dependent lines).
+`complexa init` **never rewrites `.env`.** `complexa init <uv|docker>` writes a
+separate `env.sh` which sources `.env` and then re-exports a short list of vars
+for the chosen runtime; everything else below is a plain `${...}` alias inside
+`.env_example` that you change by editing the `LOCAL_*` / `DOCKER_*` / `UV_*`
+member instead.
 
-### `COMPLEXA_RUNTIME`
+### `COMPLEXA_INIT` (in `env.sh`, not `.env`)
 
-- Set to `uv` or `docker` by `complexa init`. Read by tooling that needs to know which prefix to resolve.
+- Exported as `COMPLEXA_INIT="<runtime>"` by the generated `env.sh` (`cli_runner.py:1666`). It appears in no `.env` file.
+- **This is the gate on the whole CLI.** `_check_complexa_init` (`cli_runner.py:1962-1977`) exits 1 with "Environment not initialized" for `design`, `generate`, `filter`, `evaluate`, `analyze`, `analysis`, and `target` when it is unset. `init`, `demo`, `download`, `validate`, and `status` are exempt.
+- Fix: `complexa init <uv|docker>` then `source env.sh` in every shell (it is not persisted).
+- `env.sh` refuses to overwrite itself; pass `--force` to regenerate after switching runtime.
 
-### `DATA_PATH` / `CACHE_DIR` / `CKPT_PATH`
+### Re-exported by `env.sh`
 
-- Active aliases. Resolve to `${LOCAL_*}` for UV runtime or `${DOCKER_*}` for Docker runtime. Edit `LOCAL_*` / `DOCKER_*` instead.
+- **Every runtime:** `FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`, `MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH` — each set to `${<RUNTIME>_<VAR>:-$<VAR>}`, i.e. the `UV_*` or `DOCKER_*` member.
+- **Docker only, additionally:** `LOCAL_CODE_PATH` (from `DOCKER_REPO_PATH`), `COMMUNITY_MODELS_PATH`, `LOCAL_CACHE_DIR`, `CKPT_PATH` (from `DOCKER_CHECKPOINT_PATH`), `DATA_PATH` (from `DOCKER_DATA_PATH`).
+- Nothing else is touched. In particular `CACHE_DIR` is never defined (see `LOCAL_CACHE_DIR` above).
 
-### `FOLDSEEK_EXEC` / `RF3_EXEC_PATH` / `SC_EXEC` / `HBPLUS_EXEC` / `MMSEQS_EXEC` / `DSSP_EXEC` / `TMOL_PATH`
+### `DATA_PATH` / `CKPT_PATH`
 
-- Active tool binaries. Resolve to `${UV_*}` or `${DOCKER_*}` per runtime. Edit the prefix vars if you have a non-standard install (e.g. system-wide `foldseek` at `/usr/local/bin/foldseek` instead of `.venv/bin/foldseek`).
-- Used by: `complexa evaluate` (foldseek for diversity; mmseqs for sequence clustering; hbplus/sc for interface metrics; dssp for secondary structure; tmol for force-field metrics).
+- Plain aliases in `.env_example` (`:105`, `:108`): `DATA_PATH=${LOCAL_DATA_PATH}`, `CKPT_PATH=${LOCAL_CHECKPOINT_PATH}`. On the docker runtime `env.sh` re-points both at the `DOCKER_*` values. Edit `LOCAL_*` / `DOCKER_*` instead of these.
+
+### `FOLDSEEK_EXEC` / `RF3_EXEC_PATH` / `SC_EXEC` / `MMSEQS_EXEC` / `DSSP_EXEC` / `TMOL_PATH`
+
+- Active tool binaries; `env.sh` resolves them to `${UV_*}` or `${DOCKER_*}` per runtime. Edit the prefix vars if you have a non-standard install (e.g. system-wide `foldseek` at `/usr/local/bin/foldseek` instead of `.venv/bin/foldseek`).
+- Used by: `complexa evaluate` (foldseek for diversity; mmseqs for sequence clustering; sc for interface metrics; dssp for secondary structure; tmol for force-field metrics).
 - **Failure mode if path is wrong**: the tool is silently skipped (treated as a warning in `complexa validate evaluate`), and the corresponding metric column is missing from the result CSV.
 
-### `AF2_DIR` / `ESM_DIR` / `ESMFOLD_DIR` / `RF3_DIR` / `RF3_CKPT_PATH`
+### `AF2_DIR` / `ESM_DIR` / `RF3_DIR` / `RF3_CKPT_PATH`
 
-- **Auto-managed by `complexa init`, but you must point them at real weight dirs for evaluation/reward to work.**
-- Derived from `${LOCAL_CODE_PATH}/community_models/ckpts/...`. After `complexa download --all` or `complexa download --af2`, the directories under `community_models/ckpts/` are populated.
+- **Not auto-managed** — `complexa init` never writes these; they are static `${...}` derivations in `.env_example:69-72` and are absent from the `env.sh` re-export list. Edit them here if your weights live elsewhere. (There is no `ESMFOLD_DIR` key anywhere in the repo.)
+- Derived from `${COMMUNITY_MODELS_PATH}/ckpts/...`. After `complexa download --all` or `complexa download --af2`, the directories under `community_models/ckpts/` are populated.
 - Read by: reward models (`AF2RewardModel`, `RF3RewardRunner`) and evaluation folding (colabdesign / rf3 backends).
 - **Failure mode if wrong**: `complexa validate evaluate` reports `AF2 weights: Directory not found` or `RF3 checkpoint: File not found`. Generation can still run without these; only reward and refolding break.
 
@@ -162,7 +178,7 @@ them manually will be overwritten the next time `complexa init` runs (without
 
 ### `UV_VENV` / `UV_*_EXEC` / `DOCKER_*_EXEC`
 
-- Per-runtime tool-path families. `complexa init` selects which family the active `FOLDSEEK_EXEC` etc. point at. Edit the *family member* (e.g. `UV_FOLDSEEK_EXEC`) only if your local install lives somewhere unusual.
+- Per-runtime tool-path families, hand-edited only. `complexa init <uv|docker>` reads them to decide what the active `FOLDSEEK_EXEC` etc. resolve to in `env.sh`, but it never rewrites the family members themselves. Edit the member (e.g. `UV_FOLDSEEK_EXEC`) if your local install lives somewhere unusual.
 
 ### `DOCKER_REPO_PATH` / `DOCKER_DATA_PATH` / `DOCKER_PYTHONPATH` / `DOCKER_CHECKPOINT_PATH` / `DOCKER_CACHE_DIR` / `DOCKER_HF_HOME` / `DOCKER_HF_HUB_CACHE`
 
@@ -174,7 +190,7 @@ them manually will be overwritten the next time `complexa init` runs (without
 
 From `src/proteinfoundation/cli/validate.py:validate_env`:
 
-1. `.env` file exists in CWD (or any parent up to the repo root).
+1. `.env` file exists **in the current working directory** — `validate.py:254` is a bare `Path(".env")`, with no parent walk. (`complexa init` *does* walk parents, but only to find `.env_example`.)
 2. `DATA_PATH` env var is set and resolves to an existing directory.
 
 That is the full check. It does not validate ckpts, tool binaries, or HF

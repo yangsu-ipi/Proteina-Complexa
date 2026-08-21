@@ -32,7 +32,9 @@ per-design success CSV.
 - Ligand binder design for small-molecule targets (RF3 reward + RF3 refold).
 - AME motif scaffolding with ligand context (motif + ligand features, RF3).
 - Search-based optimization: single-pass, best-of-n, beam-search, fk-steering, mcts.
-- Refold backends: ColabDesign (AF2), RF3, Boltz2, ESMFold (fast iteration).
+- Refold backends: ColabDesign (AF2) and RF3 — `metric.binder_folding_method`
+  accepts only `colabdesign` or a name containing `rf3`; anything else raises
+  `ValueError` (`binder_eval.py:96-116`).
 - Pass-rate + diversity analysis with per-`result_type` thresholds.
 
 ## Step 1: Pre-flight
@@ -45,16 +47,21 @@ binaries. Bail early if the host cannot run the chosen pipeline.
 bash .claude/skills/_shared/scripts/preflight.sh
 ```
 
-Read `./complexa_setup/preflight.json` and bail if any of these are missing for
-the chosen pipeline:
+Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
+`--out`) and bail if any of these are missing for the chosen pipeline:
 
 - `gpu.available: false` -> all pipelines fail.
 - `gpu.vram_gb < 40` -> generation OOMs at default `batch_size: 16`; lower to 8.
-- `ckpts.complexa[.ckpt]` -> required for protein binder.
-- `ckpts.complexa_ligand[.ckpt]` -> required for ligand binder.
-- `ckpts.complexa_ame[.ckpt]` -> required for AME.
-- `env.AF2_DIR` missing -> protein binder default eval (`colabdesign`) fails.
-- `env.RF3_CKPT_PATH` or `env.RF3_EXEC_PATH` missing -> ligand binder / AME default eval (`rf3_latest`) fails.
+- `checkpoints["complexa.ckpt"].exists` -> required for protein binder.
+- `checkpoints["complexa_ligand.ckpt"].exists` -> required for ligand binder.
+- `checkpoints["complexa_ame.ckpt"].exists` -> required for AME.
+- `community_models.AF2_DIR.exists` false -> protein binder default eval (`colabdesign`) fails.
+- `community_models.RF3_CKPT_PATH.exists` or `tools.rf3.exists` false -> ligand binder / AME default eval (`rf3_latest`) fails.
+
+`checkpoints` is a top-level object keyed by full filename (`preflight.sh:98-113`),
+and `env` carries only `.env_loaded`, `.env_path`, `missing_required`,
+`LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`, `CKPT_PATH` (`:136-138`) — the AF2/RF3
+paths are **not** under `env`.
 
 If a ckpt is missing, point at `complexa-setup` and have the user run
 `complexa download --complexa-<variant>` first.
@@ -145,24 +152,29 @@ to sensible production settings if the user has no preference.
 - **Search algorithm** — default to `beam-search` with `beam_width=8` and
   `n_branch=4` for production. Use `single-pass` for a quick smoke test.
 - **Evaluation refold backend** — protein binder defaults to `colabdesign`
-  (AF2); ligand/AME default to `rf3_latest`. Use `esmfold` for fast iteration
-  (worse but seconds per sample).
+  (AF2); ligand/AME default to `rf3_latest`. Those are the only two accepted
+  families — `colabdesign` is the only AF2 path, and there is no cheap
+  alternative backend. To iterate faster, keep the default and lower
+  `++metric.num_redesign_seqs`, `++generation.dataloader.batch_size`, or
+  `++eval_njobs` instead.
 
 ## Step 4: Validate
 
-Validate before running. This is cheap (seconds) and catches missing ckpts,
-missing env vars, unknown override keys, and missing target entries — all of
-which would otherwise abort the pipeline mid-evaluation after hours of
-generation.
+Validate before running. This is cheap (seconds) and catches missing ckpts and
+missing env vars — either of which would otherwise abort the pipeline
+mid-evaluation after hours of generation. It does **not** validate override
+keys; there is no config-key checking in `validate.py`.
+
+`complexa validate` takes no Hydra overrides — its subparser has only `type`,
+`config`, and `--target` (`cli_runner.py:1296-1318`), so appending `++...`
+aborts with `unrecognized arguments`. Validate the config as shipped:
 
 ```bash
-complexa validate design configs/search_binder_local_pipeline.yaml \
-    ++generation.task_name=02_PDL1 \
-    ++metric.binder_folding_method=colabdesign
+complexa validate design configs/search_binder_local_pipeline.yaml
 ```
 
-The validator returns non-zero on failure and prints a pass/fail report.
-Re-run the command with the suggested overrides until it returns clean.
+The validator returns non-zero on failure and prints a pass/fail report. Fix
+the reported ckpt / env problems and re-run until it returns clean.
 
 ## Step 5: Run the pipeline
 
@@ -239,20 +251,36 @@ designs, colabdesign eval) is ~30–120 minutes on a single A100/H100.
 Outputs land in two directories. Surface both:
 
 ```bash
-ls ./inference/${CONFIG_STEM}_${TASK}_*${RUN_NAME}/   # generated PDBs + filter
-ls ./evaluation_results/${RUN_NAME}/                  # per-design CSV + analysis
+ls ./inference/${CONFIG_STEM}_${TASK}_*${RUN_NAME}/            # generated PDBs + filter
+ls ./evaluation_results/${CONFIG_STEM}_${TASK}_${RUN_NAME}/    # per-design CSV + analysis
 ```
+
+The results dir is `./evaluation_results/{config_name}_{task_name}`
+(`evaluate.py:756`) with `_{run_name}` appended when `run_name` is set
+(`:766-767`) — it is never just `./evaluation_results/{run_name}`.
 
 Read the combined results CSV and summarize:
 
 ```bash
-ls ./evaluation_results/*/binder_results_*_combined.csv
-ls ./evaluation_results/*/motif_binder_results_*_combined.csv  # AME
-ls ./evaluation_results/*/res_filter_*_pass_*.csv              # success rate
-ls ./evaluation_results/*/res_div_foldseek_*.csv               # FoldSeek diversity
+ls ./evaluation_results/*/RAW_protein_binder_results_*_combined.csv       # combined
+ls ./evaluation_results/*/RAW_motif_ligand_binder_results_*_combined.csv  # AME combined
+ls ./evaluation_results/*/binder_results_*_*.csv                         # per-job (evaluate)
+ls ./evaluation_results/*/filter_results/res_filter_*_pass_*.csv          # success rate
+ls ./evaluation_results/*/diversity/res_div_foldseek_*.csv                # FoldSeek diversity
 ```
 
-Pull the success rate from `res_filter_binder_pass_*.csv`, the per-design
+The only combined CSV is `RAW_{result_type}_results_{config_name}_combined.csv`
+(`analyze.py:3036`); `binder_results_{config_name}_{job_id}.csv`
+(`evaluate.py:881`) is the per-job file written by evaluate and is never
+`_combined`. Note also that analyze's `organize_results()`
+(`analyze.py:2812-2855`) has already moved `res_filter_*` into
+`filter_results/`, `res_div_*` into `diversity/`, and `clusters_*` into
+`clusters/` by the time you look — top-level globs match nothing. AME's
+`res_filter_motif_binder_*` lands in `motif_binder_metrics/` instead.
+
+Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
+— ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
+`binder_analysis.py:548`), the per-design
 metrics (interface pAE, pLDDT, scRMSD) from the combined CSV, and FoldSeek
 TM-score diversity from `res_div_foldseek_*.csv`. Report top-N designs by
 i_pAE (protein binder) or min_ipAE (ligand binder).
@@ -260,11 +288,15 @@ i_pAE (protein binder) or min_ipAE (ligand binder).
 ## Step 7: Emit manifest
 
 Drop a JSON manifest beside the results so the run is replayable. The shared
-helper captures the command, config, git SHA, and pointers to the result CSVs.
+helper captures the command, git SHA, and pointers to the result CSVs. Its
+`config` and `checkpoints` fields come out `null`: it reads
+`<output_dir>/.hydra/config.yaml` (`write_manifest.py:79-80`), and no pipeline
+writes `.hydra/` under the output dir — `search_binder_local_pipeline.yaml:37-39`
+points `hydra.run.dir` at `./logs/hydra_outputs/...`.
 
 ```bash
 python3 .claude/skills/_shared/scripts/write_manifest.py \
-    --output-dir ./evaluation_results/${RUN_NAME} \
+    --output-dir ./evaluation_results/${CONFIG_STEM}_${TASK}_${RUN_NAME} \
     --command "complexa design configs/search_binder_local_pipeline.yaml ++run_name=${RUN_NAME} ++generation.task_name=${TASK}" \
     --skill complexa-design \
     --out ./run_manifest.json
@@ -280,15 +312,32 @@ default) is in [reference/overrides.md](reference/overrides.md).
 | Override | Default | What it controls |
 |----------|---------|------------------|
 | `++generation.task_name=<name>` | (per config) | Which target / AME task to design for |
-| `++run_name=<str>` | (config stem) | Output dir suffix and CSV tag |
+| `++run_name=<str>` | the config's `run_name:` field (e.g. `search_binder_local`; **not** the config stem `search_binder_local_pipeline`) | Output dir suffix and CSV tag |
 | `++generation.search.algorithm=beam-search` | `best-of-n` (binder/ligand), `single-pass` (AME) | Search strategy |
 | `++generation.search.beam_search.beam_width=8` | `4` | Beam-search width (more = better designs, slower) |
 | `++generation.args.nsteps=200` | `400` | Diffusion steps (fewer = faster, lower quality) |
 | `++generation.dataloader.batch_size=8` | `16` (binder/ligand/AME) | Drop to 8 on a 40GB GPU |
 | `++generation.filter.filter_samples_limit=500` | `1000` | Top-N samples to keep after filtering |
-| `++metric.binder_folding_method=esmfold` | `colabdesign` (binder), `rf3_latest` (ligand/AME) | Evaluation refold backend |
-| `++metric.num_redesign_seqs=8` | `2` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
-| `++aggregation.success_thresholds.i_pAE.threshold=10.0` | `7.0` (protein binder) | Loosen / tighten success criteria |
+| `++metric.binder_folding_method=rf3_latest` | `colabdesign` (binder), `rf3_latest` (ligand/AME) | Evaluation refold backend — only `colabdesign` or an `rf3*` name is accepted |
+| `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:50-51` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
+| `aggregation.success_thresholds` (full dict, see below) | `i_pAE*31<=7.0`, `pLDDT>=0.9`, `scRMSD_ca<1.5` (protein binder) | Loosen / tighten success criteria |
+
+> **Never override `success_thresholds` partially.** `binder_analysis.py:317-318`
+> falls back to the defaults only when the key is *entirely absent*, so
+> `++aggregation.success_thresholds.i_pAE.threshold=10.0` replaces the whole
+> dict — dropping the `pLDDT` and `scRMSD_ca` criteria — and
+> `parse_threshold_spec` (`analysis_utils.py:124-129`) then defaults `scale` to
+> `1.0`, comparing a 0–1 column against `10.0`. Every sample passes and the
+> reported success rate becomes 100%. Supply the complete dict instead (note the
+> key is `scRMSD_ca`, not `scRMSD`):
+>
+> ```yaml
+> aggregation:
+>   success_thresholds:
+>     i_pAE:     {threshold: 10.0, op: "<=", scale: 31.0, column_prefix: complex}
+>     pLDDT:     {threshold: 0.9,  op: ">=", scale: 1.0,  column_prefix: complex}
+>     scRMSD_ca: {threshold: 1.5,  op: "<",  scale: 1.0,  column_prefix: binder}
+> ```
 
 ## Hardware requirements
 
@@ -304,7 +353,6 @@ Typical wall-clock for 100 designs, `beam_width=8`, default `nsteps=400`:
 - Protein binder + colabdesign refold: ~60–120 min on 1x A100/H100.
 - Ligand binder + RF3 refold: ~90–180 min (RF3 dominates).
 - AME + RF3 refold: ~120–240 min.
-- Any pipeline + ESMFold refold: ~30–60 min (fast iteration).
 
 Bumping `gen_njobs=2` and `eval_njobs=2` halves wall-clock on a 2-GPU host. See
 `.claude/skills/_shared/reference/hardware.md` for per-pipeline VRAM tables.
@@ -315,10 +363,10 @@ Bumping `gen_njobs=2` and `eval_njobs=2` halves wall-clock on a 2-GPU host. See
 |---------|-------|-----|
 | `CUDA out of memory` in generate | `batch_size: 16` too big on 40GB GPU | `++generation.dataloader.batch_size=8` |
 | `CUDA out of memory` in evaluate | AF2 / RF3 batched too aggressively | `++eval_njobs=1` and `++metric.num_redesign_seqs=2` |
-| `InterpolationKeyError: AF2_DIR` | colabdesign eval but `.env` does not set `AF2_DIR` | Set `AF2_DIR` in `.env` or `++metric.binder_folding_method=esmfold` |
+| `InterpolationKeyError: AF2_DIR` | colabdesign eval but `.env` does not set `AF2_DIR` | Set `AF2_DIR` in `.env` — `colabdesign` is the only AF2 path, there is no cheaper backend to fall back to |
 | `InterpolationKeyError: RF3_CKPT_PATH` | RF3 eval but RF3 not installed | `complexa download --all` or switch eval backend |
 | `KeyError: 'task_name' not in target_dict_cfg` | Target not in `targets_dict.yaml` / `ligand_targets_dict.yaml` / `ame_dict_v2.yaml` | Use `complexa-target` skill to add it |
-| 0 designs pass success thresholds | Defaults too strict for this target | Loosen via `++aggregation.success_thresholds.*` |
+| 0 designs pass success thresholds | Defaults too strict for this target | Loosen by supplying the **complete** `aggregation.success_thresholds` dict (a partial override silently drops the other criteria) |
 
 For the full list (chain-ID mismatches, hotspot residues, ligand residue
 renaming for RF3, missing inverse-folding models, etc.) see
