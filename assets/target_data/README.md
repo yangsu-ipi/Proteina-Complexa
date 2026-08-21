@@ -4,6 +4,8 @@ This directory contains PDB files used as design targets, organized by task type
 
 The pipeline resolves target PDBs via `$DATA_PATH/target_data/<source>/<target_filename>.pdb`, so place your files accordingly or use an explicit `target_path` in the config.
 
+> **Adding your own target?** See [`docs/binder-target-setup/`](../../docs/binder-target-setup/) for the end-to-end workflow: a self-contained one-file-per-target config, PDB preparation (heteroatoms, residue numbering, `.cif` vs `.pdb`), and the setup failures that do not raise an error. [`scripts/check_target_pdb.py`](../../docs/binder-target-setup/scripts/check_target_pdb.py) preflights a structure against the config values you plan to use — `complexa validate target` never opens the PDB, so it cannot catch a numbering or hotspot mismatch.
+
 ## Directory Structure
 
 ```
