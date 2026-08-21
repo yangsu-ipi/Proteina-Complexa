@@ -16,12 +16,13 @@ When Claude Code is invoked inside this repo (`cd Proteina-Complexa && claude`),
 
 ## Skill catalog
 
-All five skills live at [`.claude/skills/`](../.claude/skills/). The README in that directory has the full "pipeline cheat sheet" and "primary tool per skill" table; the catalog below is the one-line index.
+All six skills live at [`.claude/skills/`](../.claude/skills/). The README in that directory has the full "pipeline cheat sheet" and "primary tool per skill" table; the catalog below is the one-line index.
 
 | Skill | What it drives | When to invoke |
 |---|---|---|
 | [`complexa-setup`](../.claude/skills/complexa-setup/SKILL.md) | `complexa init`, `complexa download`, `complexa validate env` | Fresh clone, configuring `.env`, downloading model weights |
 | [`complexa-target`](../.claude/skills/complexa-target/SKILL.md) | `complexa target add/list/show/validate` + direct edits to `configs/targets/{,ligand_}targets_dict.yaml` | Registering a new protein or ligand design target |
+| [`complexa-target-setup`](../.claude/skills/complexa-target-setup/SKILL.md) | A self-contained per-target `pipeline.yaml`, the atomworks mirror env vars, and [`docs/binder-target-setup/scripts/`](binder-target-setup/scripts/) | Getting a raw PDB entry to a running pipeline: `Error locating target` / `collate_fn` failures, `CCD_MIRROR_PATH`, target-PDB cleaning, hotspots silently ignored |
 | [`complexa-design`](../.claude/skills/complexa-design/SKILL.md) | `complexa design <pipeline>` for all three pipelines (protein binder, ligand binder, AME) | End-to-end design run: generate → filter → evaluate → analyze |
 | [`complexa-evaluate-pdbs`](../.claude/skills/complexa-evaluate-pdbs/SKILL.md) | `complexa analysis configs/evaluate_*_from_pdb_dir.yaml ++sample_storage_path=<dir>` | Score an existing PDB directory with AF2 / RF3 / ESMFold (handy for third-party designs from BindCraft, RFdiffusion, etc.) |
 | [`complexa-sweep`](../.claude/skills/complexa-sweep/SKILL.md) | [`script_utils/generate_inference_configs.py`](../script_utils/generate_inference_configs.py) + a `complexa design` loop over the generated configs | Cartesian-product hyperparameter sweeps (beam width, nsteps, reward weights, …) |
@@ -36,7 +37,7 @@ Shared helpers live under [`.claude/skills/_shared/`](../.claude/skills/_shared/
 
 ## Using them
 
-If you're running the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) from this repo, you're already set — there is nothing to install. To verify that Claude Code sees the skills, ask it `list available skills` from a session inside the repo; the five `complexa-*` names should appear.
+If you're running the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) from this repo, you're already set — there is nothing to install. To verify that Claude Code sees the skills, ask it `list available skills` from a session inside the repo; the six `complexa-*` names should appear.
 
 For a quick "is this working" sanity check from inside a Claude Code session:
 
@@ -46,7 +47,9 @@ For a quick "is this working" sanity check from inside a Claude Code session:
 
 Claude should respond by loading the skill body and summarising it (instead of grepping configs from scratch).
 
-If you are not using Claude Code, the skill bodies are still useful as standalone documentation — they cite specific source files in this repo and give worked examples for every common invocation. Read them top-down in this order: `complexa-setup` → `complexa-target` → `complexa-design` → `complexa-evaluate-pdbs` → `complexa-sweep`.
+If you are not using Claude Code, the skill bodies are still useful as standalone documentation — they cite specific source files in this repo and give worked examples for every common invocation. Read them top-down in this order: `complexa-setup` → `complexa-target` → `complexa-target-setup` → `complexa-design` → `complexa-evaluate-pdbs` → `complexa-sweep`.
+
+`complexa-target-setup` keeps its substantive content in [`docs/binder-target-setup/`](binder-target-setup/) rather than a skill-local `reference/`, so the Codex slash command at [`.codex/prompts/complexa-target-setup.md`](../.codex/prompts/complexa-target-setup.md) can cite the same files. Edit the shared file, not one of the two entry points.
 
 ## Authoring new skills
 

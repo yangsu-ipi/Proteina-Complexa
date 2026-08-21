@@ -1,6 +1,6 @@
 # Proteina-Complexa Skills
 
-Five project-local Claude Code skills covering setup, target configuration, design, evaluation, and sweeps. Each skill picks the cheapest tool for its job — the `complexa` CLI where it adds real value (pipeline orchestration, weight downloads, Hydra-defaults validation), and direct file edits / Python module calls where the CLI would just be a thin wrapper.
+Six project-local Claude Code skills covering setup, target configuration, target setup and troubleshooting, design, evaluation, and sweeps. Each skill picks the cheapest tool for its job — the `complexa` CLI where it adds real value (pipeline orchestration, weight downloads, Hydra-defaults validation), and direct file edits / Python module calls where the CLI would just be a thin wrapper.
 
 ## The three design pipelines
 
@@ -25,6 +25,7 @@ inside each `SKILL.md` for cases where they fit better.
 |---|---|---|---|
 | [`complexa-setup`](./complexa-setup/) | **File-edit** for `.env` + **CLI** (`complexa download`) for weights | `complexa init` is a `cp+sed` wrapper, fine either way; `complexa validate env` and `validate design` are the recommended CLI checks | Fresh checkout, verifying an existing install, configuring `.env` |
 | [`complexa-target`](./complexa-target/) | **File-edit** of `configs/targets/{,ligand_}targets_dict.yaml` | `complexa target add/list/show` (CLI is a thin YAML-append wrapper); `complexa validate target` still has unique value (Hydra defaults traversal) | Registering a new protein or ligand design target |
+| [`complexa-target-setup`](./complexa-target-setup/) | **File-edit** of one self-contained per-target `pipeline.yaml` + the `docs/binder-target-setup/scripts/` preflight | Shadow `targets/targets_dict.yaml`, a custom defaults entry, or `++target_dict_cfg.<task>.target_path=` | atomworks mirror env vars (`CCD_MIRROR_PATH`), `Error locating target` / `collate_fn` failures, target-PDB cleaning and numbering, silent setup failures |
 | [`complexa-design`](./complexa-design/) | **CLI** (`complexa design <pipeline>` orchestrates 4 stages with logging) | Direct `python -m proteinfoundation.{generate,filter,evaluate,analyze}` for single-stage debug | Protein binder, ligand binder, AME motif scaffolding |
 | [`complexa-evaluate-pdbs`](./complexa-evaluate-pdbs/) | **CLI** (`complexa analysis <eval_cfg>` chains evaluate→analyze) | Direct `python -m proteinfoundation.{evaluate,analyze}` for debugging | Re-folding / scoring an existing PDB directory with AF2 / RF3 / ESMFold |
 | [`complexa-sweep`](./complexa-sweep/) | **Python script** (`script_utils/generate_inference_configs.py`) + a `complexa design` loop | No CLI — `complexa design` does not accept `--sweeper`; generate configs first, then loop | Finding optimal beam_width, nsteps, reward weights, etc. |
