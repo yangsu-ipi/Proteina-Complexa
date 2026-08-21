@@ -92,7 +92,12 @@ tests/test_eval_generated/
 .rsync_lock/
 
 .pytest_tmp/
-.claude/
+# Ignore the user-level Claude config that appears here when $HOME is the repo,
+# but keep the project's own skills, which are tracked. Note: this must be
+# `.claude/*` and not `.claude/`; git will not descend into an excluded
+# directory, so a negation under `.claude/` could never re-include anything.
+.claude/*
+!.claude/skills/
 .dotnet/
 .gitconfig
 .gnupg/
