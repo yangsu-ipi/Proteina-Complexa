@@ -91,6 +91,44 @@ Or, without regenerating, force allexport at the call site — this works with e
 set -a; source /path/to/Proteina-Complexa/env.sh; set +a
 ```
 
+## conda environments use the `uv` runtime label
+
+`complexa init` accepts only `uv` or `docker` (`cli_runner.py:1130-1136`) — there is no
+`conda` choice. For a conda (or plain-venv) install, use **`uv`**, which is safe because:
+
+- The runtime argument only selects which prefix the tool vars read:
+  `export FOLDSEEK_EXEC="${UV_FOLDSEEK_EXEC:-$FOLDSEEK_EXEC}"`. Point the `UV_*` vars at
+  your conda prefix and they resolve correctly.
+- **Nothing branches on the value of `COMPLEXA_INIT`** — `cli_runner.py:1978` only tests
+  presence (`if not os.environ.get("COMPLEXA_INIT")`). A conda env labelled `uv` is fine.
+
+In `.env`, override `UV_VENV` and the tool vars follow (`.env_example:79-87`):
+
+```bash
+UV_VENV=/path/to/miniforge3/envs/proteina-complexa
+UV_FOLDSEEK_EXEC=${UV_VENV}/bin/foldseek
+UV_MMSEQS_EXEC=${UV_VENV}/bin/mmseqs
+UV_TMOL_PATH=${UV_VENV}/lib/python3.12/site-packages/tmol
+```
+
+`UV_SC_EXEC` and `UV_DSSP_EXEC` default to `${LOCAL_CODE_PATH}/env/docker/internal/{sc,dssp}`
+— docker-internal paths that do not exist in a conda install. They only matter for metrics
+that need `sc`/`dssp`; `preflight.sh` reports them as missing either way, and the default
+gate (`foldseek` + `mmseqs`) does not require them.
+
+Verified end-to-end with the patched generator against a conda-style prefix: all path
+variables exported, tool vars resolving into the conda `bin/`, and `CONDA_PREFIX` /
+`CONDA_DEFAULT_ENV` untouched. The `set -a` mechanism is plain bash allexport and is
+independent of the Python environment manager.
+
+Order matters slightly: `conda activate` **before** sourcing `env.sh`, and keep the
+activation *outside* the `set -a` block — otherwise conda's own internals get exported too
+(harmless, but noisy in `env`).
+
+> Known cosmetic gap: `preflight.sh` reads `COMPLEXA_RUNTIME` (`:42`, `:50`, `:151`) but
+> `env.sh` exports `COMPLEXA_INIT`, so `complexa_runtime` in `preflight.json` is always
+> `""`. Diagnostic only — nothing depends on it.
+
 ## Running from outside the repo (SLURM, campaign directories)
 
 ```bash

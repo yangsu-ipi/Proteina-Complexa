@@ -17,7 +17,8 @@ description: >
   "missing required environment keys", "LOCAL_CODE_PATH not set", "CKPT_PATH empty",
   "missing checkpoint but the file is there", "slurm job can't find .env",
   "where does complexa look for .env", "sourced env.sh but it didn't work",
-  "environment not initialized", "COMPLEXA_INIT", batch/SLURM campaign directories —
+  "environment not initialized", "COMPLEXA_INIT", "conda env instead of uv",
+  "complexa init has no conda option", batch/SLURM campaign directories —
   and why `complexa validate target` passes on a broken target. This is the only skill
   that owns `.env` discovery and the atomworks mirror environment variables,
   self-contained per-target directories, and target-PDB preparation for protein-binder
@@ -40,16 +41,12 @@ substantive content there rather than duplicating it here.
 
 ## What this skill enables
 
-- Decoding `Error locating target '…gen_dataset.collate_fn'` — a masked lazy-import
-  failure, usually an invalid `CCD_MIRROR_PATH`.
-- Setting `CCD_MIRROR_PATH` / `PDB_MIRROR_PATH` correctly, and building either mirror when
-  one is genuinely wanted (neither is required, and `complexa download` does not fetch them).
-- Defining a target in **one self-contained YAML file** next to its own data, plus the
-  three alternatives and when each is right.
-- Preflighting a target PDB: in-range heteroatoms, residue numbering, gaps, hotspot
-  resolution, `.cif` vs `.pdb` numbering divergence.
-- Recognising the silent-failure modes: shadow-filename fallback, dropped hotspots,
-  under-selecting contigs, git-ignored target PDBs.
+- Decoding `Error locating target '…collate_fn'` — a masked lazy-import failure.
+- Getting the environment right from a batch job or campaign dir outside the repo.
+- Setting the atomworks mirror vars, and building either mirror if genuinely wanted.
+- Defining a target in **one self-contained YAML file**, plus three alternatives.
+- Preflighting a target PDB: heteroatoms, numbering, gaps, hotspot resolution.
+- Recognising the silent-failure modes, none of which raise.
 
 ## Step 1: Preflight
 
@@ -95,6 +92,11 @@ If the user reports `missing required environment keys: ['LOCAL_CODE_PATH',
 'LOCAL_DATA_PATH', 'CKPT_PATH']` alongside missing checkpoints and `AF2_DIR`/`ESM_DIR`,
 that is this one bug, not five — and the pipeline itself would have run fine, because the
 stage modules find `.env` by walking up from their own module file.
+
+**conda installs use the `uv` label.** `complexa init` accepts only `uv` or `docker`
+(`cli_runner.py:1130-1136`); nothing branches on the value of `COMPLEXA_INIT`
+(`cli_runner.py:1978` tests presence only), so point `UV_VENV` and the `UV_*` tool vars at
+the conda prefix and use `uv`. Do not tell the user conda is unsupported.
 
 ## Step 2: Fix the atomworks env vars
 
