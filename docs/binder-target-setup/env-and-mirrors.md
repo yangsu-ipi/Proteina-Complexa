@@ -17,16 +17,22 @@ where `.env` lives — which is why a job can pass one check and fail another.
 
 ## A. cwd-only: `./.env`, no search
 
-| Site | Code |
-|---|---|
-| `.claude/skills/_shared/scripts/preflight.sh:33` | `ENV_FILE="$PWD/.env"` |
-| `cli/validate.py:139` (`load_env_config`) | `load_dotenv(Path(".env"))` |
-| `cli/validate.py:254`, `cli_runner.py:1691` | `Path(".env")` existence check |
+| Site | Code | Falls back to the live environment? |
+|---|---|---|
+| `.claude/skills/_shared/scripts/preflight.sh:33` | `ENV_FILE="$PWD/.env"` | yes (`:49-53`) |
+| `cli/validate.py:137` (`load_env_config`) | `load_dotenv(Path(".env"))`, then reads `os.environ` | yes |
+| `cli/validate.py:250` (`validate_env`) | reports whether `./.env` exists; **keys on the variables** | yes |
+| `cli_runner.py:1691` (`complexa init`) | `Path(".env")` — writes here | no |
 
-No upward walk, no repo-root fallback. Note `validate.py` passes an **explicit** path,
-which suppresses python-dotenv's own search. `preflight.sh` does fall through to the live
-environment for keys the file did not provide (`preflight.sh:49-53`) — so exported
-variables rescue it, but a `.env` sitting in the repo does not.
+None of these walks up the tree or falls back to the repo, so **a `.env` sitting in the
+install is invisible to all of them** — exported variables are what rescue them. Note
+`validate.py` passes an **explicit** path to `load_dotenv`, which suppresses
+python-dotenv's own search (contrast mechanism B below).
+
+`validate_env` used to *fail* on a missing `./.env` and return early, which no exported
+environment could satisfy. It now keys on the variables instead — see
+[`troubleshooting.md`](troubleshooting.md#complexa-validate-design-fails-on-env-and-target_data-from-a-campaign-directory)
+for the before/after and the workaround for older installs.
 
 ## B. upward search from the module file
 

@@ -229,7 +229,7 @@ Three things worth telling the user:
   numbering. Choosing a format is a renumbering decision.
 
 `complexa validate target` will not catch any of this: it checks the file exists and echoes
-your config back, never opening the PDB (`cli/validate.py:370-485`). Do not present it as a
+your config back, never opening the PDB (`cli/validate.py:379-503`). Do not present it as a
 check that passed.
 
 AME targets have a genuine mandatory checklist — defer to "Preparing AME Target PDBs" in
