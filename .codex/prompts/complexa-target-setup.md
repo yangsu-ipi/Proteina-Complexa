@@ -68,6 +68,11 @@ together with missing checkpoints and `AF2_DIR`/`ESM_DIR` — while `foldseek`/`
 resolve — is this one bug, not five. The pipeline itself would have run: the stage modules
 find `.env` by walking up from their own module file.
 
+**conda installs use the `uv` label.** `complexa init` accepts only `uv` or `docker`
+(`cli_runner.py:1130-1136`), and nothing branches on the value of `COMPLEXA_INIT`
+(`cli_runner.py:1978` tests presence only). Point `UV_VENV` and the `UV_*` tool vars at the
+conda prefix and use `uv`. Conda is not unsupported — just unlabelled.
+
 ## Step 2 — Fix the atomworks env vars
 
 Set both empty unless real mirrors exist on disk:
