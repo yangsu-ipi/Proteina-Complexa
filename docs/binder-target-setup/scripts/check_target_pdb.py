@@ -3,7 +3,7 @@
 
 Checks the three things `complexa validate target` does not -- it confirms the file exists,
 then echoes your config back without ever opening it
-(`src/proteinfoundation/cli/validate.py:370-485`):
+(`src/proteinfoundation/cli/validate.py:379-503`):
 
   1. Heteroatoms inside the contig range. `AtomSelectionStack.from_contig` filters on
      (chain_id, res_id) only, with no polymer/hetero/element filter

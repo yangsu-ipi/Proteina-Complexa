@@ -262,7 +262,7 @@ recognized" in `.claude/skills/complexa-design/reference/troubleshooting.md`.
 
 Evaluate and analyze never read `target_dict_cfg` anyway. The only Python references in
 the package are a log filter (`utils/config_utils.py:9`), an analysis exclude list
-(`result_analysis/analysis_utils.py:55`), and `cli/validate.py:277`. Target and binder
+(`result_analysis/analysis_utils.py:55`), and `cli/validate.py:286`. Target and binder
 chain information reaches the later stages through the PDBs and manifests that `generate`
 writes.
 

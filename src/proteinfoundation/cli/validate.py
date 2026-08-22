@@ -248,28 +248,37 @@ def check_dir_exists(path: str | Path, name: str) -> ValidationResult:
 
 
 def validate_env() -> ValidationReport:
-    """Validate the .env file exists and has required variables."""
+    """Validate that the environment is configured.
+
+    Keys on the *variables*, not on a `.env` file in the current directory. A `.env`
+    next to the working directory is loaded when present, but `env.sh` exports the
+    same values from the install (`cli_runner._generate_env_sh`), so a correctly
+    configured job run from anywhere else — a campaign directory, a batch allocation —
+    is valid and must not be reported as a failure. This mirrors the fall-through in
+    `.claude/skills/_shared/scripts/preflight.sh`, which reads `$PWD/.env` and then
+    defers to the live environment for anything it did not supply.
+    """
     report = ValidationReport(validation_type="Environment")
 
     env_path = Path(".env")
-    if not env_path.exists():
-        report.add_fail(
-            ".env file",
-            "No .env file found in current directory",
-            fix_hint="Run 'complexa init' to create one",
-        )
-        return report
+    report.add_pass(
+        ".env file",
+        "Found" if env_path.exists() else "Not in cwd — using the process environment",
+    )
 
-    report.add_pass(".env file", "Found")
-
-    # Load env
+    # Loads ./.env when present; python-dotenv defaults to override=False, so this can
+    # never clobber values already exported by env.sh.
     env = load_env_config()
 
     # Check critical paths
     if env.get("DATA_PATH"):
         report.add(check_dir_exists(env["DATA_PATH"], "DATA_PATH"))
     else:
-        report.add_fail("DATA_PATH", "Not set in .env", fix_hint="Run 'complexa init'")
+        report.add_fail(
+            "DATA_PATH",
+            "Not set — no .env in the current directory and not exported",
+            fix_hint="source env.sh from the install, or run 'complexa init'",
+        )
 
     return report
 
@@ -388,9 +397,11 @@ def validate_target(
 
     report.add(check_dir_exists(data_path, "DATA_PATH"))
 
-    # Check target_data directory exists
-    target_data_dir = Path(data_path) / "target_data"
-    report.add(check_dir_exists(target_data_dir, "target_data directory"))
+    # NOTE: $DATA_PATH/target_data is *not* checked here. It is only one of the two ways
+    # a target PDB can resolve — an entry carrying an explicit `target_path` never touches
+    # it (mirroring the `oc.select` in configs/pipeline/binder/binder_generate.yaml). The
+    # check now lives in the fallback branch below, so the directory is required exactly
+    # when it is used and a self-contained campaign is not asked to create an empty one.
 
     # If config provided, extract target info
     if config_path and config_path.exists():
@@ -425,6 +436,12 @@ def validate_target(
                             filename = target_cfg.get("target_filename", "")
                             target_path = Path(data_path) / "target_data" / source / f"{filename}.pdb"
                             path_source = f"DATA_PATH/target_data/{source}/{filename}.pdb"
+                            # Only this branch depends on the shared target_data tree.
+                            report.add(
+                                check_dir_exists(
+                                    Path(data_path) / "target_data", "target_data directory"
+                                )
+                            )
 
                         # Report the path being checked
                         report.add_pass("Target path source", path_source)

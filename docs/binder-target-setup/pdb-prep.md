@@ -140,7 +140,7 @@ ligand-binder targets, and never protein-protein binders. Details in
 ## `complexa validate target` will not catch any of this
 
 It checks that the file **exists**, then echoes `target_input`, `hotspot_residues`, and
-`binder_length` back as pass lines (`src/proteinfoundation/cli/validate.py:370-485`). It
+`binder_length` back as pass lines (`src/proteinfoundation/cli/validate.py:379-503`). It
 never opens the PDB, so it cannot compare your config against the structure. Use the
 preflight below instead.
 

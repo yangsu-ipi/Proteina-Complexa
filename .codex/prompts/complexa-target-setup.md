@@ -31,7 +31,7 @@ mistake produces a run that completes and writes PDBs — just not the ones the 
 Do not report success on the basis of a clean exit. And do not present
 `complexa validate target` as a check that passed: it confirms the PDB *exists*, then
 echoes the config back without ever opening the file
-(`src/proteinfoundation/cli/validate.py:370-485`).
+(`src/proteinfoundation/cli/validate.py:379-503`).
 
 ## Step 1 — Preflight
 

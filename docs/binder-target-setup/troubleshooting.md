@@ -112,7 +112,7 @@ Full explanation, plus a SLURM template and a pre-run assertion, in
 which finds the repo's `.env` by walking up from the module file regardless of cwd or
 exports — so this failure is the *checks* disagreeing with the *pipeline*, not a broken
 environment. `complexa validate design` fails for the related-but-distinct reason that
-`load_env_config` reads `Path(".env")` from cwd only (`validate.py:139`).
+`load_env_config` reads `Path(".env")` from cwd only (`validate.py:137`).
 
 ## `missing checkpoint: complexa.ckpt` when the file is right there
 
@@ -169,35 +169,44 @@ so the next preflight tells the truth.
 
 …alongside passes for the checkpoints, `DATA_PATH`, the target PDB, and Foldseek.
 
-**Cause:** two unconditional checks that assume you run from the repo.
-`complexa validate design` fans out to all three sub-validators
-(`validate.py:777-804`: `validate_env()`, `validate_generate()`, `validate_evaluate()`).
+**Cause (fixed — update the repo).** Two checks asked the wrong question.
+`complexa validate design` fans out to all three sub-validators (`validate.py:794-823`:
+`validate_env()`, `validate_generate()`, `validate_evaluate()`), and two of them assumed
+the repo was the working directory:
 
-1. `validate_env` tests for the **file** in cwd and returns early
-   (`validate.py:254-261`). It does not consult the environment, so the `env.sh` exports do
-   not help — this is the one check that a correct environment cannot satisfy.
-2. `validate_target` checks `Path(data_path) / "target_data"` unconditionally
-   (`validate.py:391-393`), *before* resolving any target. An explicit `target_path` in your
-   pipeline YAML never gets a say, so the directory is required even when the campaign has
-   no use for it.
+1. `validate_env` tested for the `.env` **file** in cwd and returned early, never
+   consulting the environment — so `env.sh`'s exports could not satisfy it. It now keys on
+   the **variables**: `.env` in cwd is loaded when present (never overriding exports), and
+   only a genuinely unset `DATA_PATH` fails. Same fall-through `preflight.sh:49-53` uses.
+2. `validate_target` checked `$DATA_PATH/target_data` unconditionally, *before* resolving
+   any target. It is now checked only in the fallback branch that actually uses it, so an
+   entry with an explicit `target_path` no longer requires the shared tree — matching the
+   `oc.select` in `configs/pipeline/binder/binder_generate.yaml:33`.
 
-**Both are gate-only.** Nothing in generate/filter/evaluate/analyze reads either one —
-`validate_target` never even opens the PDB (see
-[`pdb-prep.md`](pdb-prep.md#complexa-validate-target-will-not-catch-any-of-this)).
+A real misconfiguration is still caught: nothing exported and no `.env` in cwd still fails
+on `DATA_PATH`, and a `source`/`target_filename` target with no `target_data` tree still
+fails on both the directory and the missing PDB.
 
-**Fix** — two one-liners:
+**Fix:** pull a Complexa containing those changes. Nothing needs creating in the campaign
+directory or the models tree.
+
+**On older installs**, work around it with two one-liners:
 
 ```bash
-ln -s "$COMPLEXA_REPO/.env" "$CAMPAIGN_DIR/.env"     # satisfies the cwd file check
-mkdir -p "$DATA_PATH/target_data"                     # existence-only; empty is fine
+printf '# empty — env comes from env.sh\n' > "$CAMPAIGN_DIR/.env"   # existence-only check
+mkdir -p "$DATA_PATH/target_data"                                   # existence-only; empty is fine
 ```
 
-The symlink is safe: `load_dotenv` defaults to `override=False`, so it cannot fight the
-exports `env.sh` already set, and it also flips `preflight.sh`'s `.env_loaded` to `true`.
+Prefer a stub over `ln -s "$COMPLEXA_REPO/.env"`: `.env` carries `HF_TOKEN`,
+`WANDB_API_KEY` and `GITLAB_TOKEN` (`.env_example:19-22`), and `cp -R`/`rsync` without `-l`
+dereferences symlinks — so archiving or syncing the campaign bundle would carry the
+credentials with it. A stub works because `load_env_config` only tests existence and then
+reads `os.environ` (`validate.py:137-154`), and `load_dotenv` defaults to
+`override=False`, so file content is irrelevant once `env.sh` is sourced.
 
-If you would rather not create either, make the step advisory —
-`complexa validate design "$CONFIG" || echo "WARN: validate reported issues"` — but prefer
-the one-liners so you keep the signal from the seven checks that do pass.
+**Both checks were gate-only** either way. Nothing in generate/filter/evaluate/analyze
+reads them, and `validate_target` never opens the PDB (see
+[`pdb-prep.md`](pdb-prep.md#complexa-validate-target-will-not-catch-any-of-this)).
 
 **Expect one warning that is not a problem:** `Shape complementarity (sc)` pointing at
 `$LOCAL_CODE_PATH/env/docker/internal/sc`. `UV_SC_EXEC` and `UV_DSSP_EXEC` default to
@@ -254,7 +263,7 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
 | `missing checkpoint` with a path ending `checkpoints/` | existing `.env` still says `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
 | `missing community model path: ESM_DIR` | ESM2 not downloaded — real asset gap, and `compute_esm_metrics` defaults true | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
-| `validate design`: no `.env` in cwd + missing `$DATA_PATH/target_data` | two unconditional checks that assume you run from the repo (`validate.py:254-261`, `:391-393`); neither is read by the pipeline | symlink `.env` into the campaign dir; `mkdir -p "$DATA_PATH/target_data"` |
+| `validate design`: no `.env` in cwd + missing `$DATA_PATH/target_data` | two checks that assumed the repo was cwd — **fixed**; `validate_env` now keys on variables and `target_data` is only required by the fallback branch | update the repo; on older installs use a stub `.env` + `mkdir -p` (not a symlink — it carries secrets) |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
 | `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |
 | A `++` key has no effect | `++` adds-or-overrides and never errors, so a typo is a no-op | see "Override key not recognized" in `complexa-design/reference/troubleshooting.md` |
