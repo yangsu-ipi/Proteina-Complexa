@@ -120,22 +120,27 @@ environment. `complexa validate design` fails for the related-but-distinct reaso
 while `LOCAL_CODE_PATH` / `LOCAL_DATA_PATH` / `CKPT_PATH` are all populated and
 `missing_required` is empty. The reported path ends in `checkpoints/`.
 
-**Cause:** `CKPT_PATH` derives from `LOCAL_CHECKPOINT_PATH`, which defaults to
-`${LOCAL_CODE_PATH}/checkpoints` (`.env_example:28`, `:108`) — but every downloader writes
-to **`ckpts/`** (`download_startup.sh:239`, and the same `./ckpts` in the ligand and AME
-download functions). The shipped pipeline configs agree with the downloaders
-(`ckpt_path: ./ckpts`). So `checkpoints/` is empty or absent even after a successful
-download. This is a pre-existing repo inconsistency, described under "Mismatch to fix by
-hand" in `.claude/skills/complexa-setup/reference/downloads.md`.
+**Cause:** `CKPT_PATH` derives from `LOCAL_CHECKPOINT_PATH` (`.env_example:108`), which
+used to default to `${LOCAL_CODE_PATH}/checkpoints` — while every downloader writes to
+**`ckpts/`** (`download_startup.sh:239`, and the same `./ckpts` in the ligand and AME
+functions). The destination is computed from the script's own location
+(`download_startup.sh:23-24` → `PROJECT_ROOT` → `cd`, then a relative `./ckpts`) and never
+from `.env`, so the two could not reconcile. The shipped configs side with the downloaders
+(`ckpt_path: ./ckpts`), as does `preflight.sh`'s own last-resort fallback
+(`preflight.sh:58`, `$LOCAL_CODE_PATH/ckpts`) — `.env_example` was the lone dissenter.
 
-**Fix** — one line in `.env`, then regenerate `env.sh`:
+The default is now `${LOCAL_CODE_PATH}/ckpts`, so fresh installs are correct. **An existing
+`.env` is not updated by that change** — fix it by hand, then regenerate `env.sh`:
 
 ```bash
 LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts
+complexa init <uv|docker> --force
 ```
 
-A symlink (`ln -s ckpts checkpoints` inside the repo) works too, but the `.env` edit is
-what the rest of the tooling expects.
+A symlink (`ln -s ckpts checkpoints`) also works, but the `.env` edit is what the rest of
+the tooling expects. Note this variable is also the docker bind-mount source
+(`docker-ops.sh:407-409`, `LOCAL_CHECKPOINT_PATH -> DOCKER_CHECKPOINT_PATH`), so the same
+correction fixes container runs, which were mounting an empty directory.
 
 **Check whether it actually blocks your run.** This is usually a *gate-only* failure: a
 pipeline YAML that sets `ckpt_path` / `autoencoder_ckpt_path` to absolute `.../ckpts` paths
@@ -197,7 +202,7 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | Run outputs committed by accident | `/inference` is root-anchored, so nested `inference/` is not ignored | keep target dirs outside the repo |
 | `import atomworks` fails but the build passed | `env/build_uv_env.sh:174` swallows the failure with `\|\| echo` | re-run the install without `\|\|` and read the error |
 | Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
-| `missing checkpoint` with a path ending `checkpoints/` | `LOCAL_CHECKPOINT_PATH` defaults to `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
+| `missing checkpoint` with a path ending `checkpoints/` | existing `.env` still says `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
 | `missing community model path: ESM_DIR` | ESM2 not downloaded — real asset gap, and `compute_esm_metrics` defaults true | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
 | `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |

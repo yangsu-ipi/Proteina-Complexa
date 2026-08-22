@@ -46,6 +46,7 @@ samples
 /data
 /checkpoints
 /ckpt
+/ckpts
 /tmp
 /store
 /store_keep

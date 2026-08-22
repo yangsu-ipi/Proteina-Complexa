@@ -175,7 +175,7 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 |---|---|---|
 | `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` succeeded | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a` |
 | `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:1974-1986`) | source `env.sh` from **bash** |
-| `missing checkpoint` but the file exists; path ends `checkpoints/` | `LOCAL_CHECKPOINT_PATH` defaults to `checkpoints/` (`.env_example:28`), downloaders write `ckpts/` (`download_startup.sh:239`); gate-only if the pipeline YAML sets `ckpt_path` absolutely | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts`, re-init |
+| `missing checkpoint` but the file exists; path ends `checkpoints/` | existing `.env` still says `checkpoints/`, downloaders write `ckpts/` (`download_startup.sh:239`); gate-only if the pipeline YAML sets `ckpt_path` absolutely | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts`, re-init |
 | `missing community model path: ESM_DIR` | ESM2 absent; not gate-only (`binder_evaluate.yaml:35`) | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually a bad `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"` or `HYDRA_FULL_ERROR=1` |
 | **Clean run, wrong target** (`1www_cropped.pdb`, chain X) | `task_name` unpinned → inherited `33_TrkA`, which exists in the shared 44 so nothing errors | pin it under `_self_`; check `task_name` + `pdb_path` in the log |
