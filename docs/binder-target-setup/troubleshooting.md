@@ -236,15 +236,16 @@ time. Silencing the gate this way makes the failure later and more expensive. Ga
 **Fix**, either:
 
 ```bash
-cd "$COMPLEXA_REPO" && complexa-download --esm2      # HF_TOKEN if rate-limited
+cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
 ```
 
-Note `complexa-download`, not `complexa download`. The CLI wrapper's argparse declares only
-`--complexa*`, `--all`, `--everything` and `--status` (`cli_runner.py:1069-1105`) and
-rejects the per-model flags before forwarding, even though the script accepts
-`--esm2 --af2 --pmpnn --ligmpnn --rf3`. The `complexa-download` console script
-(`pyproject.toml:64`) passes `sys.argv[1:]` straight through. `bash env/download_startup.sh
---esm2` also works.
+**On older installs `--esm2` is rejected.** The wrapper's argparse used to declare only
+`--complexa*`, `--all`, `--everything` and `--status`, so the per-model flags were refused
+before they could be forwarded — even though the script has always accepted them (the
+handler passes `sys.argv[2:]` verbatim). All five are now declared. If you hit
+`unrecognized arguments: --esm2`, either update the repo or bypass the wrapper:
+`complexa-download --esm2` (`pyproject.toml:64`, forwards `sys.argv[1:]`) or
+`bash env/download_startup.sh --esm2`.
 
 or skip the metric for this run:
 

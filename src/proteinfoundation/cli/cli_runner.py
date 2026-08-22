@@ -1091,6 +1091,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Download all community model weights (ProteinMPNN, LigandMPNN, AF2, ESM2, RF3)",
     )
+    # Per-model community flags. These are declared so argparse accepts them: the handler
+    # forwards sys.argv[2:] to env/download_startup.sh verbatim rather than reading the
+    # parsed values, so anything not declared here is rejected before it can be forwarded
+    # even though the script itself accepts it. Keep this set in sync with the case branches
+    # in download_startup.sh.
+    download_parser.add_argument(
+        "--pmpnn",
+        action="store_true",
+        help="Download ProteinMPNN weights",
+    )
+    download_parser.add_argument(
+        "--ligmpnn",
+        action="store_true",
+        help="Download LigandMPNN weights",
+    )
+    download_parser.add_argument(
+        "--af2",
+        action="store_true",
+        help="Download AlphaFold2 weights",
+    )
+    download_parser.add_argument(
+        "--esm2",
+        action="store_true",
+        help="Download ESM2 650M weights (requires HF_TOKEN if rate limited)",
+    )
+    download_parser.add_argument(
+        "--rf3",
+        action="store_true",
+        help="Download RoseTTAFold3 weights",
+    )
     download_parser.add_argument(
         "--everything",
         action="store_true",
