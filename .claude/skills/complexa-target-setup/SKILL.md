@@ -13,11 +13,16 @@ description: >
   "hydra searchpath", or "custom targets dict"; or asks to "clean my target PDB",
   "strip heteroatoms", "remove waters from my target", "why are my hotspots ignored",
   "hotspots not working", "my target came out empty", "renumber residues", or
-  "cif vs pdb numbering". Also covers why `complexa validate target` passes on a
-  broken target. This is the only skill that owns the atomworks mirror environment
-  variables, self-contained per-target directories, and target-PDB preparation for
-  protein-binder work; for the target *schema* itself defer to `complexa-target`, and
-  for pipeline knobs defer to `complexa-design`.
+  "cif vs pdb numbering". Also covers running Complexa from outside the repo —
+  "missing required environment keys", "LOCAL_CODE_PATH not set", "CKPT_PATH empty",
+  "missing checkpoint but the file is there", "slurm job can't find .env",
+  "where does complexa look for .env", "sourced env.sh but it didn't work",
+  "environment not initialized", "COMPLEXA_INIT", batch/SLURM campaign directories —
+  and why `complexa validate target` passes on a broken target. This is the only skill
+  that owns `.env` discovery and the atomworks mirror environment variables,
+  self-contained per-target directories, and target-PDB preparation for protein-binder
+  work; for `.env` *key meanings* defer to `complexa-setup`, for the target *schema*
+  defer to `complexa-target`, and for pipeline knobs defer to `complexa-design`.
 compatibility: "complexa CLI installed (pip install -e .); atomworks + biotite importable; bash 4+; no GPU needed for setup/preflight"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
@@ -61,6 +66,35 @@ env | grep -E 'CCD_MIRROR|PDB_MIRROR|LOCAL_MSA' || echo "unset (this is the good
 
 If any is set to a path that does not exist, go to Step 2 before anything else — it will
 break generation in a way that looks unrelated.
+
+## Step 1b: If running from outside the repo (SLURM, campaign dir)
+
+`.env` discovery is inconsistent — three mechanisms that disagree. Read
+[`env-and-mirrors.md`](../../../docs/binder-target-setup/env-and-mirrors.md#how-the-environment-is-discovered)
+before debugging any batch failure. The short version:
+
+```bash
+set -a; source "$COMPLEXA_REPO/env.sh"; set +a     # bash only, not zsh/sh
+```
+
+`env.sh` resolves `.env` next to itself, so it is cwd-independent — but older generated
+copies source `.env` without `set -a`, and `.env` has no `export` lines, so only
+`_TOOL_VARS` and `COMPLEXA_INIT` reach child processes. The `set -a` wrapper fixes that
+for any version; `complexa init <runtime> --force` regenerates a fixed one.
+
+Assert before spending GPU time — the tell-tale failure is tool binaries resolving while
+every path is empty:
+
+```bash
+for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH DATA_PATH AF2_DIR ESM_DIR COMPLEXA_INIT; do
+    printf '%-18s %s\n' "$k" "${!k:-<UNSET>}"
+done
+```
+
+If the user reports `missing required environment keys: ['LOCAL_CODE_PATH',
+'LOCAL_DATA_PATH', 'CKPT_PATH']` alongside missing checkpoints and `AF2_DIR`/`ESM_DIR`,
+that is this one bug, not five — and the pipeline itself would have run fine, because the
+stage modules find `.env` by walking up from their own module file.
 
 ## Step 2: Fix the atomworks env vars
 
@@ -234,6 +268,8 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or `complexa init <runtime> --force` |
+| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset — `env.sh` not sourced (`cli_runner.py:1971-1983`) | source `env.sh` from **bash** |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually invalid `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"`, or re-run with `HYDRA_FULL_ERROR=1` |
 | **Clean run, wrong target** (`1www_cropped.pdb`, chain X) | `generation.task_name` unpinned → inherited `33_TrkA`, which exists in the shared 44 so nothing errors | pin it in `_self_`; check `task_name` + `pdb_path` in the log |
 | `InterpolationKeyError: …33_TrkA.source` | same omission, but with a *replaced* dict | pin it in `_self_` |
