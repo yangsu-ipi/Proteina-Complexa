@@ -221,6 +221,48 @@ already spent the GPU time. `preflight.sh` reports both: `exists` keeps its orig
 path-existence meaning, `has_weights` additionally looks for the repo's own
 `models--org--name` snapshot under the cache root.
 
+**Gate disk on `cwd_free_gb`, not `free_gb`.** Two different filesystems answer two
+different questions, and `preflight.sh` now reports both:
+
+| Field | Filesystem | Answers |
+|---|---|---|
+| `ckpt_free_gb` (alias `free_gb`) | wherever `CKPT_PATH` lives — the install | room to **download** more weights |
+| `cwd_free_gb` | the working directory | room for **this run's outputs** |
+
+`./inference/…` (`generate.py:62`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
+campaign run writes nowhere near `CKPT_PATH`. Gating a design run on `free_gb` therefore
+measures the wrong volume — it can fail on a full install disk while the output volume is
+empty, or pass while the output volume is full.
+
+Size the requirement from the design count rather than a fixed number.
+`_shared/reference/hardware.md` puts protein-binder output at **~10–20 GB per 100 designs**,
+and `keep_folding_outputs: true` (the eval default) roughly doubles it:
+
+```python
+per_100 = 20                                  # GB, upper end of the empirical range
+factor  = 2 if metric.get("keep_folding_outputs", True) else 1
+need_gb = max(5, int(expected_designs / 100 * per_100 * factor))
+if disk.get("cwd_free_gb") is not None and disk["cwd_free_gb"] < need_gb:
+    failures.append(f"{disk['cwd_free_gb']} GB free at {disk['cwd']}; ~{need_gb} GB needed "
+                    f"for {expected_designs} designs")
+```
+
+A 1000-design run lands near **200–400 GB**, which is why a fixed 50 GB floor is both too
+strict for a smoke test and far too loose for production.
+
+### The pattern behind all three
+
+`preflight.sh` reports facts; the gate applies thresholds. Every gate failure in this
+document came from breaking that split in one of two ways:
+
+- **Measuring the wrong subject** — a `.env` file instead of the variables, `$DATA_PATH/target_data`
+  when the target came from `target_path`, the install filesystem instead of the output one.
+- **Measuring the wrong depth** — path existence instead of contents.
+
+When adding a probe: report the *narrowest true fact* about the *right subject*, name the
+field so the subject is unambiguous (`cwd_free_gb`, not `free_gb`), and leave the threshold
+to whoever knows the config.
+
 **Order matters.** Resolve the config *before* the gate runs, so a config that will not
 compose fails before you probe hardware and before the gate has nothing to read.
 

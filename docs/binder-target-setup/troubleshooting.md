@@ -261,6 +261,32 @@ on the compute node, mid-run.
 `RF3_CKPT_PATH` missing is harmless when `metric.binder_folding_method: colabdesign`; the
 default preflight gate does not require it.
 
+## `only N GB free near checkpoints; require at least 50 GB`
+
+**Symptom:** a gate rejects the run on disk space, while the volume the run will actually
+write to has plenty.
+
+**Cause:** the figure is free space at **`CKPT_PATH`** — the install — not at the working
+directory where `./inference/` and `./logs` land. Those are frequently different mounts
+(`/data/shared/tools/...` vs `/data/<user>/campaign/...`). Downloading weights eats the
+install volume and trips a gate that was never measuring the right thing.
+
+**Fix:** gate on `disk.cwd_free_gb`, which `preflight.sh` now reports alongside
+`ckpt_free_gb` (`free_gb` is retained as an alias for the latter). Size the threshold from
+the design count — see
+[`env-and-mirrors.md`](env-and-mirrors.md#gate-on-the-resolved-config-not-on-a-fixed-list).
+Check which mounts you actually have:
+
+```bash
+df -h "$CKPT_PATH" "$CAMPAIGN_DIR"
+```
+
+**Rough sizing** from `_shared/reference/hardware.md`: ~10–20 GB per 100 protein-binder
+designs, roughly doubled by `keep_folding_outputs: true` (the eval default). So an 8-design
+smoke test needs single-digit GB, while 1000 designs needs **200–400 GB** on the output
+volume. A fixed 50 GB floor is simultaneously too strict for the former and far too loose
+for the latter. `++metric.keep_folding_outputs=false` halves it.
+
 ## The silent-failure catalogue
 
 None of these raise. Each produces a run that completes and writes PDBs.
@@ -283,6 +309,7 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | `validate design`: no `.env` in cwd + missing `$DATA_PATH/target_data` | two checks that assumed the repo was cwd — **fixed**; `validate_env` now keys on variables and `target_data` is only required by the fallback branch | update the repo; on older installs use a stub `.env` + `mkdir -p` (not a symlink — it carries secrets) |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
 | `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |
+| Disk gate fails but the output volume is empty | `free_gb`/`ckpt_free_gb` measure the **install**, not where `./inference` lands | gate on `disk.cwd_free_gb`; size from the design count |
 | A `++` key has no effect | `++` adds-or-overrides and never errors, so a typo is a no-op | see "Override key not recognized" in `complexa-design/reference/troubleshooting.md` |
 
 ## Interpolation errors when defining a target inline

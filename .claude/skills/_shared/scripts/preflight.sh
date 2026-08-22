@@ -91,15 +91,28 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 # ---- Disk ----
-DISK_FREE="null"; DISK_TARGET="${V[CKPT_PATH]:-}"
-if [[ -n "$DISK_TARGET" ]]; then
-    DP="$DISK_TARGET"; [[ ! -d "$DP" ]] && DP="$(dirname -- "$DP" 2>/dev/null || echo /)"
-    if [[ -d "$DP" ]]; then
-        FREE_KB=$(df -P -k -- "$DP" 2>/dev/null | awk 'NR==2{print $4}')
-        [[ -n "${FREE_KB:-}" ]] && DISK_FREE=$(( FREE_KB / 1024 / 1024 ))
-    fi
-fi
-DISK_JSON=$(printf '{"ckpt_path":%s,"free_gb":%s}' "$(json_str "$DISK_TARGET")" "$DISK_FREE")
+# Two different questions, often two different filesystems:
+#   ckpt_*  free space where the weights live  -> headroom to DOWNLOAD more
+#   cwd_*   free space at the working directory -> headroom for this run's OUTPUTS, since
+#           ./inference and ./logs are cwd-relative (generate.py, cli_runner.py LOG_DIR)
+# A campaign run from its own directory writes outputs nowhere near CKPT_PATH, so gating a
+# design run on ckpt_free_gb asks the wrong question. Report both; let the caller choose.
+free_gb() {  # free_gb <path> -> integer GiB, or "null"
+    local p="$1" dp free_kb
+    [[ -z "$p" ]] && { printf 'null'; return; }
+    dp="$p"; [[ ! -d "$dp" ]] && dp="$(dirname -- "$dp" 2>/dev/null || echo /)"
+    [[ ! -d "$dp" ]] && { printf 'null'; return; }
+    free_kb=$(df -P -k -- "$dp" 2>/dev/null | awk 'NR==2{print $4}')
+    [[ -n "${free_kb:-}" ]] && printf '%s' $(( free_kb / 1024 / 1024 )) || printf 'null'
+}
+DISK_TARGET="${V[CKPT_PATH]:-}"
+DISK_CKPT_FREE=$(free_gb "$DISK_TARGET")
+DISK_CWD="$PWD"
+DISK_CWD_FREE=$(free_gb "$DISK_CWD")
+# "free_gb" is retained as an alias for ckpt_free_gb so existing gates keep working.
+DISK_JSON=$(printf '{"ckpt_path":%s,"ckpt_free_gb":%s,"cwd":%s,"cwd_free_gb":%s,"free_gb":%s}' \
+    "$(json_str "$DISK_TARGET")" "$DISK_CKPT_FREE" \
+    "$(json_str "$DISK_CWD")" "$DISK_CWD_FREE" "$DISK_CKPT_FREE")
 
 # ---- Checkpoints ----
 CKPT_ITEMS=()
