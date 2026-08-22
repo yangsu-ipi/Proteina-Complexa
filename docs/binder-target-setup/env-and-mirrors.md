@@ -1,4 +1,134 @@
-# atomworks Mirror Environment Variables
+# Environment and Mirrors
+
+Two related topics: how Complexa discovers its environment (and how that breaks when you
+run from outside the repo, e.g. under SLURM), and the two atomworks mirror variables.
+
+- [How the environment is discovered](#how-the-environment-is-discovered) — start here for
+  batch jobs and `missing required environment keys` failures
+- [atomworks mirror variables](#atomworks-mirror-variables) — `CCD_MIRROR_PATH`,
+  `PDB_MIRROR_PATH`
+
+---
+
+# How the environment is discovered
+
+There is no single mechanism. **Three** different ones coexist, and they disagree about
+where `.env` lives — which is why a job can pass one check and fail another.
+
+## A. cwd-only: `./.env`, no search
+
+| Site | Code |
+|---|---|
+| `.claude/skills/_shared/scripts/preflight.sh:33` | `ENV_FILE="$PWD/.env"` |
+| `cli/validate.py:139` (`load_env_config`) | `load_dotenv(Path(".env"))` |
+| `cli/validate.py:254`, `cli_runner.py:1688` | `Path(".env")` existence check |
+
+No upward walk, no repo-root fallback. Note `validate.py` passes an **explicit** path,
+which suppresses python-dotenv's own search. `preflight.sh` does fall through to the live
+environment for keys the file did not provide (`preflight.sh:49-53`) — so exported
+variables rescue it, but a `.env` sitting in the repo does not.
+
+## B. upward search from the module file
+
+Every stage module uses the **no-argument** form, which does search:
+
+```python
+# generate.py:539, filter.py:87, evaluate.py:677, analysis.py:1983, train.py:362, …
+load_dotenv()
+```
+
+Verified against `python-dotenv==1.0.1`: run as `python -m proteinfoundation.generate` from
+an unrelated cwd, `find_dotenv()` walks up from the *module's own* directory —
+`src/proteinfoundation/` → `src/` → repo root — and finds the repo's `.env`. This works
+because the install is editable src-layout.
+
+**This is why the pipeline itself survives a misconfigured shell**, and why the bug below
+went unnoticed: only the checks that read the live environment or `./.env` expose it.
+
+`load_dotenv()` defaults to `override=False`, so anything already exported wins over `.env`.
+
+## C. the `COMPLEXA_INIT` gate
+
+`_check_complexa_init` (`cli_runner.py:1971-1983`) exits 1 for every non-exempt `complexa`
+subcommand unless `COMPLEXA_INIT` is set, and only `env.sh` exports it. So `env.sh` is not
+optional, regardless of how `.env` gets found.
+
+## The `env.sh` export gap
+
+`complexa init <runtime>` generates `env.sh`, which resolves `.env` next to itself and is
+therefore cwd-independent by design (`cli_runner.py:1638-1649`). But `.env` holds plain
+`KEY=value` lines with **no `export`**, so a bare `source .env` creates shell variables that
+child processes never see.
+
+The **docker** branch then explicitly exports the important ones
+(`cli_runner.py:1656-1666`). The **uv** branch did not — it exported only `_TOOL_VARS`
+(`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`, `MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH`,
+`cli_runner.py:1600-1607`) plus `COMPLEXA_INIT`. `LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`,
+`CKPT_PATH`, `DATA_PATH`, `AF2_DIR`, `ESM_DIR` reached nothing.
+
+The generator now wraps the source in `set -a` / `set +a`. Measured difference in a child
+process, same `.env`:
+
+| Variable | before | after |
+|---|---|---|
+| `FOLDSEEK_EXEC` | `/opt/bin/foldseek` | `/opt/bin/foldseek` |
+| `COMPLEXA_INIT` | `uv` | `uv` |
+| `LOCAL_CODE_PATH` | *unset* | `/data/shared/tools/Proteina-Complexa` |
+| `CKPT_PATH` | *unset* | `…/Proteina-Complexa/ckpts` |
+| `DATA_PATH` | *unset* | `/data/shared/PFM_data` |
+| `AF2_DIR` / `ESM_DIR` | *unset* | `…/community_models/ckpts/{AF2,ESM2}` |
+
+**Existing `env.sh` files still carry the old body** — the fix only affects newly generated
+ones. Regenerate:
+
+```bash
+cd /path/to/Proteina-Complexa && complexa init uv --force
+```
+
+Or, without regenerating, force allexport at the call site — this works with either version:
+
+```bash
+set -a; source /path/to/Proteina-Complexa/env.sh; set +a
+```
+
+## Running from outside the repo (SLURM, campaign directories)
+
+```bash
+#!/usr/bin/env bash            # bash, not sh/zsh -- see below
+set -euo pipefail
+
+COMPLEXA_REPO=/data/shared/tools/Proteina-Complexa
+
+source /path/to/conda/etc/profile.d/conda.sh
+conda activate proteina-complexa
+
+set -a; source "$COMPLEXA_REPO/env.sh"; set +a    # exports + COMPLEXA_INIT
+export CCD_MIRROR_PATH= PDB_MIRROR_PATH=          # see the mirror section below
+
+cd "$MY_CAMPAIGN_DIR"                             # outputs land here
+complexa design ./pipeline.yaml --verbose
+```
+
+Sanity check before the expensive part — if any of these is empty, `env.sh` did not take:
+
+```bash
+for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH DATA_PATH AF2_DIR ESM_DIR COMPLEXA_INIT; do
+    printf '%-18s %s\n' "$k" "${!k:-<UNSET>}"
+done
+```
+
+Three footguns:
+
+- **Source `env.sh` from bash.** It uses `${BASH_SOURCE[0]}`; under zsh or dash that is
+  empty, so `_ENVSH_DIR` silently becomes your cwd and `.env` is not found. No error.
+- **`env.sh` may not exist at the repo root.** `complexa init` writes it to **cwd**
+  (`Path("env.sh")`, `cli_runner.py:1689`), so it is only there if someone ran init there.
+  `ls "$COMPLEXA_REPO/env.sh"` before relying on it.
+- **`preflight.sh` needs bash 4+** (`declare -A`). Fine on Linux; macOS ships bash 3.2.
+
+---
+
+# atomworks mirror variables
 
 `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` are read by `atomworks`, not by this repo's
 `.env` machinery. Neither appears in `.env_example`, so they are usually inherited from a

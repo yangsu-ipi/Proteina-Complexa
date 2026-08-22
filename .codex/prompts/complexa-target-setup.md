@@ -7,7 +7,10 @@ Use this when the request involves: `Error locating target` / `collate_fn` Hydra
 `CCD_MIRROR_PATH` or `PDB_MIRROR_PATH`; downloading the CCD or a PDB mirror; a
 self-contained or one-YAML-per-target layout; overriding the target PDB path;
 `hydra.searchpath`; cleaning a target PDB or stripping heteroatoms; hotspots being ignored;
-an empty or truncated target; or `.cif` vs `.pdb` residue numbering.
+an empty or truncated target; `.cif` vs `.pdb` residue numbering; or running Complexa from
+outside the repo — `missing required environment keys`, `LOCAL_CODE_PATH` / `CKPT_PATH`
+empty, "missing checkpoint" when the file exists, `COMPLEXA_INIT`, "sourced env.sh but it
+didn't work", and SLURM/batch campaign directories.
 
 **Full reference: `docs/binder-target-setup/`** — the same files the Claude skill at
 `.claude/skills/complexa-target-setup/SKILL.md` uses. Read the relevant one rather than
@@ -36,6 +39,34 @@ echoes the config back without ever opening the file
 bash .claude/skills/_shared/scripts/preflight.sh     # writes ./preflight.json
 env | grep -E 'CCD_MIRROR|PDB_MIRROR|LOCAL_MSA' || echo "unset (good)"
 ```
+
+## Step 1b — Running from outside the repo (SLURM, campaign dir)
+
+`.env` discovery uses three inconsistent mechanisms; read
+`docs/binder-target-setup/env-and-mirrors.md` ("How the environment is discovered") before
+debugging any batch failure. Short version:
+
+```bash
+set -a; source "$COMPLEXA_REPO/env.sh"; set +a     # bash only, not zsh/sh
+```
+
+`env.sh` resolves `.env` next to itself so it is cwd-independent, but older generated copies
+source `.env` without `set -a`, and `.env` has no `export` lines — so only `_TOOL_VARS` and
+`COMPLEXA_INIT` reach child processes. The `set -a` wrapper fixes any version;
+`complexa init <runtime> --force` regenerates a fixed one.
+
+Assert before spending GPU time:
+
+```bash
+for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH DATA_PATH AF2_DIR ESM_DIR COMPLEXA_INIT; do
+    printf '%-18s %s\n' "$k" "${!k:-<UNSET>}"
+done
+```
+
+`missing required environment keys: ['LOCAL_CODE_PATH', 'LOCAL_DATA_PATH', 'CKPT_PATH']`
+together with missing checkpoints and `AF2_DIR`/`ESM_DIR` — while `foldseek`/`mmseqs`
+resolve — is this one bug, not five. The pipeline itself would have run: the stage modules
+find `.env` by walking up from their own module file.
 
 ## Step 2 — Fix the atomworks env vars
 
@@ -137,6 +168,8 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` succeeded | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a` |
+| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:1971-1983`) | source `env.sh` from **bash** |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually a bad `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"` or `HYDRA_FULL_ERROR=1` |
 | **Clean run, wrong target** (`1www_cropped.pdb`, chain X) | `task_name` unpinned → inherited `33_TrkA`, which exists in the shared 44 so nothing errors | pin it under `_self_`; check `task_name` + `pdb_path` in the log |
 | `InterpolationKeyError: …33_TrkA.source` | same omission, but with a *replaced* dict | pin it under `_self_` |

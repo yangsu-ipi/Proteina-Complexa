@@ -26,6 +26,7 @@ wanted. In rough order of how much time they cost:
 | Shadow `targets_dict.yaml` filename is off by a character | falls back to the shared 44-target dict and its relative paths | file-not-found |
 | Heteroatoms sit inside your contig range | waters and ions encoded as protein residues | a warning |
 | Target dir lives inside the repo | `*.pdb` is git-ignored, so the structure is silently untracked | the file being added |
+| Sourced `env.sh` from a batch job outside the repo | tool binaries resolve, every *path* variable is empty, preflight blames five things | one error naming the export gap |
 
 `complexa validate target` catches none of these — it confirms the PDB **exists**, then
 echoes your config values back as pass lines without ever opening the file
@@ -38,7 +39,7 @@ verify the structure against the config, *then* spend a GPU-hour.
 
 | File | Contents |
 |---|---|
-| [`env-and-mirrors.md`](env-and-mirrors.md) | `CCD_MIRROR_PATH` / `PDB_MIRROR_PATH` semantics, why an invalid value crashes at import, and how to build either mirror if you actually want one |
+| [`env-and-mirrors.md`](env-and-mirrors.md) | How `.env` is discovered (three inconsistent mechanisms) and the SLURM/batch recipe; then `CCD_MIRROR_PATH` / `PDB_MIRROR_PATH` semantics, why an invalid value crashes at import, and how to build either mirror |
 | [`target-config.md`](target-config.md) | The one-file target YAML (**preferred**), three alternatives, and the Hydra composition mechanics behind them |
 | [`pdb-prep.md`](pdb-prep.md) | Which pipelines require PDB cleaning, what the contig does and does not filter, and why `.cif` and `.pdb` numbering differ |
 | [`troubleshooting.md`](troubleshooting.md) | Masked Hydra import errors and the full silent-failure catalogue |

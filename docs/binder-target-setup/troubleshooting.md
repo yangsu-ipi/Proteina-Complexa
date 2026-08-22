@@ -81,6 +81,39 @@ to get wrong:
 python -c "import proteinfoundation, sys; print(sys.executable); print(proteinfoundation.__file__)"
 ```
 
+## `missing required environment keys: ['LOCAL_CODE_PATH', 'LOCAL_DATA_PATH', 'CKPT_PATH']`
+
+**Symptom:** a batch job sources `env.sh` successfully (`Complexa environment initialized
+for <runtime> runtime.` appears in the log) yet the preflight reports those three keys
+missing, plus missing checkpoints and missing `AF2_DIR` / `ESM_DIR` — while
+`foldseek` and `mmseqs` resolve fine.
+
+**Cause:** `env.sh` sourced `.env` without `set -a`. `.env` has no `export` lines, so only
+`_TOOL_VARS` and `COMPLEXA_INIT` reached child processes; the path variables stayed local
+to the sourcing shell. The tool binaries resolving while every path is empty is the
+fingerprint. The five failures are one root cause: `CKPT_PATH` empty makes checkpoint paths
+resolve to `/complexa.ckpt`, and `AF2_DIR`/`ESM_DIR` derive from `LOCAL_CODE_PATH`
+(`.env_example:68-70`).
+
+`preflight.sh` is not at fault — it reads `$PWD/.env` then falls back to the live
+environment (`preflight.sh:49-53`), and the fallback found nothing exported.
+
+**Fix:** regenerate `env.sh` (`complexa init <uv|docker> --force`), or force allexport at
+the call site:
+
+```bash
+set -a; source "$COMPLEXA_REPO/env.sh"; set +a
+```
+
+Full explanation, plus a SLURM template and a pre-run assertion, in
+[`env-and-mirrors.md`](env-and-mirrors.md#the-envsh-export-gap).
+
+**Note the pipeline would have run anyway.** The stage modules call bare `load_dotenv()`,
+which finds the repo's `.env` by walking up from the module file regardless of cwd or
+exports — so this failure is the *checks* disagreeing with the *pipeline*, not a broken
+environment. `complexa validate design` fails for the related-but-distinct reason that
+`load_env_config` reads `Path(".env")` from cwd only (`validate.py:139`).
+
 ## The silent-failure catalogue
 
 None of these raise. Each produces a run that completes and writes PDBs.
@@ -97,6 +130,9 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | Target PDB missing from git | `*.pdb` is globally git-ignored | `git check-ignore -v <file>`; `git add -f` |
 | Run outputs committed by accident | `/inference` is root-anchored, so nested `inference/` is not ignored | keep target dirs outside the repo |
 | `import atomworks` fails but the build passed | `env/build_uv_env.sh:174` swallows the failure with `\|\| echo` | re-run the install without `\|\|` and read the error |
+| Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
+| `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
+| `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |
 | A `++` key has no effect | `++` adds-or-overrides and never errors, so a typo is a no-op | see "Override key not recognized" in `complexa-design/reference/troubleshooting.md` |
 
 ## Interpolation errors when defining a target inline
