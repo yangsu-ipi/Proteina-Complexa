@@ -224,11 +224,27 @@ not a path mismatch. Unlike the checkpoints above, it is **not** gate-only: the 
 evaluate config sets `compute_esm_metrics: true`
 (`configs/pipeline/binder/binder_evaluate.yaml:35`).
 
+**Do not just `mkdir` the directory.** `_resolve_esm_dir` tests only `os.path.isdir`
+(`evaluation/esm_eval.py:102-107`), so an empty directory resolves, becomes the *first*
+load location ahead of the HF cache (`:178-179`), and then `from_pretrained(...,
+local_files_only=True)` fails. With `force_offline=True` — the default on
+`compute_esm_ppl_for_sequences` (`:256`) — you get `RuntimeError: ESM model not found in
+local paths` **partway through evaluation**, after generation has already spent the GPU
+time. Silencing the gate this way makes the failure later and more expensive. Gate on
+`community_models.ESM_DIR.has_weights` instead of `.exists`.
+
 **Fix**, either:
 
 ```bash
-cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
+cd "$COMPLEXA_REPO" && complexa-download --esm2      # HF_TOKEN if rate-limited
 ```
+
+Note `complexa-download`, not `complexa download`. The CLI wrapper's argparse declares only
+`--complexa*`, `--all`, `--everything` and `--status` (`cli_runner.py:1069-1105`) and
+rejects the per-model flags before forwarding, even though the script accepts
+`--esm2 --af2 --pmpnn --ligmpnn --rf3`. The `complexa-download` console script
+(`pyproject.toml:64`) passes `sys.argv[1:]` straight through. `bash env/download_startup.sh
+--esm2` also works.
 
 or skip the metric for this run:
 

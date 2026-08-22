@@ -163,6 +163,67 @@ for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH DATA_PATH AF2_DIR ESM_DIR COM
 done
 ```
 
+### Gate on the resolved config, not on a fixed list
+
+`preflight.sh` reports **facts about the host** and is deliberately config-blind — it cannot
+know which models a run needs, because that depends on a Hydra composition (defaults list,
+`hydra.searchpath`, `_self_` ordering, `++` overrides) that bash has no way to resolve.
+Reading `configs/pipeline/binder/binder_evaluate.yaml` directly is *wrong* for the same
+reason: the effective config is whatever composes for *this* run.
+
+So deciding what is **required** belongs to the gate, and the gate needs the resolved
+config. Resolve it with Hydra itself:
+
+```python
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
+
+with initialize_config_dir(version_base=None, config_dir=str(cfg_path.parent.resolve())):
+    cfg = compose(config_name=cfg_path.stem, overrides=overrides)   # same overrides the run uses
+OmegaConf.resolve(cfg)
+OmegaConf.save(cfg, resolved_path, resolve=True)
+```
+
+then derive requirements from it rather than hardcoding a list:
+
+```python
+metric = resolved.get("metric", {})
+required = set()
+if metric.get("compute_binder_metrics"):
+    backend = metric.get("binder_folding_method", "")
+    if backend == "colabdesign":  required.add("AF2_DIR")
+    elif "rf3" in backend:        required.add("RF3_CKPT_PATH")
+if metric.get("compute_esm_metrics"):      required.add("ESM_DIR")
+if metric.get("compute_monomer_metrics"):  required.add("ESMFOLD")
+
+cm = preflight["community_models"]
+for name in sorted(required):
+    entry = cm.get(name, {})
+    # HF caches report has_weights; plain paths only report exists
+    ok = entry.get("has_weights", entry.get("exists", False))
+    if not ok:
+        failures.append(f"{name}: {entry.get('path') or '<unset>'} has no usable weights")
+```
+
+Two things this gets right that a fixed list does not:
+
+- **`AF2_DIR` is only needed for `colabdesign`.** Switch `binder_folding_method` to
+  `rf3_latest` and you need `RF3_CKPT_PATH` instead — a hardcoded list would demand AF2 and
+  ignore RF3.
+- **`ESMFOLD` is checked at all.** Nothing else in the stack probes it, so
+  `compute_monomer_metrics: true` (the default) otherwise fails at evaluate time with the
+  preflight showing green.
+
+**Prefer `has_weights` over `exists` for HF caches.** `exists` is satisfied by an empty
+`mkdir` and by no loader — creating the directory to silence a preflight failure converts a
+cheap gate failure into a `RuntimeError` partway through evaluation, after generation has
+already spent the GPU time. `preflight.sh` reports both: `exists` keeps its original
+path-existence meaning, `has_weights` additionally looks for the repo's own
+`models--org--name` snapshot under the cache root.
+
+**Order matters.** Resolve the config *before* the gate runs, so a config that will not
+compose fails before you probe hardware and before the gate has nothing to read.
+
 Three footguns:
 
 - **Source `env.sh` from bash.** It uses `${BASH_SOURCE[0]}`; under zsh or dash that is
