@@ -21,7 +21,7 @@ where `.env` lives — which is why a job can pass one check and fail another.
 |---|---|
 | `.claude/skills/_shared/scripts/preflight.sh:33` | `ENV_FILE="$PWD/.env"` |
 | `cli/validate.py:139` (`load_env_config`) | `load_dotenv(Path(".env"))` |
-| `cli/validate.py:254`, `cli_runner.py:1688` | `Path(".env")` existence check |
+| `cli/validate.py:254`, `cli_runner.py:1691` | `Path(".env")` existence check |
 
 No upward walk, no repo-root fallback. Note `validate.py` passes an **explicit** path,
 which suppresses python-dotenv's own search. `preflight.sh` does fall through to the live
@@ -49,7 +49,7 @@ went unnoticed: only the checks that read the live environment or `./.env` expos
 
 ## C. the `COMPLEXA_INIT` gate
 
-`_check_complexa_init` (`cli_runner.py:1971-1983`) exits 1 for every non-exempt `complexa`
+`_check_complexa_init` (`cli_runner.py:1974-1986`) exits 1 for every non-exempt `complexa`
 subcommand unless `COMPLEXA_INIT` is set, and only `env.sh` exports it. So `env.sh` is not
 optional, regardless of how `.env` gets found.
 
@@ -99,7 +99,7 @@ set -a; source /path/to/Proteina-Complexa/env.sh; set +a
 - The runtime argument only selects which prefix the tool vars read:
   `export FOLDSEEK_EXEC="${UV_FOLDSEEK_EXEC:-$FOLDSEEK_EXEC}"`. Point the `UV_*` vars at
   your conda prefix and they resolve correctly.
-- **Nothing branches on the value of `COMPLEXA_INIT`** — `cli_runner.py:1978` only tests
+- **Nothing branches on the value of `COMPLEXA_INIT`** — `cli_runner.py:1981` only tests
   presence (`if not os.environ.get("COMPLEXA_INIT")`). A conda env labelled `uv` is fine.
 
 In `.env`, override `UV_VENV` and the tool vars follow (`.env_example:79-87`):
@@ -125,9 +125,11 @@ Order matters slightly: `conda activate` **before** sourcing `env.sh`, and keep 
 activation *outside* the `set -a` block — otherwise conda's own internals get exported too
 (harmless, but noisy in `env`).
 
-> Known cosmetic gap: `preflight.sh` reads `COMPLEXA_RUNTIME` (`:42`, `:50`, `:151`) but
-> `env.sh` exports `COMPLEXA_INIT`, so `complexa_runtime` in `preflight.json` is always
-> `""`. Diagnostic only — nothing depends on it.
+`env.sh` exports both `COMPLEXA_INIT` (which gates the CLI) and `COMPLEXA_RUNTIME` (which
+`preflight.sh` reports as `complexa_runtime`, `:42`/`:50`/`:151`), so preflight JSON and run
+manifests record the runtime label. Older generated `env.sh` files set only
+`COMPLEXA_INIT`, leaving `complexa_runtime` as `""` — cosmetic, but another reason to
+regenerate.
 
 ## Running from outside the repo (SLURM, campaign directories)
 
@@ -160,7 +162,7 @@ Three footguns:
 - **Source `env.sh` from bash.** It uses `${BASH_SOURCE[0]}`; under zsh or dash that is
   empty, so `_ENVSH_DIR` silently becomes your cwd and `.env` is not found. No error.
 - **`env.sh` may not exist at the repo root.** `complexa init` writes it to **cwd**
-  (`Path("env.sh")`, `cli_runner.py:1689`), so it is only there if someone ran init there.
+  (`Path("env.sh")`, `cli_runner.py:1692`), so it is only there if someone ran init there.
   `ls "$COMPLEXA_REPO/env.sh"` before relying on it.
 - **`preflight.sh` needs bash 4+** (`declare -A`). Fine on Linux; macOS ships bash 3.2.
 

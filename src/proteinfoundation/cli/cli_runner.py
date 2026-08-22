@@ -1668,8 +1668,11 @@ def _generate_env_sh(runtime: str, env_path: Path, env_sh_path: Path) -> None:
 
     lines += [
         "",
-        "# Mark environment as initialized",
+        "# Mark environment as initialized. COMPLEXA_INIT gates the CLI",
+        "# (_check_complexa_init); COMPLEXA_RUNTIME is the label preflight.sh reports as",
+        "# `complexa_runtime`, so run manifests record which runtime produced them.",
         f'export COMPLEXA_INIT="{runtime}"',
+        f'export COMPLEXA_RUNTIME="{runtime}"',
         "",
         f'echo "Complexa environment initialized for {runtime} runtime."',
         "",
