@@ -69,8 +69,8 @@ resolve — is this one bug, not five. The pipeline itself would have run: the s
 find `.env` by walking up from their own module file.
 
 **conda installs use the `uv` label.** `complexa init` accepts only `uv` or `docker`
-(`cli_runner.py:1130-1136`), and nothing branches on the value of `COMPLEXA_INIT`
-(`cli_runner.py:1981` tests presence only). Point `UV_VENV` and the `UV_*` tool vars at the
+(`cli_runner.py:1160-1166`), and nothing branches on the value of `COMPLEXA_INIT`
+(`cli_runner.py:2011` tests presence only). Point `UV_VENV` and the `UV_*` tool vars at the
 conda prefix and use `uv`. Conda is not unsupported — just unlabelled.
 
 ## Step 2 — Fix the atomworks env vars
@@ -174,7 +174,7 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 | Symptom | Cause | Fix |
 |---|---|---|
 | `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` succeeded | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a` |
-| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:1974-1986`) | source `env.sh` from **bash** |
+| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:2004-2016`) | source `env.sh` from **bash** |
 | `missing checkpoint` but the file exists; path ends `checkpoints/` | existing `.env` still says `checkpoints/`, downloaders write `ckpts/` (`download_startup.sh:239`); gate-only if the pipeline YAML sets `ckpt_path` absolutely | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts`, re-init |
 | `missing community model path: ESM_DIR` | ESM2 absent; not gate-only (`binder_evaluate.yaml:35`) | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually a bad `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"` or `HYDRA_FULL_ERROR=1` |

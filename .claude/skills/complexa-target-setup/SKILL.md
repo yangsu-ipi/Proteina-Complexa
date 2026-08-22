@@ -94,8 +94,8 @@ that is this one bug, not five — and the pipeline itself would have run fine, 
 stage modules find `.env` by walking up from their own module file.
 
 **conda installs use the `uv` label.** `complexa init` accepts only `uv` or `docker`
-(`cli_runner.py:1130-1136`); nothing branches on the value of `COMPLEXA_INIT`
-(`cli_runner.py:1981` tests presence only), so point `UV_VENV` and the `UV_*` tool vars at
+(`cli_runner.py:1160-1166`); nothing branches on the value of `COMPLEXA_INIT`
+(`cli_runner.py:2011` tests presence only), so point `UV_VENV` and the `UV_*` tool vars at
 the conda prefix and use `uv`. Do not tell the user conda is unsupported.
 
 ## Step 2: Fix the atomworks env vars
@@ -271,7 +271,7 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 | Symptom | Cause | Fix |
 |---|---|---|
 | `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or `complexa init <runtime> --force` |
-| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset — `env.sh` not sourced (`cli_runner.py:1974-1986`) | source `env.sh` from **bash** |
+| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset — `env.sh` not sourced (`cli_runner.py:2004-2016`) | source `env.sh` from **bash** |
 | `missing checkpoint` but the file exists; path ends `checkpoints/` | `LOCAL_CHECKPOINT_PATH` in an existing `.env` still says `checkpoints/`; downloaders write `ckpts/` (`download_startup.sh:239`) — usually gate-only if the pipeline YAML sets `ckpt_path` absolutely | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts`, then re-init |
 | `missing community model path: ESM_DIR` | ESM2 genuinely absent; not gate-only, `compute_esm_metrics: true` (`binder_evaluate.yaml:35`) | `complexa download --esm2` on a login node, or `++metric.compute_esm_metrics=false` |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually invalid `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"`, or re-run with `HYDRA_FULL_ERROR=1` |
