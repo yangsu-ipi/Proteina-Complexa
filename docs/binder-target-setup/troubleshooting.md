@@ -154,6 +154,56 @@ grep -E '^(ckpt_path|autoencoder_ckpt_path):' pipeline.yaml
 If they point at the real directory, only the preflight is wrong — but fix `.env` anyway,
 so the next preflight tells the truth.
 
+## `complexa validate design` fails on `.env` and `target_data` from a campaign directory
+
+**Symptom:** preflight passes, the target PDB checks out, the config resolves — and then
+`complexa validate design` reports exactly two errors and exits 1, killing the job under
+`set -euo pipefail`:
+
+```
+✗ .env file
+    No .env file found in current directory
+✗ target_data directory
+    Directory not found: <DATA_PATH>/target_data
+```
+
+…alongside passes for the checkpoints, `DATA_PATH`, the target PDB, and Foldseek.
+
+**Cause:** two unconditional checks that assume you run from the repo.
+`complexa validate design` fans out to all three sub-validators
+(`validate.py:777-804`: `validate_env()`, `validate_generate()`, `validate_evaluate()`).
+
+1. `validate_env` tests for the **file** in cwd and returns early
+   (`validate.py:254-261`). It does not consult the environment, so the `env.sh` exports do
+   not help — this is the one check that a correct environment cannot satisfy.
+2. `validate_target` checks `Path(data_path) / "target_data"` unconditionally
+   (`validate.py:391-393`), *before* resolving any target. An explicit `target_path` in your
+   pipeline YAML never gets a say, so the directory is required even when the campaign has
+   no use for it.
+
+**Both are gate-only.** Nothing in generate/filter/evaluate/analyze reads either one —
+`validate_target` never even opens the PDB (see
+[`pdb-prep.md`](pdb-prep.md#complexa-validate-target-will-not-catch-any-of-this)).
+
+**Fix** — two one-liners:
+
+```bash
+ln -s "$COMPLEXA_REPO/.env" "$CAMPAIGN_DIR/.env"     # satisfies the cwd file check
+mkdir -p "$DATA_PATH/target_data"                     # existence-only; empty is fine
+```
+
+The symlink is safe: `load_dotenv` defaults to `override=False`, so it cannot fight the
+exports `env.sh` already set, and it also flips `preflight.sh`'s `.env_loaded` to `true`.
+
+If you would rather not create either, make the step advisory —
+`complexa validate design "$CONFIG" || echo "WARN: validate reported issues"` — but prefer
+the one-liners so you keep the signal from the seven checks that do pass.
+
+**Expect one warning that is not a problem:** `Shape complementarity (sc)` pointing at
+`$LOCAL_CODE_PATH/env/docker/internal/sc`. `UV_SC_EXEC` and `UV_DSSP_EXEC` default to
+docker-internal paths (`.env_example:79-87`) that do not exist in a native install. They
+only affect the `bioinformatics` interface metrics, which are off by default.
+
 ## `missing community model path: ESM_DIR`
 
 **Symptom:** `ESM_DIR` reported missing while `AF2_DIR` exists.
@@ -204,6 +254,7 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
 | `missing checkpoint` with a path ending `checkpoints/` | existing `.env` still says `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
 | `missing community model path: ESM_DIR` | ESM2 not downloaded — real asset gap, and `compute_esm_metrics` defaults true | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
+| `validate design`: no `.env` in cwd + missing `$DATA_PATH/target_data` | two unconditional checks that assume you run from the repo (`validate.py:254-261`, `:391-393`); neither is read by the pipeline | symlink `.env` into the campaign dir; `mkdir -p "$DATA_PATH/target_data"` |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
 | `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |
 | A `++` key has no effect | `++` adds-or-overrides and never errors, so a typo is a no-op | see "Override key not recognized" in `complexa-design/reference/troubleshooting.md` |
