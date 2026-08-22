@@ -275,11 +275,18 @@ install volume and trips a gate that was never measuring the right thing.
 `ckpt_free_gb` (`free_gb` is retained as an alias for the latter). Size the threshold from
 the design count — see
 [`env-and-mirrors.md`](env-and-mirrors.md#gate-on-the-resolved-config-not-on-a-fixed-list).
-Check which mounts you actually have:
+
+`preflight.sh` also reports `ckpt_fs` and `cwd_fs`, so the preflight JSON answers "same
+volume?" on its own — no manual `df` needed. Do **not** infer it from equal `free_gb`:
+APFS/Btrfs/thin-LVM report the same figure for distinct mounts. Compare the mount points:
 
 ```bash
-df -h "$CKPT_PATH" "$CAMPAIGN_DIR"
+python3 -c "import json;d=json.load(open('metadata/preflight_smoke.json'))['disk'];\
+print(d['ckpt_fs'], d['cwd_fs'], 'SHARED' if d['ckpt_fs']==d['cwd_fs'] else 'separate')"
 ```
+
+If shared, the download budget and the output budget come out of the same pool and must be
+added. Symlinks need no special handling — `df` resolves them onto the target volume.
 
 **Rough sizing** from `_shared/reference/hardware.md`: ~10–20 GB per 100 protein-binder
 designs, roughly doubled by `keep_folding_outputs: true` (the eval default). So an 8-design

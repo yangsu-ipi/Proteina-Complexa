@@ -97,22 +97,38 @@ fi
 #           ./inference and ./logs are cwd-relative (generate.py, cli_runner.py LOG_DIR)
 # A campaign run from its own directory writes outputs nowhere near CKPT_PATH, so gating a
 # design run on ckpt_free_gb asks the wrong question. Report both; let the caller choose.
-free_gb() {  # free_gb <path> -> integer GiB, or "null"
-    local p="$1" dp free_kb
-    [[ -z "$p" ]] && { printf 'null'; return; }
+# df resolves symlinks (the kernel resolves the path), as does the -d test, so a path that
+# is a symlink onto another filesystem is measured on its *target* volume — no readlink
+# needed. What df cannot tell you from a free-space number alone is *which* volume, so the
+# mount point is reported too: equal ckpt_fs and cwd_fs means the weights and the outputs
+# compete for the same space. Equal free_gb does not (shared-pool filesystems such as APFS
+# or Btrfs subvolumes report the same figure for distinct mounts).
+_df_row() {  # _df_row <path> -> the `df -P` data line for the containing fs, or ""
+    local p="$1" dp
+    [[ -z "$p" ]] && return
     dp="$p"; [[ ! -d "$dp" ]] && dp="$(dirname -- "$dp" 2>/dev/null || echo /)"
-    [[ ! -d "$dp" ]] && { printf 'null'; return; }
-    free_kb=$(df -P -k -- "$dp" 2>/dev/null | awk 'NR==2{print $4}')
-    [[ -n "${free_kb:-}" ]] && printf '%s' $(( free_kb / 1024 / 1024 )) || printf 'null'
+    [[ ! -d "$dp" ]] && return
+    df -P -k -- "$dp" 2>/dev/null | awk 'NR==2'   # -P guarantees one unwrapped line
 }
+free_gb() {  # free_gb <path> -> integer GiB, or "null"
+    local r kb; r=$(_df_row "$1"); [[ -z "$r" ]] && { printf 'null'; return; }
+    kb=$(awk '{print $4}' <<<"$r")
+    [[ -n "$kb" ]] && printf '%s' $(( kb / 1024 / 1024 )) || printf 'null'
+}
+mount_of() {  # mount point, or "" if unmeasurable
+    local r; r=$(_df_row "$1"); [[ -n "$r" ]] && awk '{print $NF}' <<<"$r"
+}
+
 DISK_TARGET="${V[CKPT_PATH]:-}"
-DISK_CKPT_FREE=$(free_gb "$DISK_TARGET")
+DISK_CKPT_FREE=$(free_gb "$DISK_TARGET"); DISK_CKPT_FS=$(mount_of "$DISK_TARGET")
 DISK_CWD="$PWD"
-DISK_CWD_FREE=$(free_gb "$DISK_CWD")
+DISK_CWD_FREE=$(free_gb "$DISK_CWD");     DISK_CWD_FS=$(mount_of "$DISK_CWD")
 # "free_gb" is retained as an alias for ckpt_free_gb so existing gates keep working.
-DISK_JSON=$(printf '{"ckpt_path":%s,"ckpt_free_gb":%s,"cwd":%s,"cwd_free_gb":%s,"free_gb":%s}' \
-    "$(json_str "$DISK_TARGET")" "$DISK_CKPT_FREE" \
-    "$(json_str "$DISK_CWD")" "$DISK_CWD_FREE" "$DISK_CKPT_FREE")
+DISK_JSON=$(printf \
+    '{"ckpt_path":%s,"ckpt_free_gb":%s,"ckpt_fs":%s,"cwd":%s,"cwd_free_gb":%s,"cwd_fs":%s,"free_gb":%s}' \
+    "$(json_str "$DISK_TARGET")" "$DISK_CKPT_FREE" "$(json_str "$DISK_CKPT_FS")" \
+    "$(json_str "$DISK_CWD")"    "$DISK_CWD_FREE"  "$(json_str "$DISK_CWD_FS")" \
+    "$DISK_CKPT_FREE")
 
 # ---- Checkpoints ----
 CKPT_ITEMS=()
