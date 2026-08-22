@@ -4,8 +4,14 @@
 # Probes GPU (name/VRAM/count/driver/CUDA), disk free in $CKPT_PATH, the six
 # canonical Complexa ckpts, the six tool binaries (foldseek/mmseqs/dssp/hbplus/
 # sc/rf3), .env loadability + required-var presence, community model paths
-# (AF2_DIR/ESM_DIR/RF3_CKPT_PATH), and git SHA. Every probe degrades to
+# (AF2_DIR/ESM_DIR/RF3_CKPT_PATH/ESMFOLD), and git SHA. Every probe degrades to
 # {available:false} / {exists:false} rather than failing.
+#
+# This reports FACTS about the host and is deliberately config-blind — it cannot know
+# which models a given run needs, because that depends on a Hydra composition it has no
+# way to resolve. Deciding what is *required* belongs to the caller, which should read the
+# resolved config (hydra.compose) and gate on the relevant keys. For HF caches prefer
+# "has_weights" over "exists": an empty mkdir satisfies the latter and no loader.
 #
 # Usage: bash preflight.sh [--quiet] [--out PATH] [--help]
 set -euo pipefail
@@ -40,7 +46,8 @@ if [[ -f "$ENV_FILE" ]]; then
         set +a
         for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH LOCAL_CHECKPOINT_PATH \
                  COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC DSSP_EXEC HBPLUS_EXEC \
-                 SC_EXEC RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH; do
+                 SC_EXEC RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH \
+                 CACHE_DIR HF_HOME; do
             printf "%s\t%s\n" "$k" "${!k-}"
         done' 2>/dev/null || true)
     while IFS=$'\t' read -r k v; do [[ -n "$k" ]] && V["$k"]="$v"; done <<<"$DUMP"
@@ -48,7 +55,8 @@ fi
 # Fall through to live env for any unset keys
 for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH LOCAL_CHECKPOINT_PATH \
          COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC DSSP_EXEC HBPLUS_EXEC \
-         SC_EXEC RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH; do
+         SC_EXEC RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH \
+         CACHE_DIR HF_HOME; do
     [[ -z "${V[$k]:-}" ]] && V["$k"]="${!k-}"
 done
 
@@ -124,8 +132,38 @@ done
 TOOLS_JSON="{$(IFS=,; echo "${TOOL_ITEMS[*]}")}"
 
 # ---- Community models ----
+# Two kinds of entry:
+#   cm  — a plain path (AF2 .npz dir, RF3 ckpt file). "exists" is all there is to say.
+#   hfm — a HuggingFace hub cache. "exists" only says someone created the directory, which
+#         an empty mkdir satisfies while satisfying no loader; "has_weights" additionally
+#         looks for the repo's own models--org--name snapshot. Gates should prefer
+#         has_weights. "exists" is kept with its original meaning so older gates that read
+#         it keep working.
 cm() { local k="$1" p="$2" ex=false; [[ -n "$p" && -e "$p" ]] && ex=true; printf '%s:{"path":%s,"exists":%s}' "$(json_str "$k")" "$(json_str "$p")" "$ex"; }
-COMMUNITY_JSON="{$(cm AF2_DIR "${V[AF2_DIR]:-}"),$(cm ESM_DIR "${V[ESM_DIR]:-}"),$(cm RF3_CKPT_PATH "${V[RF3_CKPT_PATH]:-}")}"
+hfm() {
+    local k="$1" p="$2" repo="$3" ex=false hw=false
+    if [[ -n "$p" && -d "$p" ]]; then
+        ex=true
+        # HF stores each repo as models--<org>--<name>/ under the hub cache root.
+        compgen -G "$p/models--${repo//\//--}" >/dev/null 2>&1 && hw=true
+    fi
+    printf '%s:{"path":%s,"repo":%s,"exists":%s,"has_weights":%s}' \
+        "$(json_str "$k")" "$(json_str "$p")" "$(json_str "$repo")" "$ex" "$hw"
+}
+
+# ESMFold is read through CACHE_DIR (metrics/folding_models.py) — it does NOT use ESM_DIR,
+# and it is a different checkpoint from the standalone ESM2 language model. When CACHE_DIR
+# is unset, transformers falls back to HF's own resolution, so report where that would look.
+ESMFOLD_CACHE="${V[CACHE_DIR]:-}"
+if [[ -z "$ESMFOLD_CACHE" ]]; then
+    if [[ -n "${V[HF_HOME]:-}" ]]; then ESMFOLD_CACHE="${V[HF_HOME]}/hub"
+    else ESMFOLD_CACHE="$HOME/.cache/huggingface/hub"; fi
+fi
+
+COMMUNITY_JSON="{$(cm AF2_DIR "${V[AF2_DIR]:-}"),\
+$(hfm ESM_DIR "${V[ESM_DIR]:-}" "facebook/esm2_t33_650M_UR50D"),\
+$(cm RF3_CKPT_PATH "${V[RF3_CKPT_PATH]:-}"),\
+$(hfm ESMFOLD "$ESMFOLD_CACHE" "facebook/esmfold_v1")}"
 
 # ---- Env summary ----
 MISS_JSON="[]"
