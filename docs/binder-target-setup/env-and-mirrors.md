@@ -226,13 +226,29 @@ different questions, and `preflight.sh` now reports both:
 
 | Field | Filesystem | Answers |
 |---|---|---|
-| `ckpt_free_gb` (alias `free_gb`) | wherever `CKPT_PATH` lives — the install | room to **download** more weights |
-| `cwd_free_gb` | the working directory | room for **this run's outputs** |
+| `ckpt_free_gb` (alias `free_gb`), `ckpt_fs` | wherever `CKPT_PATH` lives — the install | room to **download** more weights |
+| `cwd_free_gb`, `cwd_fs` | the working directory | room for **this run's outputs** |
 
 `./inference/…` (`generate.py:62`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
 campaign run writes nowhere near `CKPT_PATH`. Gating a design run on `free_gb` therefore
 measures the wrong volume — it can fail on a full install disk while the output volume is
 empty, or pass while the output volume is full.
+
+**Symlinks are handled; equal free space is not proof of a shared volume.** `df` and the
+`-d` test both resolve symlinks in the kernel, so a `CKPT_PATH` or campaign directory that
+is a symlink onto another filesystem is measured on its *target* volume — no `readlink`
+needed. But shared-pool filesystems (APFS containers, Btrfs subvolumes, thin LVM) report
+the *same* free figure for genuinely distinct mounts, so identical `free_gb` values tell you
+nothing. Compare the mount points instead:
+
+```python
+shared = disk.get("ckpt_fs") and disk["ckpt_fs"] == disk["cwd_fs"]
+```
+
+When they match, weights and outputs compete for the same space and the two budgets must be
+added. Two edge cases inherit the original fallback behaviour: a *dangling* symlink and a
+symlink to a *file* both fall back to measuring the parent directory, so the reported
+`*_fs` is the parent's mount, not the target's.
 
 Size the requirement from the design count rather than a fixed number.
 `_shared/reference/hardware.md` puts protein-binder output at **~10–20 GB per 100 designs**,
