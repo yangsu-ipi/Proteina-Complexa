@@ -114,6 +114,72 @@ exports — so this failure is the *checks* disagreeing with the *pipeline*, not
 environment. `complexa validate design` fails for the related-but-distinct reason that
 `load_env_config` reads `Path(".env")` from cwd only (`validate.py:139`).
 
+## `missing checkpoint: complexa.ckpt` when the file is right there
+
+**Symptom:** the preflight reports the Complexa checkpoints (and often `ESM_DIR`) missing,
+while `LOCAL_CODE_PATH` / `LOCAL_DATA_PATH` / `CKPT_PATH` are all populated and
+`missing_required` is empty. The reported path ends in `checkpoints/`.
+
+**Cause:** `CKPT_PATH` derives from `LOCAL_CHECKPOINT_PATH`, which defaults to
+`${LOCAL_CODE_PATH}/checkpoints` (`.env_example:28`, `:108`) — but every downloader writes
+to **`ckpts/`** (`download_startup.sh:239`, and the same `./ckpts` in the ligand and AME
+download functions). The shipped pipeline configs agree with the downloaders
+(`ckpt_path: ./ckpts`). So `checkpoints/` is empty or absent even after a successful
+download. This is a pre-existing repo inconsistency, described under "Mismatch to fix by
+hand" in `.claude/skills/complexa-setup/reference/downloads.md`.
+
+**Fix** — one line in `.env`, then regenerate `env.sh`:
+
+```bash
+LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts
+```
+
+A symlink (`ln -s ckpts checkpoints` inside the repo) works too, but the `.env` edit is
+what the rest of the tooling expects.
+
+**Check whether it actually blocks your run.** This is usually a *gate-only* failure: a
+pipeline YAML that sets `ckpt_path` / `autoencoder_ckpt_path` to absolute `.../ckpts` paths
+loads the checkpoints fine, because those config keys are read directly and never go
+through `CKPT_PATH`. Confirm with:
+
+```bash
+grep -E '^(ckpt_path|autoencoder_ckpt_path):' pipeline.yaml
+```
+
+If they point at the real directory, only the preflight is wrong — but fix `.env` anyway,
+so the next preflight tells the truth.
+
+## `missing community model path: ESM_DIR`
+
+**Symptom:** `ESM_DIR` reported missing while `AF2_DIR` exists.
+
+**Cause:** genuinely not downloaded. `ESM_DIR` resolves to
+`${LOCAL_CODE_PATH}/community_models/ckpts/ESM2` (`.env_example:69`), which is exactly where
+`complexa download --esm2` writes (`download_startup.sh:371`) — so this is a missing asset,
+not a path mismatch. Unlike the checkpoints above, it is **not** gate-only: the binder
+evaluate config sets `compute_esm_metrics: true`
+(`configs/pipeline/binder/binder_evaluate.yaml:35`).
+
+**Fix**, either:
+
+```bash
+cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
+```
+
+or skip the metric for this run:
+
+```bash
+++metric.compute_esm_metrics=false
+```
+
+Do the download on a login node, not inside the job. Without a local copy,
+`_resolve_esm_dir()` returns `None` (`evaluation/esm_eval.py:95-108`) and the code falls
+back to a HuggingFace fetch *during evaluation* — which needs network and possibly a token
+on the compute node, mid-run.
+
+`RF3_CKPT_PATH` missing is harmless when `metric.binder_folding_method: colabdesign`; the
+default preflight gate does not require it.
+
 ## The silent-failure catalogue
 
 None of these raise. Each produces a run that completes and writes PDBs.
@@ -131,6 +197,8 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | Run outputs committed by accident | `/inference` is root-anchored, so nested `inference/` is not ignored | keep target dirs outside the repo |
 | `import atomworks` fails but the build passed | `env/build_uv_env.sh:174` swallows the failure with `\|\| echo` | re-run the install without `\|\|` and read the error |
 | Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
+| `missing checkpoint` with a path ending `checkpoints/` | `LOCAL_CHECKPOINT_PATH` defaults to `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
+| `missing community model path: ESM_DIR` | ESM2 not downloaded — real asset gap, and `compute_esm_metrics` defaults true | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |
 | `preflight.sh: declare: -A: invalid option` | needs bash 4+; macOS ships 3.2 | run it on the cluster, or `brew install bash` |
 | A `++` key has no effect | `++` adds-or-overrides and never errors, so a typo is a no-op | see "Override key not recognized" in `complexa-design/reference/troubleshooting.md` |
