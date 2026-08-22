@@ -47,7 +47,7 @@ verify the structure against the config, *then* spend a GPU-hour.
 | Script | Purpose | Status |
 |---|---|---|
 | [`scripts/build_ccd_mirror.py`](scripts/build_ccd_mirror.py) | Split wwPDB `components.cif` into the CCD mirror layout atomworks expects | verified against real `components.cif` data; stdlib only |
-| [`scripts/check_target_pdb.py`](scripts/check_target_pdb.py) | Preflight a target PDB: heteroatoms, numbering, gaps, hotspot resolution | **not yet run end-to-end** — its atomworks/biotite calls mirror `pdb_utils.py:50,550` and `generate.py:437`, but the first real run should be against a known-good file such as `assets/target_data/bindcraft_targets/PD-L1.pdb` with hotspots `A37 A39 A49 A98`, which must all match |
+| [`scripts/check_target_pdb.py`](scripts/check_target_pdb.py) | Preflight a target PDB: heteroatoms, numbering, gaps, hotspot resolution | verified on a real target inside a SLURM job — 136/136 residues selected by `A58-193`, no gaps, no in-range heteroatoms, all 11 hotspots matched, `RESULT: PASS` |
 
 ## Quick path
 
