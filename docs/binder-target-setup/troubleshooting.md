@@ -274,7 +274,7 @@ install volume and trips a gate that was never measuring the right thing.
 **Fix:** gate on `disk.cwd_free_gb`, which `preflight.sh` now reports alongside
 `ckpt_free_gb` (`free_gb` is retained as an alias for the latter). Size the threshold from
 the design count — see
-[`env-and-mirrors.md`](env-and-mirrors.md#gate-on-the-resolved-config-not-on-a-fixed-list).
+[`campaign-gating.md`](campaign-gating.md#gate-on-the-resolved-config-not-on-a-fixed-list).
 
 `preflight.sh` also reports `ckpt_fs` and `cwd_fs`, so the preflight JSON answers "same
 volume?" on its own — no manual `df` needed. Do **not** infer it from equal `free_gb`:
