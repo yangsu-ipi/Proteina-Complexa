@@ -273,13 +273,13 @@ Resulting entry:
 Two things to know:
 
 - **Drop `--smiles` and you do not get `SMILES: null` — you get no `SMILES` key at all.** `target_manager.py:1024-1025` writes it only `if smiles`, and `ligand_binder_generate.yaml:33` interpolates `...SMILES` unguarded, so the entry raises `InterpolationKeyError` the first time the ligand pipeline composes it. Always pass `--smiles` (any valid SMILES for the ligand), or add `SMILES: null` to the entry by hand afterwards. `use_bonds_from_file: True` means the value is not used for bond generation, but the key still has to resolve.
-- **`--ligand` does not require a value.** `cli_runner.py:1147-1153` declares it `nargs="?"` with `const="YOUR_LIGAND"`, so the bare `--ligand` is legal and writes that placeholder; passing anything at all (value or not) is what marks the target ligand-typed (`cli_runner.py:1816-1817`: `is_ligand = ligand_val is not None`). Prefer the real residue name when you have it.
+- **`--ligand` does not require a value.** `cli_runner.py:1276-1282` declares it `nargs="?"` with `const="YOUR_LIGAND"`, so the bare `--ligand` is legal and writes that placeholder; passing anything at all (value or not) is what marks the target ligand-typed (`cli_runner.py:1855-1856`: `is_ligand = ligand_val is not None`). Prefer the real residue name when you have it.
 
 (There is no `Cambridge_bloodsugar_A_4D71_pdb` entry in the shipped `ligand_targets_dict.yaml` — it holds only `39_7V11_LIGAND` … `42_7C7M_LIGAND` — so this example creates a new key rather than mirroring an existing one.)
 
 ## Cross-references
 
-- CLI: `src/proteinfoundation/cli/cli_runner.py:1147-1292` (the parser behind `complexa target`). `src/proteinfoundation/cli/target_cli.py` is the separate `complexa-target` console script (`pyproject.toml:65`).
+- CLI: `src/proteinfoundation/cli/cli_runner.py:1177-1321` (the parser behind `complexa target`). `src/proteinfoundation/cli/target_cli.py` is the separate `complexa-target` console script (`pyproject.toml:65`).
 - Manager + schema: `src/proteinfoundation/cli/target_manager.py` (see `TARGET_FIELDS`; the CLI-only defaults are at `:984-1030`)
 - Validator: `src/proteinfoundation/cli/validate.py::validate_target` — **currently cannot resolve `target_dict_cfg` for any config in this repo**, so `complexa validate target CONFIG --target NAME` always fails with `Could not find target_dict_cfg in config` (`validate.py:183-187` skips Hydra composition, `:306-308` needs a dict-valued `defaults:` entry where the pipelines have strings, `:350-352` falls back to the non-existent `configs/generation/targets_dict.yaml`). Verify targets by reading the YAML and checking the PDB path — see `SKILL.md` Step 4.
 - Protein dict: `configs/targets/targets_dict.yaml`
