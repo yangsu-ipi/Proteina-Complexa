@@ -242,8 +242,10 @@ reward_model:
 # Resume
 # =============================================================================
 # Skip a generation shard whose completion marker (shard_{job_id}_complete.json)
-# records the same generation config. Off by default: with it off, a shard that
-# already ran is regenerated and a warning names the duplication, which is the
-# pre-existing behaviour. Turn it on -- with gen_njobs above the GPU count -- for
-# shard-granular resume after an interrupted run.
-skip_completed_shards: false
+# records the same generation config AND whose sample directories are still on
+# disk. Any change to the generation config invalidates the marker, so this only
+# ever skips work identical to what was asked for. Set false to force
+# regeneration -- note that regenerating over a populated directory adds designs
+# beside the existing ones rather than overwriting them, because directory names
+# encode a stochastic beam path.
+skip_completed_shards: true

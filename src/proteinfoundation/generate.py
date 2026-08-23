@@ -274,6 +274,28 @@ def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str, nsa
     return marker_path
 
 
+def count_shard_sample_dirs(root_path: str, job_id: int) -> int:
+    """Per-design directories this shard left behind.
+
+    Every save path names them ``job_{job_id}_...`` (`:412`, `:510`, `:575`), so
+    the prefix scopes the count to one shard. Deliberately compared one-sidedly
+    by the caller: the ligand path writes an extra suffixed directory per design
+    on top of the ones counted in ``pdb_paths``, so a shard can hold *more*
+    directories than it recorded, never fewer.
+    """
+    if not os.path.isdir(root_path):
+        return 0
+    prefix = f"job_{job_id}_"
+    count = 0
+    for name in os.listdir(root_path):
+        path = os.path.join(root_path, name)
+        if not name.startswith(prefix) or not os.path.isdir(path):
+            continue
+        if any(entry.endswith(".pdb") for entry in os.listdir(path)):
+            count += 1
+    return count
+
+
 def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enabled: bool) -> bool:
     """Whether this shard can be skipped, warning loudly when it cannot.
 
@@ -303,11 +325,26 @@ def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enable
         )
         return False
 
+    # A marker records that the shard finished, not that its output survived.
+    # Verify the designs are still on disk before trusting it, so a shard whose
+    # directories were deleted or partially synced is regenerated rather than
+    # skipped. One-sided on purpose -- see count_shard_sample_dirs.
+    recorded = marker.get("nsamples")
+    found = count_shard_sample_dirs(root_path, job_id)
+    if isinstance(recorded, int) and found < recorded:
+        logger.warning(
+            f"Shard {job_id} is marked complete with {recorded} samples but only {found} "
+            f"sample directories remain in {root_path}. Regenerating the shard."
+        )
+        return False
+
     if not skip_enabled:
         logger.warning(
             f"Shard {job_id} already completed with this exact config "
-            f"({marker.get('nsamples', '?')} samples). Re-generating will DUPLICATE them under "
-            "new directory names. Set generation.skip_completed_shards=true to skip instead."
+            f"({marker.get('nsamples', '?')} samples, {found} directories present). "
+            "Re-generating will DUPLICATE them under new directory names, because directory "
+            "names encode a stochastic beam path. Unset "
+            "generation.skip_completed_shards=false to stop forcing this."
         )
         return False
 
@@ -673,7 +710,7 @@ def main(cfg):
         root_path,
         job_id,
         gen_config_digest,
-        skip_enabled=bool(cfg_gen.get("skip_completed_shards", False)),
+        skip_enabled=bool(cfg_gen.get("skip_completed_shards", True)),
     ):
         sys.exit(0)
 
