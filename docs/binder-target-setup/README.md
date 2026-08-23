@@ -26,6 +26,7 @@ wanted. In rough order of how much time they cost:
 | Shadow `targets_dict.yaml` filename is off by a character | falls back to the shared 44-target dict and its relative paths | file-not-found |
 | Heteroatoms sit inside your contig range | waters and ions encoded as protein residues | a warning |
 | Target dir lives inside the repo | `*.pdb` is git-ignored, so the structure is silently untracked | the file being added |
+| Sharded generation finely for resume but left `eval_njobs` lower | designs from the unmatched shards are never evaluated — one `No files assigned` line per idle worker, then exit 0 | an error, or at least a count |
 | Sourced `env.sh` from a batch job outside the repo | tool binaries resolve, every *path* variable is empty, preflight blames five things | one error naming the export gap |
 
 `complexa validate target` catches none of these — it confirms the PDB **exists**, then

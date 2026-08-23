@@ -28,8 +28,8 @@ These live at the root of `configs/search_*_pipeline.yaml`.
 | `autoencoder_ckpt_path` | str | literal `./ckpts/complexa[_ligand\|_ame]_ae.ckpt` | `++autoencoder_ckpt_path=/data/my_ae.ckpt` | AE checkpoint path |
 | `seed` | int | `5` | `++seed=42` | Sampling RNG seed |
 | `ncpus_` | int | `24` | `++ncpus_=16` | CPU count for dataloader workers |
-| `gen_njobs` | int | `1` (binder/ligand/AME) | `++gen_njobs=4` | Number of parallel generate jobs |
-| `eval_njobs` | int | `1` (binder/ligand/AME) | `++eval_njobs=4` | Number of parallel evaluate jobs |
+| `gen_njobs` | int | `1` (binder/ligand/AME) | `++gen_njobs=4` | Parallel generate jobs **and** the shard divisor. Each job is pinned to GPU index `job_id`, so it may not exceed the GPU count in one `complexa design` run |
+| `eval_njobs` | int | `1` (binder/ligand/AME) | `++eval_njobs=4` | Parallel evaluate jobs. **Must equal `gen_njobs`** — in `input_mode: generated`, eval shard *N* takes the designs named `job_N_*`, so a lower value silently leaves later shards unevaluated |
 | `lora.r` | int | `32` (ligand/AME), (unset for protein binder) | `++lora.r=64` | LoRA rank |
 | `lora.lora_alpha` | float | `64.0` | `++lora.lora_alpha=128.0` | LoRA scaling factor (typically 2x rank) |
 | `lora.lora_dropout` | float | `0.0` | `++lora.lora_dropout=0.1` | Dropout on LoRA inputs |

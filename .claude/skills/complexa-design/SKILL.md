@@ -354,7 +354,12 @@ Typical wall-clock for 100 designs, `beam_width=8`, default `nsteps=400`:
 - Ligand binder + RF3 refold: ~90–180 min (RF3 dominates).
 - AME + RF3 refold: ~120–240 min.
 
-Bumping `gen_njobs=2` and `eval_njobs=2` halves wall-clock on a 2-GPU host. See
+Bumping `gen_njobs=2` and `eval_njobs=2` halves wall-clock on a 2-GPU host. **Keep the two
+equal** — eval shard *N* takes the designs named `job_N_*`, so a lower `eval_njobs` silently
+leaves the later shards unevaluated. Neither may exceed the GPU count here: each job is pinned
+to GPU index `job_id`. For a campaign that must survive interruption, generation is sharded far
+more finely and driven per shard — see "Sizing shards so resume is worth having" in
+`docs/binder-target-setup/campaign-gating.md`. See
 `.claude/skills/_shared/reference/hardware.md` for per-pipeline VRAM tables.
 
 ## Troubleshooting (common cases)
