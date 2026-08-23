@@ -176,6 +176,31 @@ Update the AME task in `configs/design_tasks/ame_dict_v2.yaml` to point at the
 renamed PDB. Reference: `README.md` "Evaluating AME Designs with Ligand Targets
 (RF3)" and `assets/target_data/README.md`.
 
+## Running one stage directly (debug, or SLURM array shards)
+
+**Symptom:** you need to attach `ipdb`, run under `nsys`, skip the pipeline log
+dir, or run exactly one generation shard without the CLI fanning out.
+
+**Cause:** `complexa generate CONFIG` is a logged subprocess wrapper. It also
+launches `gen_njobs` shards at once and pins each to GPU index `job_id`, which
+is wrong under a scheduler that already allocated the GPU.
+
+**Fix:** invoke the Hydra module directly — this is what the wrapper runs:
+
+```bash
+python -m proteinfoundation.generate \
+    --config-path "$(realpath configs)" \
+    --config-name search_binder_local_pipeline \
+    ++run_name=debug_pdl1 ++generation.task_name=02_PDL1
+```
+
+Same pattern for `proteinfoundation.{filter,evaluate,analyze}`. Add
+`++job_id=N` to run one shard of a `gen_njobs=M` split. Prefer
+`complexa generate/filter/evaluate/analyze` for normal one-shot runs — you get
+logging and job splitting for free. For the campaign form of this, see "Sizing
+shards so resume is worth having" in
+`docs/binder-target-setup/campaign-gating.md`.
+
 ## Override key not recognized
 
 **Symptom:** Hydra raises `InterpolationKeyError`, `MissingMandatoryValue`,
