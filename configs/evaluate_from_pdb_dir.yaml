@@ -85,6 +85,14 @@ metric:
   
   # ESM perplexity metrics
   compute_esm_metrics: false
+  # Sequence model: any HF masked-LM name for esm2, or an `esm` package
+  # registry name for esmc (e.g. esmc_600m). esm_backend auto-detects from the
+  # name; set it explicitly to override. esm_batch_tokens is the token budget
+  # for one batched masked forward -- lower it if long sequences run out of
+  # memory (the code also halves on OOM by itself).
+  esm_model: facebook/esm2_t33_650M_UR50D
+  esm_backend: auto  # auto, esm2, esmc
+  esm_batch_tokens: 16384
   
   # Ranking criteria for best refolded sample
   ranking_criteria: null  # Use defaults

@@ -25,7 +25,15 @@ dependencies = [
     "ml-collections==0.1.1",
     "jaxtyping",
     "loralib",
-    "transformers>=5.3.0", #"transformers==4.48.3",
+    # Floor is 4.57 because Biohub's transformers fork -- the only place
+    # ESMFold2Model exists, and what the ESMC/ESMFold2 source release pins --
+    # is a standalone copy of 4.57.6. PyPI 5.x also satisfies this range and
+    # keeps ESM2 and ESMFold working, so this does not force the fork on
+    # anyone who does not need it. To use the fork, install it explicitly and
+    # pin its commit: it declares "@main", which floats, and pip/uv do not
+    # read the fork's pixi.lock. That fork also sets requires-python
+    # >=3.12,<3.13, so a combined environment must be built on 3.12.
+    "transformers>=4.57,<6",
     
     # Data processing
     "pandas>=2.3.0",
