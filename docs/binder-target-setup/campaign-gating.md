@@ -112,14 +112,82 @@ if disk.get("cwd_free_gb") is not None and disk["cwd_free_gb"] < need_gb:
 A 1000-design run lands near **200–400 GB**, which is why a fixed 50 GB floor is both too
 strict for a smoke test and far too loose for production.
 
-## The pattern behind all three
+## The gate must compose the same overrides as the run
+
+Gating on a resolved config is only meaningful if that config is the one the run will
+actually use. If the resolver and the `complexa design` invocation are handed *different*
+override lists, the gate is checking a config nobody runs — and it will reject valid runs
+and pass broken ones.
+
+This is easy to get wrong, because the natural shape is two hardcoded lists:
+
+```python
+# resolver — reconstructs overrides from named args
+overrides = [f"++run_name={args.run_name}",
+             f"++generation.dataloader.dataset.nres.nsamples={args.seed_samples}", ...]
+```
+
+```bash
+# runner — passes its own copy
+python -m proteinfoundation.cli.cli_runner design "$CONFIG" \
+  "++run_name=$RUN_NAME" "++generation.dataloader.dataset.nres.nsamples=$SEED_SAMPLES" ...
+```
+
+Those agree only while someone keeps them in sync by hand. Add `++metric.compute_monomer_metrics=false`
+to the runner and the resolved config still says `true`, so the gate demands ESMFold weights
+for a run that never loads them.
+
+**Define the override list once and pass it to both:**
+
+```bash
+COMPLEXA_OVERRIDES=(
+  "++run_name=$RUN_NAME"
+  "++generation.dataloader.dataset.nres.nsamples=$SEED_SAMPLES"
+  "++generation.filter.filter_samples_limit=$FILTER_LIMIT"
+)
+# per-kind additions go here, so the resolver sees them too
+[[ "$RUN_KIND" == "smoke" ]] && COMPLEXA_OVERRIDES+=( "++metric.compute_monomer_metrics=false" )
+
+python scripts/validate_resolved_config.py --config "$CONFIG" ... \
+    --override "${COMPLEXA_OVERRIDES[@]}" --output "$RESOLVED"
+python scripts/check_preflight.py "$PREFLIGHT" --resolved-config "$RESOLVED" ...
+python -m proteinfoundation.cli.cli_runner design "$CONFIG" "${COMPLEXA_OVERRIDES[@]}"
+```
+
+and in the resolver, compose from the passthrough list rather than rebuilding it:
+
+```python
+parser.add_argument("--override", nargs="*", default=[],
+                    help="Hydra overrides — must be exactly those passed to `complexa design`")
+...
+cfg = compose(config_name=args.config.stem, overrides=list(args.override))
+```
+
+Keep the resolver's named args (`--seed-samples`, `--expected-generated`, …) for its
+*invariant assertions*. They then serve a second purpose: they express intent independently
+of the override list, so an assertion like
+`cfg.generation.dataloader.dataset.nres.nsamples == args.seed_samples` fails loudly if the
+two ever disagree. That turns the duplication into a consistency check instead of a
+liability.
+
+A setting that should apply to *every* run of a campaign belongs in `pipeline.yaml` instead
+— both the resolver and the runner compose the same file, so it cannot drift. Reserve the
+override list for what varies between run kinds.
+
+## The pattern behind all of these
 
 `preflight.sh` reports facts; the gate applies thresholds. Every gate failure in this
-document came from breaking that split in one of two ways:
+document came from breaking that split in one of three ways:
 
 - **Measuring the wrong subject** — a `.env` file instead of the variables, `$DATA_PATH/target_data`
   when the target came from `target_path`, the install filesystem instead of the output one.
 - **Measuring the wrong depth** — path existence instead of contents.
+- **Measuring the wrong config** — a resolved config composed with different overrides than
+  the run will use, so the gate judges a config nobody executes.
+
+The common shape is *two things that must agree, with nothing enforcing it*. When you find
+one, either collapse them to a single source (one override list, one `.env`, one checkpoint
+directory convention) or add an assertion that fails when they diverge.
 
 When adding a probe: report the *narrowest true fact* about the *right subject*, name the
 field so the subject is unambiguous (`cwd_free_gb`, not `free_gb`), and leave the threshold
