@@ -392,10 +392,37 @@ rather than assuming: the CBLN1/5KC5 smoke test spent 337 s on 4 seeds at `nstep
 puts ~45 min in each shard. Aim for a shard in the tens of minutes; minutes-long shards pay
 model loading repeatedly, hour-plus shards give resume little to save.
 
-Two caveats worth stating in the job file itself. Skipping only helps for shards that
-*finished* — a shard interrupted midway is cleared and redone whole. And `eval_njobs` is a
-separate knob with the same GPU-index pinning, so it belongs at the GPU count regardless of how
-finely generation is sharded.
+**`eval_njobs` must equal `gen_njobs`, and the evaluate array must be the same size.** In
+`input_mode: generated` — what campaigns use — evaluation does not chunk by `njobs` at all:
+`split_by_job_generated(root, job_id)` selects directories whose names begin with
+`job_{job_id}_` (`evaluation/utils.py:279-287`). So evaluate shard *N* processes exactly what
+generate shard *N* produced. Shard generation 32 ways and evaluate 4 ways and the designs from
+shards 4–31 are never evaluated; the only signal is one `No files assigned to job N/M` line per
+idle worker before it exits 0 (`evaluate.py:789-790`). The repo says the same thing in one line
+(`docs/INFERENCE.md:312`), and it becomes load-bearing the moment generation is sharded for
+resume rather than for throughput.
+
+**Under SLURM, GPU count is not what `njobs` expresses.** With one array task per shard, each
+task takes one GPU via `--gres=gpu:1`, and how many run at once is the array throttle
+(`--array=0-31%4`), not `gen_njobs`. Setting `gen_njobs: 1` to "let SLURM handle the GPUs" would
+break sharding outright — it is the divisor in `split_by_job`, so every task would generate the
+whole campaign. Keep `gen_njobs` at the shard count and use `--verbose` to suppress the
+in-process fan-out; that is the only thing standing between the CLI and its own GPU assignment.
+
+One caveat worth stating in the job file itself: skipping only helps for shards that *finished*
+— a shard interrupted midway is cleared and redone whole.
+
+A campaign sharded this way is no longer one `complexa design` call, because that runs all four
+steps in-process. It becomes four SLURM submissions chained on `afterok`:
+
+```bash
+gen=$(sbatch --parsable --array=0-31%4 --gres=gpu:1 gen_shard.sbatch)      # gen_njobs: 32
+flt=$(sbatch --parsable --dependency=afterok:$gen           filter.sbatch)  # single task
+evl=$(sbatch --parsable --dependency=afterok:$flt --array=0-31%4 --gres=gpu:1 eval_shard.sbatch)
+       sbatch          --dependency=afterok:$evl            analyze.sbatch  # single task
+```
+
+`filter` and `analyze` are single-GPU-free aggregation steps and must not be arrayed.
 
 `scripts/check_resume.sh` exercises all of this against a throwaway `run_name`:
 
