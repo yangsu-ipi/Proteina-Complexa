@@ -34,7 +34,7 @@ per-design success CSV.
 - Search-based optimization: single-pass, best-of-n, beam-search, fk-steering, mcts.
 - Refold backends: ColabDesign (AF2) and RF3 — `metric.binder_folding_method`
   accepts only `colabdesign` or a name containing `rf3`; anything else raises
-  `ValueError` (`binder_eval.py:96-116`).
+  `ValueError` (`binder_eval.py:97-117`).
 - Pass-rate + diversity analysis with per-`result_type` thresholds.
 
 ## Step 1: Pre-flight

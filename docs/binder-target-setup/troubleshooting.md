@@ -29,7 +29,7 @@ which raises `FileNotFoundError` from a module-level statement in
 `biotite`, `openfold`, and `torch` eagerly at module load, so those are all fine by the
 time you see this. `gen_dataset` is the **first lazily-imported module** in the run — it is
 pulled in only at `hydra.utils.instantiate(cfg_gen.dataloader)`
-(`src/proteinfoundation/generate.py:731`) — and it drags in four modules nothing in
+(`src/proteinfoundation/generate.py:768`) — and it drags in four modules nothing in
 `generate.py`'s eager graph touches:
 
 ```

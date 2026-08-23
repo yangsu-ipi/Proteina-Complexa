@@ -39,7 +39,7 @@ for the before/after and the workaround for older installs.
 Every stage module uses the **no-argument** form, which does search:
 
 ```python
-# generate.py:621, filter.py:87, evaluate.py:677, analysis.py:1983, train.py:362, …
+# generate.py:658, filter.py:87, evaluate.py:677, analysis.py:1983, train.py:362, …
 load_dotenv()
 ```
 
