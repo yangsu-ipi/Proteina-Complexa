@@ -270,7 +270,7 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:746`); only afterwards does `save_predictions` write the
+  prediction in memory (`generate.py:783`); only afterwards does `save_predictions` write the
   PDBs and `save_rewards_to_csv` write the rewards CSV (`:527`, called at `:714`/`:741`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
@@ -312,12 +312,26 @@ guidance weight, reward config) invalidates the marker, not just the design coun
 that a shard finished, not that its designs survived, so the guard also counts the shard's
 `job_{job_id}_*` directories and regenerates when fewer remain than the marker claims. The
 comparison is deliberately one-sided — the ligand path writes an extra suffixed directory per
-design beyond those counted in `pdb_paths` (`generate.py:510`), so a shard can hold *more*
+design beyond those counted in `pdb_paths` (`generate.py:547`), so a shard can hold *more*
 directories than it recorded, never fewer.
 
 That check is what makes defaulting to skip safe, and skipping is the point: a resume feature
 that warns and then burns the GPU time anyway has saved nothing. Set `gen_njobs` above the GPU
 count and resume granularity becomes one shard.
+
+`scripts/check_resume.sh` exercises all of this against a throwaway `run_name`:
+
+```bash
+bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2 --nsteps 50
+```
+
+It asserts on filesystem state rather than log text, and it checks the *invalidation* paths as
+well as the reuse ones — a resume that never invalidates is indistinguishable from one that
+silently serves stale results. Two design points worth copying if you write your own: it aborts
+unless the first evaluate actually produced refolding outputs, because otherwise "nothing was
+rewritten" proves nothing; and its deleted-directory case reuses the *same* overrides as the
+marker on disk, so the regeneration it observes is the missing output talking rather than a
+digest that no longer matches.
 
 The remaining limitation is provenance. A skipped shard was produced by a different process
 than the one writing the manifest, so "seed S produced these N designs" spans two runs; the

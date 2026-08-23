@@ -165,6 +165,14 @@ grep -o "'target_dict_cfg': '<filtered: [0-9]* entries>'" logs/generate.log
 `1` = shadow file took, `45` = inline/merge worked, **`44` = nothing took** — you are
 running the shared dict and probably the wrong PDB.
 
+## Step 5b — Verify resume before relying on it
+
+Shard skipping and binder fold reuse are on by default. Confirm they invalidate correctly:
+
+```bash
+bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2 --nsteps 50
+```
+
 ## Step 6 — Emit a manifest
 
 ```bash
