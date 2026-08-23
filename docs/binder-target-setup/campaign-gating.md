@@ -322,8 +322,17 @@ count and resume granularity becomes one shard.
 `scripts/check_resume.sh` exercises all of this against a throwaway `run_name`:
 
 ```bash
-bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2 --nsteps 50
+bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2
 ```
+
+It deliberately does **not** shrink `nsteps`. `generation.search.step_checkpoints` are
+absolute step indices (`[0, 100, 200, 300, 400]` in the CBLN1 campaign), so `--nsteps 50` puts
+every checkpoint but the first past the end of the trajectory and generation dies — which is
+how the script's own first default broke a real run. It now leaves `nsteps` at the config's
+value unless asked, and refuses a `--nsteps` smaller than the largest checkpoint. For the same
+reason its "changed parameter" case perturbs `generation.dataloader.batch_size`, which is
+inside the subtree the digest hashes; top-level `seed` is not, and would leave the digest
+unchanged.
 
 It asserts on filesystem state rather than log text, and it checks the *invalidation* paths as
 well as the reuse ones — a resume that never invalidates is indistinguishable from one that

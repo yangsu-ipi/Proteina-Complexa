@@ -170,7 +170,7 @@ running the shared dict and probably the wrong PDB.
 Shard skipping and binder fold reuse are on by default. Confirm they invalidate correctly:
 
 ```bash
-bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2 --nsteps 50
+bash docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2
 ```
 
 ## Step 6 — Emit a manifest

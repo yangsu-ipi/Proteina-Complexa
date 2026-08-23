@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify that in-stage resume actually reuses work, on the machine that can run it.
 #
-#   bash check_resume.sh --config /path/to/pipeline.yaml [--samples 2] [--nsteps 50]
+#   bash check_resume.sh --config /path/to/pipeline.yaml [--samples 2] [--nsteps N]
 #
 # Drives four real `complexa` invocations against a throwaway run_name and
 # asserts on filesystem state, not on log text. Exits non-zero on the first
@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-CONFIG=""; SAMPLES=2; NSTEPS=50; KEEP=0; SKIP_BACKEND=0
+CONFIG=""; SAMPLES=2; NSTEPS=""; KEEP=0; SKIP_BACKEND=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)   CONFIG="$2"; shift 2 ;;
@@ -77,7 +77,9 @@ from omegaconf import OmegaConf
 p = pathlib.Path(sys.argv[1]).resolve()
 with initialize_config_dir(version_base=None, config_dir=str(p.parent)):
     cfg = compose(config_name=p.stem)
+ckpts = OmegaConf.select(cfg, "generation.search.step_checkpoints") or []
 print(OmegaConf.select(cfg, "generation.task_name") or "")
+print(max([int(c) for c in ckpts], default=0))
 PY
 )" || {
   printf '\n\033[31mABORT\033[0m could not compose %s to read generation.task_name.\n' "$CONFIG" >&2
@@ -88,7 +90,31 @@ PY
   rm -rf "$LOGDIR"
   exit 1
 }
+MAX_STEP_CKPT="$(printf '%s\n' "$TASK_NAME" | sed -n '2p')"
+TASK_NAME="$(printf '%s\n' "$TASK_NAME" | sed -n '1p')"
 [[ -n "$TASK_NAME" ]] || die "generation.task_name is empty in $CONFIG -- pin it under _self_"
+
+# Search schedules are absolute step indices, not fractions. A config with
+# step_checkpoints [0,100,200,300,400] and nsteps=50 puts every checkpoint but
+# the first past the end of the trajectory, and generation fails -- which is
+# exactly how the first version of this script broke, by defaulting nsteps=50.
+# So nsteps is left alone unless asked for, and refused when it would not fit.
+if [[ -n "$NSTEPS" ]]; then
+  if [[ "${MAX_STEP_CKPT:-0}" -gt "$NSTEPS" ]]; then
+    cat >&2 <<MSG
+
+ABORT --nsteps $NSTEPS is smaller than this config's largest search checkpoint
+      (${MAX_STEP_CKPT}). generation.search.step_checkpoints are absolute step
+      indices, so the search schedule would point past the end of the
+      trajectory. Drop --nsteps (the config's own value is used, which is what
+      a resume check wants anyway) or pass at least ${MAX_STEP_CKPT}.
+MSG
+    rm -rf "$LOGDIR"; exit 2
+  fi
+  BASE_OVERRIDES_NSTEPS=("++generation.args.nsteps=$NSTEPS")
+else
+  BASE_OVERRIDES_NSTEPS=()
+fi
 
 RUN_DIR="./inference/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
 EVAL_DIR="./evaluation_results/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
@@ -113,11 +139,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Pin the shard counts to 1. The campaign config may set gen_njobs=2, which
+# would (a) split --samples across shards so this script's job 0 produces half
+# of them, and (b) take run_step's parallel path, where the real error goes to
+# per-job stage logs instead of stdout. One shard keeps the counts predictable;
+# the marker mechanism under test is per-shard either way.
 BASE_OVERRIDES=(
   "++run_name=$RUN_NAME"
   "++generation.dataloader.dataset.nres.nsamples=$SAMPLES"
-  "++generation.args.nsteps=$NSTEPS"
   "++generation.filter.filter_samples_limit=$SAMPLES"
+  "++gen_njobs=1"
+  "++eval_njobs=1"
+  ${BASE_OVERRIDES_NSTEPS[@]+"${BASE_OVERRIDES_NSTEPS[@]}"}
 )
 
 # Count per-design directories, matching count_shard_sample_dirs' definition.
@@ -149,27 +182,41 @@ run_cx() {
   local what="$1"; shift
   STEP=$((STEP+1))
   local log="$LOGDIR/$(printf '%02d' "$STEP")_${what}.log"
-  if ! complexa "$@" >"$log" 2>&1; then
+  # Capture the status before anything else runs. Inside `if ! cmd; then`, $? is
+  # the status of the negation, which is always 0 -- the first version of this
+  # reported every failure as "exit 0".
+  local rc=0
+  complexa "$@" >"$log" 2>&1 || rc=$?
+  if (( rc != 0 )); then
     printf '\n\033[31mABORT\033[0m complexa %s failed (exit %d). Tail of %s:\n' \
-      "$what" "$?" "$log" >&2
+      "$what" "$rc" "$log" >&2
     tail -40 "$log" | sed 's/^/    /' >&2
+    # Without --verbose the wrapper logs the real error to a stage file and only
+    # re-raises CalledProcessError, so the captured stdout holds a traceback
+    # about the traceback. We pass --verbose, but a stage log may still exist.
+    local stage
+    stage="$(ls -t ./logs/${what}_*"$RUN_NAME"*.log 2>/dev/null | head -1)"
+    if [[ -n "$stage" ]]; then
+      printf '\n    --- tail of stage log %s ---\n' "$stage" >&2
+      tail -30 "$stage" | sed 's/^/    /' >&2
+    fi
     printf '\n    full logs kept in %s\n' "$LOGDIR" >&2
     KEEP_LOGS=1
     exit 1
   fi
 }
 
-gen()   { run_cx generate "generate" "$CONFIG" "${BASE_OVERRIDES[@]}" "$@"; }
-eval_() { run_cx evaluate "evaluate" "$CONFIG" "${BASE_OVERRIDES[@]}" "$@"; }
+gen()   { run_cx generate "generate" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" "$@"; }
+eval_() { run_cx evaluate "evaluate" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" "$@"; }
 
 # -----------------------------------------------------------------------------
 say "1. first run writes a marker and fold caches"
-gen || die "initial generate failed"
+gen
 DIRS_1=$(n_sample_dirs "$RUN_DIR")
 [[ "$(n_markers "$RUN_DIR")" -ge 1 ]] && ok "shard marker written" || bad "no shard_*_complete.json in $RUN_DIR"
 [[ "$DIRS_1" -gt 0 ]] && ok "$DIRS_1 sample directories produced" || die "generate produced no sample directories"
 
-run_cx filter "filter" "$CONFIG" "${BASE_OVERRIDES[@]}"
+run_cx filter "filter" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}"
 eval_ || die "initial evaluate failed"
 CACHES_1=$(n_caches "$EVAL_DIR")
 REFOLDS_1=$(n_refolds "$EVAL_DIR")
@@ -188,7 +235,7 @@ PY
 
 # -----------------------------------------------------------------------------
 say "2. same config -> generate skips (no new sample directories)"
-gen || die "second generate failed"
+gen
 DIRS_2=$(n_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_2" -eq "$DIRS_1" ]]; then
   ok "still $DIRS_2 sample directories (skipped, nothing duplicated)"
@@ -209,13 +256,18 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-say "4. changed generation parameter -> marker invalidated"
+say "4. changed generation parameter (batch_size) -> marker invalidated"
 # From here on every generate uses ALT so the digest matches the marker this
 # step leaves behind. Step 5 must differ from the marker in exactly one way --
 # the missing directory -- or it would regenerate because of a stale digest and
 # pass without testing anything.
-ALT=("++generation.args.nsteps=$((NSTEPS + 1))")
-gen "${ALT[@]}" || die "generate with changed nsteps failed"
+# The perturbation has to sit inside `generation`, because that is the subtree
+# the marker digest hashes -- top-level `seed` would leave the digest unchanged
+# and this step would fail for the wrong reason. batch_size qualifies, changes
+# no counts, and cannot invalidate an absolute search schedule the way nsteps
+# does.
+ALT=("++generation.dataloader.batch_size=1")
+gen "${ALT[@]}"
 DIRS_4=$(n_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_4" -gt "$DIRS_2" ]]; then
   ok "regenerated on a config change ($DIRS_2 -> $DIRS_4 directories)"
@@ -227,7 +279,7 @@ fi
 say "5. removed sample directory -> marker invalidated"
 # Control: the same config now skips, so anything that changes below is the
 # deletion talking and not the digest.
-gen "${ALT[@]}" || die "control generate failed"
+gen "${ALT[@]}"
 DIRS_5CTL=$(n_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5CTL" -eq "$DIRS_4" ]]; then
   ok "control: matching digest skips ($DIRS_5CTL directories unchanged)"
@@ -240,7 +292,7 @@ VICTIM=$(find "$RUN_DIR" -maxdepth 1 -type d -name 'job_*' | head -1)
 rm -rf "$VICTIM"
 DIRS_5a=$(n_sample_dirs "$RUN_DIR")
 [[ "$DIRS_5a" -lt "$DIRS_5CTL" ]] || die "removing $VICTIM did not reduce the directory count"
-gen "${ALT[@]}" || die "generate after removal failed"
+gen "${ALT[@]}"
 DIRS_5b=$(n_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5b" -gt "$DIRS_5a" ]]; then
   ok "regenerated when output went missing ($DIRS_5a -> $DIRS_5b)"
