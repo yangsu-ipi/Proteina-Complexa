@@ -50,7 +50,7 @@ verify the structure against the config, *then* spend a GPU-hour.
 | [`scripts/build_ccd_mirror.py`](scripts/build_ccd_mirror.py) | Split wwPDB `components.cif` into the CCD mirror layout atomworks expects | verified against real `components.cif` data; stdlib only |
 | [`scripts/check_target_pdb.py`](scripts/check_target_pdb.py) | Preflight a target PDB: heteroatoms, numbering, gaps, hotspot resolution | verified on a real target inside a SLURM job — 136/136 residues selected by `A58-193`, no gaps, no in-range heteroatoms, all 11 hotspots matched, `RESULT: PASS` |
 | [`../../.claude/skills/_shared/scripts/check_citations.py`](../../.claude/skills/_shared/scripts/check_citations.py) | Detect stale `file.py:123` anchors: does each citation still point at the text it pointed at when written? `--fix` rewrites unambiguous moves | verified end-to-end — found and fixed 20 stale citations across six skills |
-| [`scripts/check_resume.sh`](scripts/check_resume.sh) | Prove in-stage resume reuses work *and* invalidates correctly: shard skip, fold-cache reuse, and the three invalidation paths (config change, deleted output, changed folding backend) | helpers verified against real job outputs; the six live assertions need a GPU box — **unrun** |
+| [`scripts/check_resume.sh`](scripts/check_resume.sh) | Prove in-stage resume reuses work *and* invalidates correctly: shard skip, fold-cache reuse, and the invalidation paths (config change, deleted output, changed folding backend) | **11/11 green on the CBLN1/5KC5 campaign** — protein binder, beam search, one shard, colabdesign. Step 6 (folding-backend invalidation) needs `RF3_CKPT_PATH` and is still unexercised; the ligand and motif save paths have not been run |
 
 ## Quick path
 
