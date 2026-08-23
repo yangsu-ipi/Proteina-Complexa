@@ -485,7 +485,21 @@ def _load_esmc(model_name: str, device: str) -> EsmBackend:
             "metric.esm_backend=esm2."
         )
 
-    from esm.models.esmc import ESMC
+    try:
+        from esm.models.esmc import ESMC
+    except ImportError as exc:
+        # Facebook's fair-esm claims the same top-level module name as the
+        # Biohub/EvolutionaryScale package, so only one can be installed at a
+        # time -- and designability.run_esmfold_multimer imports fair-esm's.
+        # Convert to RuntimeError so the caller's NaN fallback still applies
+        # instead of the ImportError escaping and failing the whole evaluation.
+        raise RuntimeError(
+            f"An 'esm' module is installed but provides no ESMC ({exc}). "
+            "Facebook's fair-esm uses the same module name and shadows the "
+            "Biohub/EvolutionaryScale package; they cannot coexist, and "
+            "run_esmfold_multimer needs fair-esm. Set metric.esm_backend=esm2 "
+            "to score with ESM2 instead."
+        ) from exc
 
     if os.environ.get("ESM_DIR") or os.environ.get("CACHE_DIR"):
         logger.info(

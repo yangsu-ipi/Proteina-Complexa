@@ -228,7 +228,7 @@ evaluate config sets `compute_esm_metrics: true`
 (`evaluation/esm_eval.py:372-377`), so an empty directory resolves, becomes the *first*
 load location ahead of the HF cache (`:417-418`), and then `from_pretrained(...,
 local_files_only=True)` fails. With `force_offline=True` — the default on
-`compute_esm_ppl_for_sequences` (`:617`) — you get `RuntimeError: ESM model not found in
+`compute_esm_ppl_for_sequences` (`:631`) — you get `RuntimeError: ESM model not found in
 local paths` **partway through evaluation**, after generation has already spent the GPU
 time. Silencing the gate this way makes the failure later and more expensive. Gate on
 `community_models.ESM_DIR.has_weights` instead of `.exists`.
