@@ -368,6 +368,27 @@ else
   bad "a deleted design was not regenerated -- the shard is unrecoverable"
 fi
 
+# The count above only shows that *something* was produced. What has to hold for
+# the next run to skip is that every directory the new marker names is present --
+# and that the damaged attempt's leftovers were cleared rather than mixed in.
+RECHECK=$(python - "$MARKER" "$RUN_DIR" <<'PYR'
+import json, os, sys
+marker, root = sys.argv[1], sys.argv[2]
+names = json.load(open(marker)).get("sample_dirs") or []
+filtered = os.path.join(root, "filtered_out_samples")
+missing = [n for n in names
+           if not os.path.isdir(os.path.join(root, n))
+           and not os.path.isdir(os.path.join(filtered, n))]
+print(f"{len(names)} {len(missing)}")
+PYR
+)
+read -r N_RECORDED N_MISSING <<<"$RECHECK"
+if [[ "$N_MISSING" -eq 0 && "$N_RECORDED" -gt 0 ]]; then
+  ok "all $N_RECORDED directories the new marker records are present"
+else
+  bad "$N_MISSING of $N_RECORDED newly recorded directories are absent"
+fi
+
 # -----------------------------------------------------------------------------
 if [[ $SKIP_BACKEND -eq 1 ]]; then
   say "6. folding-backend change -- SKIPPED (--skip-backend-check)"

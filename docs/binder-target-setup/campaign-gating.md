@@ -341,6 +341,14 @@ Names fix both, and are checkable without knowing which of the three save paths 
 Markers predating `sample_dirs` skip verification with a debug note rather than being treated
 as damaged.
 
+**A damaged shard is cleared before it is regenerated.** Generation has no per-design resume,
+so the directories that survived are a partial version of what the retry is about to produce.
+Leaving them makes the shard's output a mix of two attempts with only the newer recorded, and
+the retry silently overwrites whichever names collide. So when the digest matches and files are
+missing, the recorded directories are deleted along with the marker, and the shard is redone as
+a whole. Deletion is scoped to names the marker itself lists — designs from a run with a
+*different* config are never touched, because that case warns instead of clearing.
+
 The same trap catches anything *checking* resume from outside: a live-directory count drops
 across a filter stage even though nothing was lost, so comparing live counts either side of a
 filter reports a correct skip as a regeneration. Count live plus `filtered_out_samples/` —
