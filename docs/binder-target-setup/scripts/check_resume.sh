@@ -80,6 +80,24 @@ with initialize_config_dir(version_base=None, config_dir=str(p.parent)):
 ckpts = OmegaConf.select(cfg, "generation.search.step_checkpoints") or []
 print(OmegaConf.select(cfg, "generation.task_name") or "")
 print(max([int(c) for c in ckpts], default=0))
+
+# Report environment variables the config interpolates but the shell lacks. The
+# run needs them (target_path is commonly built from a campaign directory
+# variable), and failing here beats failing after the model has loaded.
+missing = []
+for key in ("generation.dataloader.dataset.conditional_features",
+            "generation.target_dict_cfg", "generation"):
+    node = OmegaConf.select(cfg, key)
+    if node is None:
+        continue
+    try:
+        OmegaConf.to_yaml(node, resolve=True)
+    except Exception as exc:                       # noqa: BLE001 - message is the payload
+        for tok in str(exc).replace("'", " ").split():
+            if tok.isupper() and "_" in tok and tok not in missing:
+                missing.append(tok)
+        break
+print(",".join(missing))
 PY
 )" || {
   printf '\n\033[31mABORT\033[0m could not compose %s to read generation.task_name.\n' "$CONFIG" >&2
@@ -90,8 +108,27 @@ PY
   rm -rf "$LOGDIR"
   exit 1
 }
+MISSING_ENV="$(printf '%s\n' "$TASK_NAME" | sed -n '3p')"
 MAX_STEP_CKPT="$(printf '%s\n' "$TASK_NAME" | sed -n '2p')"
 TASK_NAME="$(printf '%s\n' "$TASK_NAME" | sed -n '1p')"
+
+if [[ -n "$MISSING_ENV" ]]; then
+  cat >&2 <<MSG
+
+ABORT the config interpolates environment variables this shell does not define:
+      ${MISSING_ENV//,/, }
+
+      Campaign configs commonly build target_path from a campaign-directory
+      variable, and the runner exports it while an interactive shell does not.
+      Export it and re-run, e.g.:
+
+          export ${MISSING_ENV%%,*}="\$PWD"
+
+      (Generation would otherwise load the model, then fail resolving the
+      target PDB path.)
+MSG
+  rm -rf "$LOGDIR"; exit 2
+fi
 [[ -n "$TASK_NAME" ]] || die "generation.task_name is empty in $CONFIG -- pin it under _self_"
 
 # Search schedules are absolute step indices, not fractions. A config with

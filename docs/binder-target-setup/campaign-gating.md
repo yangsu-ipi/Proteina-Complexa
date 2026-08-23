@@ -302,6 +302,15 @@ next run compares digests:
 Set `skip_completed_shards: false` to force regeneration; the warning it then emits names the
 duplication that follows.
 
+**Resolution is attempted, never required.** The generation subtree carries `oc.env`
+interpolations for things a given run may not touch — `af_params_dir: ${oc.env:AF2_DIR}` sits
+uncommented at `binder_generate.yaml:135`, and campaign configs build `target_path` from a
+campaign-directory variable. Hashing with `resolve=True` unconditionally therefore aborts
+generation over an unset variable the run never reads; that regression escaped into a pushed
+commit and only surfaced when the checker ran on a real campaign. An unresolvable config now
+falls back to the unresolved text, with the mode mixed into the hash so the two forms cannot
+collide.
+
 Hashing the whole `generation` subtree rather than comparing a sample count keeps this correct
 for every code path — length-based, repeat-based, motif conditional features — without
 duplicating `split_by_job`'s arithmetic, which is the "two things that must agree" trap this
