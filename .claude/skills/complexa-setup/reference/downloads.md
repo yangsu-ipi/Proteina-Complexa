@@ -75,7 +75,7 @@ $PROJECT_ROOT/
 **Mismatch to fix by hand:** `LOCAL_CHECKPOINT_PATH` defaults to
 `${LOCAL_CODE_PATH}/checkpoints` (`.env_example:28`) — a *different* directory
 from where `complexa download` writes, which is always `$PROJECT_ROOT/ckpts`
-(`download_startup.sh:238`) regardless of the `.env` setting. They do **not**
+(`download_startup.sh:237-239`) regardless of the `.env` setting. They do **not**
 line up out of the box, so `${oc.env:CKPT_PATH}` resolves to an empty
 `checkpoints/` even after a successful download. Either set
 `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` after downloading, or
