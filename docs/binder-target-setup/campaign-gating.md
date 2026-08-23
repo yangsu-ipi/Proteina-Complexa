@@ -291,13 +291,16 @@ It now keys on a **completion marker** instead. A finished shard writes
 `shard_{job_id}_complete.json` recording a SHA-256 of its `generation` config subtree, and the
 next run compares digests:
 
-| Marker state | `skip_completed_shards` | Behaviour |
-|---|---|---|
-| absent | either | generate, silently |
-| digest matches | `true` | **skip the shard** |
-| digest matches | `false` (default) | warn that regenerating will duplicate, then generate |
-| digest differs | either | warn that output from a different request is present, then generate |
-| unreadable | either | warn, then generate |
+| Marker state | Behaviour (default `skip_completed_shards: true`) |
+|---|---|
+| absent | generate, silently |
+| digest matches, directories intact | **skip the shard** |
+| digest matches, directories missing | warn, regenerate |
+| digest differs | warn that output from a different request is present, regenerate |
+| unreadable | warn, regenerate |
+
+Set `skip_completed_shards: false` to force regeneration; the warning it then emits names the
+duplication that follows.
 
 Hashing the whole `generation` subtree rather than comparing a sample count keeps this correct
 for every code path — length-based, repeat-based, motif conditional features — without
@@ -305,18 +308,20 @@ duplicating `split_by_job`'s arithmetic, which is the "two things that must agre
 document keeps returning to. It also means *any* changed generation parameter (`nsteps`,
 guidance weight, reward config) invalidates the marker, not just the design count.
 
-The default is off, so behaviour is unchanged unless a campaign opts in. Turn it on with
-`gen_njobs` above the GPU count and resume granularity becomes one shard:
+**A marker alone is not enough to skip: the output has to still be there.** A marker records
+that a shard finished, not that its designs survived, so the guard also counts the shard's
+`job_{job_id}_*` directories and regenerates when fewer remain than the marker claims. The
+comparison is deliberately one-sided — the ligand path writes an extra suffixed directory per
+design beyond those counted in `pdb_paths` (`generate.py:510`), so a shard can hold *more*
+directories than it recorded, never fewer.
 
-```bash
-complexa design ./pipeline.yaml "++generation.skip_completed_shards=true" "${COMPLEXA_OVERRIDES[@]}"
-```
+That check is what makes defaulting to skip safe, and skipping is the point: a resume feature
+that warns and then burns the GPU time anyway has saved nothing. Set `gen_njobs` above the GPU
+count and resume granularity becomes one shard.
 
-Two limitations to know. A run producing no rewards CSV still writes its marker, so the marker
-tracks *completion*, not output volume — pair it with the acceptance check's
-`live + filtered_out == generated` assertion. And because a completed shard is skipped rather
-than re-derived, the campaign manifest's "seed S produced these N designs" claim spans two
-processes; the digest proves they were the same *request*, not the same RNG stream.
+The remaining limitation is provenance. A skipped shard was produced by a different process
+than the one writing the manifest, so "seed S produced these N designs" spans two runs; the
+digest proves they were the same *request*, not the same RNG stream.
 
 **So clear the run directory before re-running generate over it**, or retry at shard
 granularity. The
@@ -335,14 +340,22 @@ assertion has to catch. A shard skipped on a matching digest contributes its old
 the count, which is correct; a shard regenerated after a digest mismatch contributes both sets,
 which is not.
 
-`evaluate`'s binder track can now reuse work. Each design's refolding results are cached in
-`binder_eval_cache.json` next to its PDB, and `metric.reuse_cached_folding: true` loads that
-instead of refolding. The cache is only honoured when it covers every requested
-`sequence_types` entry, so widening `["self"]` to `["self", "mpnn"]` correctly recomputes rather
-than returning a partial answer. It is written alongside the pre-existing
-`sequence_type_stats.json`, whose schema is unchanged, so designs evaluated before this existed
-simply recompute once. The monomer track is unaffected — it folds a batch of sequences per call
-rather than looping per design, so it has no per-design artifact to key on.
+`evaluate`'s binder track reuses work by default. Each design's refolding results are cached in
+`binder_eval_cache.json` next to its PDB, and `metric.reuse_cached_folding` (default `true`)
+loads that instead of refolding.
+
+**The cache is keyed on a fingerprint of everything that determines the result** — folding
+backend, inverse-folding model, target path/chain/task, interface cutoff, redesign count,
+sequence types, and the per-design fixed-residue override. Without that, switching
+`binder_folding_method` from `colabdesign` to an `rf3` model would silently serve AF2 numbers
+for an RF3 run, which is the failure that makes an unfingerprinted cache worse than no cache.
+Widening `sequence_types` from `["self"]` to `["self", "mpnn"]` also changes the fingerprint, so
+it recomputes rather than returning a partial answer.
+
+It is written alongside the pre-existing `sequence_type_stats.json`, whose schema is unchanged,
+and caches without a fingerprint field are ignored — so designs evaluated before this existed
+recompute once and are cached thereafter. The monomer track is unaffected: it folds a batch of
+sequences per call rather than looping per design, so it has no per-design artifact to key on.
 
 `filter` and `analyze` are safe to re-run. `filter` recomputes `keep_dirs` from paths that still
 exist (`filter.py:188-191`) and explicitly skips `filtered_out_samples/` when moving, so a second

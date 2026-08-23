@@ -7,6 +7,7 @@ This module provides functions for evaluating protein binder designs:
 - Force field metrics (hydrogen bonds, electrostatics)
 """
 
+import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -128,7 +129,21 @@ def _binder_cache_path(sample_root_path: str) -> str:
     return os.path.join(sample_root_path, BINDER_EVAL_CACHE_FILENAME)
 
 
-def write_binder_eval_cache(sample_root_path: str, sequence_type_stats: dict, sequences_dict: dict) -> None:
+def binder_eval_fingerprint(**inputs: Any) -> str:
+    """Digest of every input that determines a refolding result.
+
+    A cached result is only reusable if it was produced by the same request.
+    Switching ``binder_folding_method`` from ``colabdesign`` to an ``rf3`` model
+    is the case that matters most: the numbers are not comparable, and without a
+    fingerprint the cache would silently serve AF2 results for an RF3 run.
+    """
+    canonical = json.dumps(inputs, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def write_binder_eval_cache(
+    sample_root_path: str, fingerprint: str, sequence_type_stats: dict, sequences_dict: dict
+) -> None:
     """Persist everything the row-building code needs from ``run_binder_eval``.
 
     Written alongside — not instead of — ``sequence_type_stats.json``, whose
@@ -138,7 +153,11 @@ def write_binder_eval_cache(sample_root_path: str, sequence_type_stats: dict, se
         # Serialise first so a non-encodable payload leaves no half-written file
         # behind for the next run to trip over.
         blob = json.dumps(
-            {"sequence_type_stats": sequence_type_stats, "sequences_dict": sequences_dict}
+            {
+                "fingerprint": fingerprint,
+                "sequence_type_stats": sequence_type_stats,
+                "sequences_dict": sequences_dict,
+            }
         )
         with open(_binder_cache_path(sample_root_path), "w") as handle:
             handle.write(blob)
@@ -147,12 +166,14 @@ def write_binder_eval_cache(sample_root_path: str, sequence_type_stats: dict, se
         logger.warning(f"Could not write binder eval cache for {sample_root_path}: {exc}")
 
 
-def read_binder_eval_cache(sample_root_path: str, sequence_types: list[str]) -> tuple[dict, dict] | None:
+def read_binder_eval_cache(
+    sample_root_path: str, fingerprint: str, sequence_types: list[str]
+) -> tuple[dict, dict] | None:
     """Cached refolding results for this design, or None to recompute.
 
-    Returns None unless the cache exists, parses, and covers every requested
-    sequence type — a cache built for ``["self"]`` must not be reused for a run
-    asking for ``["self", "mpnn"]``.
+    Returns None unless the cache exists, parses, was produced by an identical
+    request, and covers every requested sequence type — a cache built for
+    ``["self"]`` must not be reused for a run asking for ``["self", "mpnn"]``.
     """
     cache_path = _binder_cache_path(sample_root_path)
     if not os.path.exists(cache_path):
@@ -164,6 +185,12 @@ def read_binder_eval_cache(sample_root_path: str, sequence_types: list[str]) -> 
         sequences = cached["sequences_dict"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.warning(f"Ignoring unusable binder eval cache {cache_path}: {exc}")
+        return None
+    if cached.get("fingerprint") != fingerprint:
+        logger.info(
+            f"Binder eval cache at {cache_path} was produced by a different request "
+            f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
+        )
         return None
     missing = [t for t in sequence_types if t not in stats or t not in sequences]
     if missing:
@@ -240,8 +267,21 @@ def compute_binder_metrics(
     show_progress = eval_config.get("show_progress", False)
 
     # Reuse refolding results already on disk for a design, so an interrupted or
-    # partially-failed evaluate does not repeat the expensive folding pass.
-    reuse_cached_folding = cfg_metric.get("reuse_cached_folding", False)
+    # partially-failed evaluate does not repeat the expensive folding pass. Only
+    # caches carrying an identical fingerprint are honoured, so this cannot serve
+    # results from a different folding backend or target.
+    reuse_cached_folding = cfg_metric.get("reuse_cached_folding", True)
+    cache_fingerprint_base = {
+        "folding_model": folding_model,
+        "inverse_folding_model": inverse_folding_model,
+        "interface_cutoff": interface_cutoff,
+        "num_redesign_seqs": num_redesign_seqs,
+        "sequence_types": sorted(sequence_types),
+        "is_target_ligand": bool(is_target_ligand),
+        "target_pdb_path": target_pdb_path,
+        "target_pdb_chain": target_pdb_chain,
+        "target_task_name": target_task_name,
+    }
     n_reused = 0
 
     # Setup columns
@@ -280,7 +320,17 @@ def compute_binder_metrics(
             if get_fixed_residues_fn is not None:
                 fixed_residues_override = get_fixed_residues_fn(pdb_path, binder_chain)
 
-            cached = read_binder_eval_cache(sample_root_path, sequence_types) if reuse_cached_folding else None
+            fingerprint = binder_eval_fingerprint(
+                **cache_fingerprint_base,
+                binder_chain=binder_chain,
+                gen_target_chain=gen_target_chain,
+                fixed_residues_override=fixed_residues_override,
+            )
+            cached = (
+                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types)
+                if reuse_cached_folding
+                else None
+            )
             if cached is not None:
                 sequence_type_stats, sequences_dict = cached
                 n_reused += 1
@@ -305,7 +355,9 @@ def compute_binder_metrics(
                 with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
                     json.dump(sequence_type_stats, f, indent=4)
 
-                write_binder_eval_cache(sample_root_path, sequence_type_stats, sequences_dict)
+                write_binder_eval_cache(
+                    sample_root_path, fingerprint, sequence_type_stats, sequences_dict
+                )
 
             # Extract metrics for each sequence type
             for seq_type in sequence_types:
