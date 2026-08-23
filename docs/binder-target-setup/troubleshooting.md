@@ -96,7 +96,7 @@ resolve to `/complexa.ckpt`, and `AF2_DIR`/`ESM_DIR` derive from `LOCAL_CODE_PAT
 (`.env_example:68-70`).
 
 `preflight.sh` is not at fault — it reads `$PWD/.env` then falls back to the live
-environment (`preflight.sh:49-53`), and the fallback found nothing exported.
+environment (`preflight.sh:56-61`), and the fallback found nothing exported.
 
 **Fix:** regenerate `env.sh` (`complexa init <uv|docker> --force`), or force allexport at
 the call site:
@@ -177,7 +177,7 @@ the repo was the working directory:
 1. `validate_env` tested for the `.env` **file** in cwd and returned early, never
    consulting the environment — so `env.sh`'s exports could not satisfy it. It now keys on
    the **variables**: `.env` in cwd is loaded when present (never overriding exports), and
-   only a genuinely unset `DATA_PATH` fails. Same fall-through `preflight.sh:49-53` uses.
+   only a genuinely unset `DATA_PATH` fails. Same fall-through `preflight.sh:56-61` uses.
 2. `validate_target` checked `$DATA_PATH/target_data` unconditionally, *before* resolving
    any target. It is now checked only in the fallback branch that actually uses it, so an
    entry with an explicit `target_path` no longer requires the shared tree — matching the

@@ -190,7 +190,7 @@ member instead.
 
 From `src/proteinfoundation/cli/validate.py:validate_env`:
 
-1. `.env` file exists **in the current working directory** — `validate.py:254` is a bare `Path(".env")`, with no parent walk. (`complexa init` *does* walk parents, but only to find `.env_example`.)
+1. `.env` file exists **in the current working directory** — `validate.py:263` is a bare `Path(".env")`, with no parent walk. (`complexa init` *does* walk parents, but only to find `.env_example`.)
 2. `DATA_PATH` env var is set and resolves to an existing directory.
 
 That is the full check. It does not validate ckpts, tool binaries, or HF

@@ -20,9 +20,11 @@ with the line there now. Verdicts:
   ok        the cited line is byte-identical to what it was — nothing to do
   moved     that text now lives elsewhere in the file; --fix rewrites the number
   gone      the text is no longer anywhere in the file; a human must re-anchor
-  blank     the citation lands on a blank line
-  range     the citation is past the end of the file
-  nobase    no baseline available (doc line never committed) — content-only check
+  range     the file is now shorter than the citation
+  blank     stably points at a blank line — it pointed at one when written too,
+            so this is pre-existing imprecision rather than drift. Reported but
+            NOT treated as a failure, because nothing rotted.
+  nobase    no baseline available (uncommitted doc line) — emptiness check only
 
 Limitations worth knowing, because they bound what a green run proves:
 
@@ -34,6 +36,12 @@ Limitations worth knowing, because they bound what a green run proves:
     happened earlier.
   * Duplicate source lines (`)`, `else:`) relocate ambiguously; those are
     reported but never auto-fixed.
+  * A bare `:NNN` inherits the file named earlier on its line, which is wrong
+    when the line names a second file parenthetically — as one does while
+    calling *another* doc's citation stale. Such a ref is checked against the
+    wrong file; it stays quiet while that file is unchanged, and would report
+    spurious drift if it changed. Add `citation-check: ignore` to the line if
+    that happens.
 
 Stdlib-only, like its siblings in this directory.
 
@@ -144,29 +152,44 @@ def classify(doc: str, doc_line: int, src: str, start: int, end: int,
     base = {"doc": doc, "doc_line": doc_line, "source": src,
             "cited_line": start, "cited": cited}
 
-    if start > len(now):
-        return {**base, "verdict": "range", "detail": f"file has {len(now)} lines"}
-    if not now[start - 1].strip():
-        return {**base, "verdict": "blank", "detail": "cited line is blank"}
+    # Content first, emptiness second. A blank cited line is a *symptom* of
+    # drift, and the content comparison says where the text actually went --
+    # reporting "blank" instead throws that away. Ordering it this way also
+    # keeps a mis-inherited bare ref quiet when the file it landed on has not
+    # changed: there is genuinely no drift to report, however wrong the guess.
+    def fallback() -> dict[str, Any] | None:
+        if start > len(now):
+            return {**base, "verdict": "range", "detail": f"file has {len(now)} lines"}
+        if not now[start - 1].strip():
+            return {**base, "verdict": "blank", "detail": "cited line is blank"}
+        return None
 
     if not baseline_ok:
-        return {**base, "verdict": "nobase",
-                "detail": "doc has uncommitted changes; commit, then re-run to content-check"}
+        return fallback() or {**base, "verdict": "nobase",
+                              "detail": "doc has uncommitted changes; commit, then re-run"}
 
     sha = blame_commit(doc, doc_line)
     if sha is None:
-        return {**base, "verdict": "nobase", "detail": "doc line not committed; only emptiness checked"}
+        return fallback() or {**base, "verdict": "nobase",
+                              "detail": "doc line not committed; only emptiness checked"}
 
     key = (sha, src)
     if key not in cache:
         cache[key] = file_at(sha, src)
     then = cache[key]
     if then is None or end > len(then):
-        return {**base, "verdict": "nobase", "detail": f"source absent or shorter at {sha[:12]}"}
+        return fallback() or {**base, "verdict": "nobase",
+                              "detail": f"source absent or shorter at {sha[:12]}"}
 
     want = then[start - 1:end]
     if now[start - 1:end] == want:
+        if not want[0].strip():
+            return {**base, "verdict": "blank",
+                    "detail": "stably points at a blank line (cosmetic)"}
         return {**base, "verdict": "ok", "detail": want[0].strip()[:60]}
+
+    if start > len(now):
+        return {**base, "verdict": "range", "detail": f"file now has {len(now)} lines"}
 
     hits = find_slice(now, want)
     label = want[0].strip()[:48]
@@ -298,10 +321,13 @@ def main() -> int:
 
     findings = scan(tuple(args.paths))
     counts = Counter(f["verdict"] for f in findings)
-    problems = [f for f in findings if f["verdict"] not in ("ok", "nobase")]
+    # `blank` is informational: content-first ordering means the citation pointed
+    # at a blank line when it was written, so there is no drift to act on.
+    problems = [f for f in findings if f["verdict"] not in ("ok", "nobase", "blank")]
+    notes = [f for f in findings if f["verdict"] == "blank"]
 
     if not args.quiet:
-        for f in sorted(problems, key=lambda f: (f["verdict"], f["doc"], f["doc_line"])):
+        for f in sorted(problems + notes, key=lambda f: (f["verdict"], f["doc"], f["doc_line"])):
             tag = " (inherited)" if f.get("inherited_source") else ""
             print(f"{f['verdict'].upper():6s} {f['doc']}:{f['doc_line']}  "
                   f"-> {f['source']}:{f['cited']}{tag}\n       {f['detail']}")

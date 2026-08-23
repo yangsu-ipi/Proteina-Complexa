@@ -189,7 +189,7 @@ complexa target add 50_PDL1_custom \
   --pdb-id 4z18
 ```
 
-The name must be new. `02_PDL1` and friends already exist in `configs/targets/targets_dict.yaml`, and without `-f` a collision makes `target_manager.py:1035-1044` prompt on `input()` — which raises `EOFError` non-interactively, cancels the add, and exits 1 (`cli_runner.py:1870-1871`).
+The name must be new. `02_PDL1` and friends already exist in `configs/targets/targets_dict.yaml`, and without `-f` a collision makes `target_manager.py:1035-1044` prompt on `input()` — which raises `EOFError` non-interactively, cancels the add, and exits 1 (`cli_runner.py:1909-1910`).
 
 ### Ligand example
 
@@ -272,7 +272,7 @@ For the downstream design / evaluate runs that consume the target, defer to `com
 | Symptom | Cause | Fix |
 |---|---|---|
 | `MISSING` from the Step 4 path check (or a `FileNotFoundError` at generate time) | neither `target_path` nor `$DATA_PATH/target_data/<source>/<target_filename>.pdb` exists | Confirm the PDB stem and source dir. Add a `target_path:` line (every live entry has one) or use `--target-path /full/path.pdb` if the file lives outside `target_data/`. |
-| `⚠️  Target 'X' already exists!` then `Overwrite? (y/N):` | Name collision in the dict being written (`target_manager.py:1035-1044`) | Pick a new name, or pass `-f / --force`. Non-interactively the `input()` raises `EOFError`, the add is cancelled and `cli_runner.py:1870-1871` exits 1 — so always check the name first. |
+| `⚠️  Target 'X' already exists!` then `Overwrite? (y/N):` | Name collision in the dict being written (`target_manager.py:1035-1044`) | Pick a new name, or pass `-f / --force`. Non-interactively the `input()` raises `EOFError`, the add is cancelled and `cli_runner.py:1909-1910` exits 1 — so always check the name first. |
 | Hotspot residue not in PDB | Wrong chain or residue number | Open the PDB, re-check chain letters (case-sensitive) and residue indices. Hotspots use the format `<CHAIN><RESNUM>` — see reference. |
 | Chain not found | `target_input` references a chain that does not exist in the PDB | Inspect the PDB with `grep "^ATOM" target.pdb \| awk '{print $5}' \| sort -u`. |
 | Ligand code missing from PDB | The 3-letter `ligand` code does not appear as a `HETATM` residue name in the file | Open the PDB and check `HETATM` lines; you may need a `_ligand_centered` variant of the PDB. |
