@@ -274,14 +274,22 @@ PY
 say "2. same config -> generate skips (no new sample directories)"
 gen
 DIRS_2=$(n_sample_dirs "$RUN_DIR")
+SKIP_WORKED=0
 if [[ "$DIRS_2" -eq "$DIRS_1" ]]; then
   ok "still $DIRS_2 sample directories (skipped, nothing duplicated)"
+  SKIP_WORKED=1
 else
   bad "directories went $DIRS_1 -> $DIRS_2; the shard regenerated instead of skipping"
 fi
 
 # -----------------------------------------------------------------------------
 say "3. same config -> evaluate reuses every fold cache"
+if [[ $SKIP_WORKED -eq 0 ]]; then
+  # Step 2 leaving extra designs behind guarantees refolds here, so a failure
+  # would just be step 2's echo. Reporting it as a second finding sends you
+  # looking for a cache bug that is not there.
+  printf '   \033[33mSKIP\033[0m step 2 regenerated, so new designs would refold regardless\n'
+else
 STAMP=$(mktemp); sleep 1
 eval_ || die "second evaluate failed"
 REFOLDED=$(newer_refolds "$EVAL_DIR" "$STAMP")
@@ -290,6 +298,7 @@ if [[ "$REFOLDED" -eq 0 ]]; then
   ok "none of the $REFOLDS_1 refolding outputs rewritten -- all $CACHES_1 caches reused"
 else
   bad "$REFOLDED of $REFOLDS_1 refolding outputs rewritten; the cache was not honoured"
+fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -324,11 +333,25 @@ else
   bad "control failed -- digest should have matched; steps below prove nothing"
 fi
 
-VICTIM=$(find "$RUN_DIR" -maxdepth 1 -type d -name 'job_*' | head -1)
-[[ -n "$VICTIM" ]] || die "no sample directory to remove"
+# Delete a directory the *current* marker recorded. Picking any job_* directory
+# can hit one from an earlier phase that this marker never listed, in which case
+# its recorded set is still intact, the shard rightly skips, and the assertion
+# fails while the code is correct.
+MARKER="$RUN_DIR/shard_0_complete.json"
+[[ -f "$MARKER" ]] || die "no shard marker at $MARKER"
+VICTIM_NAME=$(python - "$MARKER" <<'PYV'
+import json, sys
+names = json.load(open(sys.argv[1])).get("sample_dirs") or []
+print(names[0] if names else "")
+PYV
+)
+[[ -n "$VICTIM_NAME" ]] || die "marker records no sample_dirs; cannot test the deletion path"
+VICTIM="$RUN_DIR/$VICTIM_NAME"
+[[ -d "$VICTIM" ]] || VICTIM="$RUN_DIR/filtered_out_samples/$VICTIM_NAME"
+[[ -d "$VICTIM" ]] || die "recorded directory $VICTIM_NAME is already absent"
+printf '   removing recorded design %s\n' "$VICTIM_NAME"
 rm -rf "$VICTIM"
 DIRS_5a=$(n_sample_dirs "$RUN_DIR")
-[[ "$DIRS_5a" -lt "$DIRS_5CTL" ]] || die "removing $VICTIM did not reduce the directory count"
 gen "${ALT[@]}"
 DIRS_5b=$(n_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5b" -gt "$DIRS_5a" ]]; then

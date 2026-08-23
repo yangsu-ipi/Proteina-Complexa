@@ -274,14 +274,24 @@ def generation_config_digest(cfg_gen: dict) -> str:
     return hashlib.sha256(f"{mode}\n{text}".encode("utf-8")).hexdigest()
 
 
-def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str, nsamples: int) -> str:
-    """Record that this shard finished, so a later run can skip it."""
+def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str,
+                       pdb_paths: list[str]) -> str:
+    """Record that this shard finished, so a later run can skip it.
+
+    Stores the directory *names* it produced, not just a count. A count cannot
+    survive either of the two things that normally happen next: the filter stage
+    relocates non-surviving designs into ``filtered_out_samples/``, and a rerun
+    with a different config adds directories alongside the old ones. Names are
+    checkable in both cases.
+    """
     marker_path = shard_marker_path(root_path, job_id)
+    sample_dirs = sorted({os.path.basename(os.path.dirname(p)) for p in pdb_paths})
     payload = {
         "job_id": job_id,
         "njobs": njobs,
         "generation_config_sha256": digest,
-        "nsamples": nsamples,
+        "nsamples": len(pdb_paths),
+        "sample_dirs": sample_dirs,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
     }
     with open(marker_path, "w") as handle:
@@ -290,26 +300,29 @@ def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str, nsa
     return marker_path
 
 
-def count_shard_sample_dirs(root_path: str, job_id: int) -> int:
-    """Per-design directories this shard left behind.
+FILTERED_OUT_DIRNAME = "filtered_out_samples"
 
-    Every save path names them ``job_{job_id}_...`` (`:412`, `:510`, `:575`), so
-    the prefix scopes the count to one shard. Deliberately compared one-sidedly
-    by the caller: the ligand path writes an extra suffixed directory per design
-    on top of the ones counted in ``pdb_paths``, so a shard can hold *more*
-    directories than it recorded, never fewer.
+
+def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
+    """Recorded sample directories that are no longer on disk.
+
+    Returns None for a marker that predates ``sample_dirs``, meaning "cannot
+    verify". A directory counts as present in either its original location or
+    under ``filtered_out_samples/``, because the filter stage moves the designs
+    it did not keep there (``filter.py:207-226``) -- they are still this shard's
+    output, just relocated, and treating a filtered run as damaged would make
+    resume useless in exactly the campaigns that use filtering.
     """
-    if not os.path.isdir(root_path):
-        return 0
-    prefix = f"job_{job_id}_"
-    count = 0
-    for name in os.listdir(root_path):
-        path = os.path.join(root_path, name)
-        if not name.startswith(prefix) or not os.path.isdir(path):
-            continue
-        if any(entry.endswith(".pdb") for entry in os.listdir(path)):
-            count += 1
-    return count
+    names = marker.get("sample_dirs")
+    if not isinstance(names, list) or not names:
+        return None
+    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
+    return [
+        name
+        for name in names
+        if not os.path.isdir(os.path.join(root_path, name))
+        and not os.path.isdir(os.path.join(filtered_root, name))
+    ]
 
 
 def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enabled: bool) -> bool:
@@ -342,22 +355,25 @@ def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enable
         return False
 
     # A marker records that the shard finished, not that its output survived.
-    # Verify the designs are still on disk before trusting it, so a shard whose
-    # directories were deleted or partially synced is regenerated rather than
-    # skipped. One-sided on purpose -- see count_shard_sample_dirs.
-    recorded = marker.get("nsamples")
-    found = count_shard_sample_dirs(root_path, job_id)
-    if isinstance(recorded, int) and found < recorded:
+    # Check the recorded directories individually: a count cannot distinguish
+    # "the filter moved 14 of my 16 designs" from "someone deleted them", and it
+    # is defeated outright once a rerun has piled extra directories alongside.
+    missing = missing_shard_dirs(root_path, marker)
+    if missing:
+        shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
         logger.warning(
-            f"Shard {job_id} is marked complete with {recorded} samples but only {found} "
-            f"sample directories remain in {root_path}. Regenerating the shard."
+            f"Shard {job_id} is marked complete but {len(missing)} of its "
+            f"{marker.get('nsamples', '?')} sample directories are gone ({shown}). "
+            "Regenerating the shard."
         )
         return False
+    if missing is None:
+        logger.debug(f"Shard {job_id} marker predates sample_dirs; skipping output verification")
 
     if not skip_enabled:
         logger.warning(
             f"Shard {job_id} already completed with this exact config "
-            f"({marker.get('nsamples', '?')} samples, {found} directories present). "
+            f"({marker.get('nsamples', '?')} samples). "
             "Re-generating will DUPLICATE them under new directory names, because directory "
             "names encode a stochastic beam path. Unset "
             "generation.skip_completed_shards=false to stop forcing this."
@@ -901,7 +917,7 @@ def main(cfg):
             f.write(f"{job_id},{end_time - start_time:.2f},{len(pdb_paths)}\n")
         logger.info(f"Timing information saved to: {timing_csv_path}")
 
-    write_shard_marker(root_path, job_id, njobs, gen_config_digest, len(pdb_paths))
+    write_shard_marker(root_path, job_id, njobs, gen_config_digest, pdb_paths)
 
 
 if __name__ == "__main__":
