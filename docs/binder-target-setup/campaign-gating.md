@@ -270,8 +270,8 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:799`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:662`, called at `:730`/`:757`, plain
+  prediction in memory (`generate.py:815`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:678`, called at `:746`/`:773`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
