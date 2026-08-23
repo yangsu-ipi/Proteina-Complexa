@@ -37,6 +37,28 @@ done
 [[ -n "$CONFIG" ]] || { echo "--config is required" >&2; exit 2; }
 [[ -f "$CONFIG" ]] || { echo "no such config: $CONFIG" >&2; exit 2; }
 
+# The CLI refuses to run without COMPLEXA_INIT, and `.env` has no export lines,
+# so a caller who merely sourced `.env` gets empty path variables. Check both
+# here rather than letting `complexa generate` fail thirty lines into a log.
+command -v complexa >/dev/null 2>&1 || {
+  echo "complexa is not on PATH -- activate the environment first" >&2; exit 2; }
+if [[ -z "${COMPLEXA_INIT:-}" ]]; then
+  cat >&2 <<'MSG'
+COMPLEXA_INIT is unset, so every `complexa` subcommand this script runs would
+abort with "Environment not initialized". Source the generated env.sh, from
+bash, with allexport on:
+
+    set -a; source "$COMPLEXA_REPO/env.sh"; set +a
+
+See docs/binder-target-setup/env-and-mirrors.md ("The env.sh export gap").
+MSG
+  exit 2
+fi
+for _k in LOCAL_CODE_PATH CKPT_PATH; do
+  [[ -n "${!_k:-}" ]] || { echo "$_k is empty -- source env.sh with 'set -a' (the export gap)" >&2; exit 2; }
+done
+
+LOGDIR="$(mktemp -d)"       # before the first thing that can fail
 RUN_NAME="resume_check_$$"
 CONFIG_NAME="$(basename "${CONFIG%.*}")"
 PASS=0; FAIL=0
@@ -48,7 +70,7 @@ die()  { printf '\n\033[31mABORT\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Resolve the run directory the way generate.py does: ./inference/<config>_<task>[_<run>]
 # The task name comes from the resolved config, not from a guess.
-TASK_NAME="$(python - "$CONFIG" <<'PY'
+TASK_NAME="$(python - "$CONFIG" 2>"$LOGDIR/00_task_name.log" <<'PY'
 import sys, pathlib
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
@@ -57,8 +79,16 @@ with initialize_config_dir(version_base=None, config_dir=str(p.parent)):
     cfg = compose(config_name=p.stem)
 print(OmegaConf.select(cfg, "generation.task_name") or "")
 PY
-)" || die "could not resolve generation.task_name from $CONFIG"
-[[ -n "$TASK_NAME" ]] || die "generation.task_name is empty in $CONFIG"
+)" || {
+  printf '\n\033[31mABORT\033[0m could not compose %s to read generation.task_name.\n' "$CONFIG" >&2
+  printf '        The run directory name is derived from it, so this has to work first.\n' >&2
+  printf '        Check that hydra imports in the active environment and that the config\n' >&2
+  printf '        composes at all: complexa validate design %s\n\n' "$CONFIG" >&2
+  sed 's/^/    /' "$LOGDIR/00_task_name.log" >&2
+  rm -rf "$LOGDIR"
+  exit 1
+}
+[[ -n "$TASK_NAME" ]] || die "generation.task_name is empty in $CONFIG -- pin it under _self_"
 
 RUN_DIR="./inference/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
 EVAL_DIR="./evaluation_results/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
@@ -68,11 +98,17 @@ printf 'config      %s\ntask_name   %s\nrun_name    %s\ncwd         %s\nrun dir 
 # in the codebase, so run this from the campaign directory.
 [[ -w . ]] || die "cwd is not writable; run this from the campaign directory"
 
+KEEP_LOGS=0
 cleanup() {
   if [[ $KEEP -eq 1 ]]; then
     printf '\nkept %s and %s\n' "$RUN_DIR" "$EVAL_DIR"
   else
     rm -rf "$RUN_DIR" "$EVAL_DIR"
+  fi
+  if [[ ${KEEP_LOGS:-0} -eq 1 || $KEEP -eq 1 ]]; then
+    printf 'step logs in %s\n' "$LOGDIR"
+  else
+    rm -rf "$LOGDIR"
   fi
 }
 trap cleanup EXIT
@@ -103,8 +139,28 @@ n_refolds() { find "${1:-/nonexistent}" -mindepth 3 -name '*.pdb' 2>/dev/null | 
 newer_refolds() { find "${1:-/nonexistent}" -mindepth 3 -name '*.pdb' -newer "$2" 2>/dev/null | wc -l | tr -d ' '; }
 n_markers() { find "${1:-/nonexistent}" -maxdepth 1 -name 'shard_*_complete.json' 2>/dev/null | wc -l | tr -d ' '; }
 
-gen()  { complexa generate "$CONFIG" "${BASE_OVERRIDES[@]}" "$@" >/dev/null; }
-eval_() { complexa evaluate "$CONFIG" "${BASE_OVERRIDES[@]}" "$@" >/dev/null; }
+STEP=0
+
+# Run a complexa step quietly, but print the tail of its log if it fails. The
+# first version of this script sent stdout to /dev/null and reported only
+# "initial generate failed", which is useless: the whole point of a checker is
+# to say what went wrong.
+run_cx() {
+  local what="$1"; shift
+  STEP=$((STEP+1))
+  local log="$LOGDIR/$(printf '%02d' "$STEP")_${what}.log"
+  if ! complexa "$@" >"$log" 2>&1; then
+    printf '\n\033[31mABORT\033[0m complexa %s failed (exit %d). Tail of %s:\n' \
+      "$what" "$?" "$log" >&2
+    tail -40 "$log" | sed 's/^/    /' >&2
+    printf '\n    full logs kept in %s\n' "$LOGDIR" >&2
+    KEEP_LOGS=1
+    exit 1
+  fi
+}
+
+gen()   { run_cx generate "generate" "$CONFIG" "${BASE_OVERRIDES[@]}" "$@"; }
+eval_() { run_cx evaluate "evaluate" "$CONFIG" "${BASE_OVERRIDES[@]}" "$@"; }
 
 # -----------------------------------------------------------------------------
 say "1. first run writes a marker and fold caches"
@@ -113,7 +169,7 @@ DIRS_1=$(n_sample_dirs "$RUN_DIR")
 [[ "$(n_markers "$RUN_DIR")" -ge 1 ]] && ok "shard marker written" || bad "no shard_*_complete.json in $RUN_DIR"
 [[ "$DIRS_1" -gt 0 ]] && ok "$DIRS_1 sample directories produced" || die "generate produced no sample directories"
 
-complexa filter "$CONFIG" "${BASE_OVERRIDES[@]}" >/dev/null || die "filter failed"
+run_cx filter "filter" "$CONFIG" "${BASE_OVERRIDES[@]}"
 eval_ || die "initial evaluate failed"
 CACHES_1=$(n_caches "$EVAL_DIR")
 REFOLDS_1=$(n_refolds "$EVAL_DIR")
@@ -199,7 +255,8 @@ if [[ $SKIP_BACKEND -eq 1 ]]; then
 else
   say "6. changed folding backend -> fold caches invalidated"
   STAMP=$(mktemp); sleep 1
-  if eval_ "++metric.binder_folding_method=rf3_latest" >/dev/null 2>&1; then
+  if complexa evaluate "$CONFIG" "${BASE_OVERRIDES[@]}" \
+       "++metric.binder_folding_method=rf3_latest" >"$LOGDIR/99_rf3.log" 2>&1; then
     REFOLDED_6=$(newer_refolds "$EVAL_DIR" "$STAMP")
     if [[ "$REFOLDED_6" -gt 0 ]]; then
       ok "refolded under a different backend ($REFOLDED_6 outputs) -- cache correctly rejected"
