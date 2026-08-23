@@ -269,13 +269,18 @@ gate section warns about.
 Within a stage there is no checkpointing, and two details make a naive retry of `generate`
 actively dangerous:
 
-- **The rewards CSV is written once, at the end** (`generate.py:527` via `save_rewards_to_csv`,
-  called at `:714`/`:741`, `df.to_csv` with no append). Sample PDBs are written incrementally
-  per batch, so an interrupted generate leaves directories on disk and **no** rewards CSV.
-- **Retry directory names do not collide with the interrupted run's.** The per-design directory
-  name encodes the beam-search path (`job_0_n_195_id_3_beam_orig0_bm0-s0to100br3-…`), which is
-  stochastic, so a retry writes *new* directories alongside the abandoned ones instead of
-  overwriting them. Evaluation then folds designs that belong to no run and the counts inflate.
+- **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
+  prediction in memory (`generate.py:658`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:527`, called at `:714`/`:741`, plain
+  `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
+  entire shard and leaves no partial state to resume from. The same structure means peak memory
+  scales with the design count rather than the batch size.
+- **A retry's directory names do not collide with the previous attempt's.** The per-design
+  directory name encodes the beam-search path
+  (`job_0_n_195_id_3_beam_orig0_bm0-s0to100br3-…`), which is stochastic, and the `id_N` counter
+  restarts at zero each run. So re-running generate over a directory that already holds a
+  completed attempt writes *new* directories alongside the old ones instead of overwriting them.
+  Evaluation then folds designs belonging to no run and the counts inflate.
 
 `generate.py:582-589` looks like it guards against this — it exits early if
 `results_{config_name}_{job_id}.csv` exists — but nothing in the codebase writes that filename.
@@ -283,7 +288,8 @@ Evaluate writes `binder_results_…`, `monomer_results_…`, and friends (`evalu
 the bare `results_` form has no producer, so the guard is dead and generate always restarts from
 scratch. Do not rely on it.
 
-**So clear the run directory before retrying generate**, or retry at shard granularity. The
+**So clear the run directory before re-running generate over it**, or retry at shard
+granularity. The
 standalone step commands take `--job-id` (`add_job_args`, applied to `generate_parser` but not
 `design_parser`), so when a multi-GPU generate loses one shard you can re-run just that shard:
 
@@ -293,6 +299,13 @@ complexa generate ./pipeline.yaml --job-id 3 "${COMPLEXA_OVERRIDES[@]}"
 
 This is why the unconditional `live + filtered_out == generated` assertion matters: it is what
 catches a retry that silently inherited the previous attempt's directories.
+
+Repairing the dead guard is the cheapest real improvement available here. Point it at
+`rewards_{config_name}_{job_id}.csv` — the file `save_rewards_to_csv` actually writes, in
+`root_path` rather than its parent — and each shard gains a completion marker, so re-running
+generate skips finished shards instead of duplicating them. Combined with `gen_njobs` set
+higher than the GPU count, that buys shard-granular resume without any checkpointing
+machinery.
 
 `filter` and `analyze` are safe to re-run. `filter` recomputes `keep_dirs` from paths that still
 exist (`filter.py:188-191`) and explicitly skips `filtered_out_samples/` when moving, so a second
