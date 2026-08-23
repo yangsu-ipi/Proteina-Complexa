@@ -376,13 +376,31 @@ To shard finely, drive the shards yourself and let `gen_njobs` mean only "how ma
 
 ```bash
 # gen_njobs: 32 in the config; one shard per array task, one GPU each
-#SBATCH --array=0-31
-complexa generate ./pipeline.yaml --verbose --job-id "$SLURM_ARRAY_TASK_ID" "${COMPLEXA_OVERRIDES[@]}"
+#SBATCH --array=0-31%4
+python -m proteinfoundation.generate \
+    --config-path "$CAMPAIGN_DIR" --config-name pipeline \
+    ++job_id="$SLURM_ARRAY_TASK_ID" "${COMPLEXA_OVERRIDES[@]}"
 ```
 
-`--verbose` is load-bearing: without it `stage_njobs > 1` re-triggers the fan-out and one task
-would spawn 32 subprocesses (`cli_runner.py:611`). With it, the task runs exactly its own shard,
-and the child still reads `gen_njobs` from the config so `split_by_job` divides correctly.
+**Invoke the stage module directly rather than going through `complexa generate`.** That is what
+`run_step` runs anyway (`cli_runner.py:636-651`), minus the two things an array task must not
+inherit: the fan-out, and the `CUDA_VISIBLE_DEVICES = str(job_id)` pinning that would override
+SLURM's allocation. Nothing is lost — `generate.py` applies the atomworks patches and calls
+`load_dotenv()` at import, and `config_name` falls back to the `--config-name` stem
+(`generate.py:728`), so `++base_config_name` is optional. Output lands in the task's own SLURM
+log, which is what you wanted. One GPU per task comes from `--gres=gpu:1`; how many run at once
+is the array throttle (`%4`), not `gen_njobs`.
+
+The wrapper form — `complexa generate ./pipeline.yaml --verbose --job-id N` — also works today,
+but only by accident, and it is not worth depending on. `--verbose` means *"send output to my
+terminal instead of capturing it into per-job log files"*, exactly as the name suggests. The
+fan-out branch **requires** capture: N concurrent processes each need `stdout=PIPE` and a demux
+thread, because N interleaved streams cannot go coherently to one terminal. Running
+single-process is therefore a side effect of the output choice, not its purpose
+(`cli_runner.py:611`). Output routing and process topology are welded together in one flag, so
+anyone who later adds proper demuxing for verbose mode would silently reinstate the fan-out and
+every array task would spawn 32 subprocesses. Prefer the explicit invocation, where the topology
+is stated rather than inferred from a logging flag.
 
 **Choose designs-per-shard by time, not by count.** A shard should be a tolerable loss and long
 enough to amortise its startup — every shard is a fresh process that loads the checkpoint. Read
@@ -392,10 +410,37 @@ rather than assuming: the CBLN1/5KC5 smoke test spent 337 s on 4 seeds at `nstep
 puts ~45 min in each shard. Aim for a shard in the tens of minutes; minutes-long shards pay
 model loading repeatedly, hour-plus shards give resume little to save.
 
-Two caveats worth stating in the job file itself. Skipping only helps for shards that
-*finished* — a shard interrupted midway is cleared and redone whole. And `eval_njobs` is a
-separate knob with the same GPU-index pinning, so it belongs at the GPU count regardless of how
-finely generation is sharded.
+**`eval_njobs` must equal `gen_njobs`, and the evaluate array must be the same size.** In
+`input_mode: generated` — what campaigns use — evaluation does not chunk by `njobs` at all:
+`split_by_job_generated(root, job_id)` selects directories whose names begin with
+`job_{job_id}_` (`evaluation/utils.py:279-287`). So evaluate shard *N* processes exactly what
+generate shard *N* produced. Shard generation 32 ways and evaluate 4 ways and the designs from
+shards 4–31 are never evaluated; the only signal is one `No files assigned to job N/M` line per
+idle worker before it exits 0 (`evaluate.py:789-790`). The repo says the same thing in one line
+(`docs/INFERENCE.md:312`), and it becomes load-bearing the moment generation is sharded for
+resume rather than for throughput.
+
+**Under SLURM, GPU count is not what `njobs` expresses.** With one array task per shard, each
+task takes one GPU via `--gres=gpu:1`, and how many run at once is the array throttle
+(`--array=0-31%4`), not `gen_njobs`. Setting `gen_njobs: 1` to "let SLURM handle the GPUs" would
+break sharding outright — it is the divisor in `split_by_job`, so every task would generate the
+whole campaign. Keep `gen_njobs` at the shard count and use `--verbose` to suppress the
+in-process fan-out; that is the only thing standing between the CLI and its own GPU assignment.
+
+One caveat worth stating in the job file itself: skipping only helps for shards that *finished*
+— a shard interrupted midway is cleared and redone whole.
+
+A campaign sharded this way is no longer one `complexa design` call, because that runs all four
+steps in-process. It becomes four SLURM submissions chained on `afterok`:
+
+```bash
+gen=$(sbatch --parsable --array=0-31%4 --gres=gpu:1 gen_shard.sbatch)      # gen_njobs: 32
+flt=$(sbatch --parsable --dependency=afterok:$gen           filter.sbatch)  # single task
+evl=$(sbatch --parsable --dependency=afterok:$flt --array=0-31%4 --gres=gpu:1 eval_shard.sbatch)
+       sbatch          --dependency=afterok:$evl            analyze.sbatch  # single task
+```
+
+`filter` and `analyze` are single-GPU-free aggregation steps and must not be arrayed.
 
 `scripts/check_resume.sh` exercises all of this against a throwaway `run_name`:
 
