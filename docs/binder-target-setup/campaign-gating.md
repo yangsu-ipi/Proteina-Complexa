@@ -174,6 +174,84 @@ A setting that should apply to *every* run of a campaign belongs in `pipeline.ya
 — both the resolver and the runner compose the same file, so it cannot drift. Reserve the
 override list for what varies between run kinds.
 
+## Acceptance checks: count what the stage actually consumed
+
+The post-run acceptance check (`verify_run_outputs.py`-style) fails the same way the gate
+does — by asserting on a number that looks like the right one. Three real defects, all found
+by a smoke test that had otherwise produced correct science:
+
+**1. `timing_*.csv` catches the analyze stage's own summary.** The evaluate stage writes one
+`timing_{job_id}.csv` per worker with `job_id,evaluation_time_s,nsamples,evals_run`
+(`evaluate.py:971-974`). The analyze stage then writes `timing_summary.csv` **into the same
+directory** with a completely different schema — `eval_config,num_jobs,…,total_samples,…`,
+no `nsamples` column (`result_analysis/analysis.py:1765`). A `timing_*.csv` glob picks up
+both and `row["nsamples"]` raises `KeyError` on the summary row. Match the digits:
+
+```python
+_TIMING_CSV_RE = re.compile(r"^timing_\d+\.csv$")
+timing_csvs = sorted(p for p in evaluation_dir.glob("timing_*.csv")
+                     if _TIMING_CSV_RE.match(p.name))
+```
+
+The repo's own reader already does this, for this reason — `analysis.py:1671-1672` documents
+it as avoiding "aggregated outputs like `timing_summary.csv`". Follow the convention that
+exists rather than inventing a glob against it.
+
+**2. Do not assert a worker count.** `if len(timing_csvs) != 2` looks like a check that both
+GPUs did work. It is not: the number of evaluate workers is a scheduling detail, and one
+worker plus one summary file happens to equal two — which is how defect 1 stayed hidden
+until the count was fixed. Assert on *what ran* instead, which a file count can never
+capture, using the same `compute_*_metrics` flags the gate reads (`evaluate.py:108-111`,
+`960-968`):
+
+```python
+ran = {t for row in timing_rows for t in (row.get("evals_run") or "").split("+") if t}
+wanted = {name for name, flag in _TRACK_FLAGS.items() if metric.get(flag)}
+if ran != wanted:
+    raise SystemExit(f"evaluation ran {sorted(ran)}; resolved config expects {sorted(wanted)}")
+```
+
+Pass the acceptance check the **same** `--resolved-config` the gate consumed. That closes the
+loop opened in the previous section: one resolved config now feeds the pre-run gate *and* the
+post-run acceptance check, so "what we required", "what we ran", and "what we verified" cannot
+diverge.
+
+**3. `top_samples_*.csv` is a report, not the evaluation input set.** This is the subtle one.
+It is tempting to read the filter stage as a funnel — generate N, filter to M, evaluate M —
+and assert `evaluated == M`. Two things break that:
+
+- The filter **deduplicates by sequence** (`filter.py:148-150`), so `top_samples_*.csv` can
+  be smaller than the sample set for reasons that have nothing to do with filtering.
+- The entire pruning branch is guarded by `if len(combined_rewards) > filter_samples_limit`
+  (`filter.py:173`). Below the limit it logs `No filtering needed` and **leaves every sample
+  directory in place** — nothing is deleted, nothing is moved to `filtered_out_samples/`.
+
+So a smoke test generating 8 with `filter_samples_limit: 8` yields 8 generated, 6 rows in
+`top_samples_pipeline.csv` (2 duplicate sequences dropped), 8 directories on disk, and 8
+evaluated. `evaluated == survivors` fails on a run where nothing whatsoever went wrong.
+Nothing in `src/` reads `top_samples_*.csv` back, which is the tell — it bounds the run, it
+does not define it.
+
+Count the directories the stage could actually see:
+
+```python
+def sample_dirs(inference_dir):
+    return sorted(p for p in inference_dir.iterdir()
+                  if p.is_dir() and p.name not in {"filtered_out_samples", "timing"}
+                  and any(p.glob("*.pdb")))
+```
+
+then assert `evaluated == len(sample_dirs(...))` for coverage, `0 < deduped <= generated` as a
+report sanity bound, and — when `filtered_out_samples/` exists — that live plus filtered-out
+equals generated. That last one is the only assertion that actually proves the filter did what
+it was asked, and it is well defined whether or not pruning happened.
+
+**Know which of your numbers are independent.** The timing CSV's `nsamples` is
+`max(len(df))` over the result frames (`evaluate.py:944-946`) — the same frames the combined
+CSV is written from. So `evaluated == combined` is a schema guard, not a cross-check; keep it,
+but do not mistake it for evidence that evaluation covered the run. The genuinely independent
+numbers are the generation reward rows, the on-disk directory count, and the result rows.
+
 ## The pattern behind all of these
 
 `preflight.sh` reports facts; the gate applies thresholds. Every gate failure in this
@@ -184,6 +262,8 @@ document came from breaking that split in one of three ways:
 - **Measuring the wrong depth** — path existence instead of contents.
 - **Measuring the wrong config** — a resolved config composed with different overrides than
   the run will use, so the gate judges a config nobody executes.
+- **Measuring a derived number** — a report artifact (`top_samples_*.csv`) or a value computed
+  from the very frames under test (`nsamples`), mistaken for an independent observation.
 
 The common shape is *two things that must agree, with nothing enforcing it*. When you find
 one, either collapse them to a single source (one override list, one `.env`, one checkpoint
