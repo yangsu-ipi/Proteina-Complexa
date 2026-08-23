@@ -270,8 +270,8 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:799`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:662`, called at `:730`/`:757`, plain
+  prediction in memory (`generate.py:815`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:678`, called at `:746`/`:773`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
@@ -317,12 +317,24 @@ duplicating `split_by_job`'s arithmetic, which is the "two things that must agre
 document keeps returning to. It also means *any* changed generation parameter (`nsteps`,
 guidance weight, reward config) invalidates the marker, not just the design count.
 
-**A marker alone is not enough to skip: the output has to still be there.** A marker records
-that a shard finished, not that its designs survived, so the guard also counts the shard's
-`job_{job_id}_*` directories and regenerates when fewer remain than the marker claims. The
-comparison is deliberately one-sided — the ligand path writes an extra suffixed directory per
-design beyond those counted in `pdb_paths` (`generate.py:563`), so a shard can hold *more*
-directories than it recorded, never fewer.
+**A marker alone is not enough to skip: the output has to still be there — and a count cannot
+tell you.** The marker records the directory *names* the shard produced, and the guard checks
+each individually, accepting it in either its original location or under
+`filtered_out_samples/`.
+
+Counting was the first design, and a real campaign broke it in both directions:
+
+- **Filter relocation reads as deletion.** `--samples 2` generated 16 designs, and
+  `filter_samples_limit: 2` moved 14 into `filtered_out_samples/` (`filter.py:207-226`). Two
+  live directories against a recorded 16 looked like data loss, so every shard regenerated —
+  resume was inoperative in exactly the campaigns that filter, which is all of them.
+- **Accumulation defeats the other direction.** Directories pile up across reruns, so the live
+  count (34) exceeded the recorded count (16) and `found < recorded` could never fire. A
+  deleted design went undetected — the very case the check existed for.
+
+Names fix both, and are checkable without knowing which of the three save paths wrote them.
+Markers predating `sample_dirs` skip verification with a debug note rather than being treated
+as damaged.
 
 That check is what makes defaulting to skip safe, and skipping is the point: a resume feature
 that warns and then burns the GPU time anyway has saved nothing. Set `gen_njobs` above the GPU
