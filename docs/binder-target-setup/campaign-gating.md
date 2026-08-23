@@ -376,13 +376,31 @@ To shard finely, drive the shards yourself and let `gen_njobs` mean only "how ma
 
 ```bash
 # gen_njobs: 32 in the config; one shard per array task, one GPU each
-#SBATCH --array=0-31
-complexa generate ./pipeline.yaml --verbose --job-id "$SLURM_ARRAY_TASK_ID" "${COMPLEXA_OVERRIDES[@]}"
+#SBATCH --array=0-31%4
+python -m proteinfoundation.generate \
+    --config-path "$CAMPAIGN_DIR" --config-name pipeline \
+    ++job_id="$SLURM_ARRAY_TASK_ID" "${COMPLEXA_OVERRIDES[@]}"
 ```
 
-`--verbose` is load-bearing: without it `stage_njobs > 1` re-triggers the fan-out and one task
-would spawn 32 subprocesses (`cli_runner.py:611`). With it, the task runs exactly its own shard,
-and the child still reads `gen_njobs` from the config so `split_by_job` divides correctly.
+**Invoke the stage module directly rather than going through `complexa generate`.** That is what
+`run_step` runs anyway (`cli_runner.py:636-651`), minus the two things an array task must not
+inherit: the fan-out, and the `CUDA_VISIBLE_DEVICES = str(job_id)` pinning that would override
+SLURM's allocation. Nothing is lost — `generate.py` applies the atomworks patches and calls
+`load_dotenv()` at import, and `config_name` falls back to the `--config-name` stem
+(`generate.py:728`), so `++base_config_name` is optional. Output lands in the task's own SLURM
+log, which is what you wanted. One GPU per task comes from `--gres=gpu:1`; how many run at once
+is the array throttle (`%4`), not `gen_njobs`.
+
+The wrapper form — `complexa generate ./pipeline.yaml --verbose --job-id N` — also works today,
+but only by accident, and it is not worth depending on. `--verbose` means *"send output to my
+terminal instead of capturing it into per-job log files"*, exactly as the name suggests. The
+fan-out branch **requires** capture: N concurrent processes each need `stdout=PIPE` and a demux
+thread, because N interleaved streams cannot go coherently to one terminal. Running
+single-process is therefore a side effect of the output choice, not its purpose
+(`cli_runner.py:611`). Output routing and process topology are welded together in one flag, so
+anyone who later adds proper demuxing for verbose mode would silently reinstate the fan-out and
+every array task would spawn 32 subprocesses. Prefer the explicit invocation, where the topology
+is stated rather than inferred from a logging flag.
 
 **Choose designs-per-shard by time, not by count.** A shard should be a tolerable loss and long
 enough to amortise its startup — every shard is a fresh process that loads the checkpoint. Read
