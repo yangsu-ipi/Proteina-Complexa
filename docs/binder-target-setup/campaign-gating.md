@@ -275,12 +275,17 @@ actively dangerous:
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
-- **A retry's directory names do not collide with the previous attempt's.** The per-design
-  directory name encodes the beam-search path
-  (`job_0_n_195_id_3_beam_orig0_bm0-s0to100br3-…`), which is stochastic, and the `id_N` counter
-  restarts at zero each run. So re-running generate over a directory that already holds a
-  completed attempt writes *new* directories alongside the old ones instead of overwriting them.
-  Evaluation then folds designs belonging to no run and the counts inflate.
+- **A retry's directory names mostly miss the previous attempt's, and the ones that hit are
+  overwritten silently.** The per-design directory name encodes the beam-search path
+  (`job_0_n_195_id_3_beam_orig0_bm0-s0to100br3-…`) and the `id_N` counter restarts at zero each
+  run, so most regenerated designs land on fresh names — evaluation then folds designs belonging
+  to no run and the counts inflate. But the beam path is not perfectly reproducible, and it is
+  not perfectly *un*reproducible either: a measured 16-design retry produced only 11 new
+  directories, so five names collided and were replaced in place
+  (`os.makedirs(..., exist_ok=True)` plus a `write_prot_to_pdb(..., overwrite=True)`). So a
+  retry both accumulates orphans *and* destroys some of the previous attempt's structures, with
+  no record of which. That is the stronger reason to clear the directory rather than retry over
+  it: the counts you can detect afterwards, the overwritten designs you cannot.
 
 This used to be unguarded. `generate.py` had an early-exit keyed on
 `results_{config_name}_{job_id}.csv`, a filename nothing in the codebase writes — evaluate
