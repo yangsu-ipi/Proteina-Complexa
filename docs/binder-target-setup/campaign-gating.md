@@ -271,7 +271,7 @@ actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
   prediction in memory (`generate.py:783`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:527`, called at `:714`/`:741`, plain
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:646`, called at `:714`/`:741`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.

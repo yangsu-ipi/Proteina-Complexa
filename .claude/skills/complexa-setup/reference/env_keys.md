@@ -140,8 +140,8 @@ member instead.
 
 ### `COMPLEXA_INIT` (in `env.sh`, not `.env`)
 
-- Exported as `COMPLEXA_INIT="<runtime>"` by the generated `env.sh` (`cli_runner.py:1666`). It appears in no `.env` file.
-- **This is the gate on the whole CLI.** `_check_complexa_init` (`cli_runner.py:1962-1977`) exits 1 with "Environment not initialized" for `design`, `generate`, `filter`, `evaluate`, `analyze`, `analysis`, and `target` when it is unset. `init`, `demo`, `download`, `validate`, and `status` are exempt.
+- Exported as `COMPLEXA_INIT="<runtime>"` by the generated `env.sh` (`cli_runner.py:1704`). It appears in no `.env` file.
+- **This is the gate on the whole CLI.** `_check_complexa_init` (`cli_runner.py:2001-2016`) exits 1 with "Environment not initialized" for `design`, `generate`, `filter`, `evaluate`, `analyze`, `analysis`, and `target` when it is unset. `init`, `demo`, `download`, `validate`, and `status` are exempt.
 - Fix: `complexa init <uv|docker>` then `source env.sh` in every shell (it is not persisted).
 - `env.sh` refuses to overwrite itself; pass `--force` to regenerate after switching runtime.
 
@@ -190,7 +190,7 @@ member instead.
 
 From `src/proteinfoundation/cli/validate.py:validate_env`:
 
-1. `.env` file exists **in the current working directory** — `validate.py:254` is a bare `Path(".env")`, with no parent walk. (`complexa init` *does* walk parents, but only to find `.env_example`.)
+1. `.env` file exists **in the current working directory** — `validate.py:263` is a bare `Path(".env")`, with no parent walk. (`complexa init` *does* walk parents, but only to find `.env_example`.)
 2. `DATA_PATH` env var is set and resolves to an existing directory.
 
 That is the full check. It does not validate ckpts, tool binaries, or HF

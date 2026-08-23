@@ -132,7 +132,7 @@ activation *outside* the `set -a` block — otherwise conda's own internals get 
 (harmless, but noisy in `env`).
 
 `env.sh` exports both `COMPLEXA_INIT` (which gates the CLI) and `COMPLEXA_RUNTIME` (which
-`preflight.sh` reports as `complexa_runtime`, `:42`/`:50`/`:151`), so preflight JSON and run
+`preflight.sh` reports as `complexa_runtime`, `:48`/`:57`/`:216`), so preflight JSON and run
 manifests record the runtime label. Older generated `env.sh` files set only
 `COMPLEXA_INIT`, leaving `complexa_runtime` as `""` — cosmetic, but another reason to
 regenerate.
