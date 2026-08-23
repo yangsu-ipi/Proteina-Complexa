@@ -28,14 +28,11 @@ per-design success CSV.
 
 ## What this skill enables
 
-- Protein binder design for protein targets (AF2 reward + ColabDesign refold).
-- Ligand binder design for small-molecule targets (RF3 reward + RF3 refold).
-- AME motif scaffolding with ligand context (motif + ligand features, RF3).
-- Search-based optimization: single-pass, best-of-n, beam-search, fk-steering, mcts.
-- Refold backends: ColabDesign (AF2) and RF3 — `metric.binder_folding_method`
-  accepts only `colabdesign` or a name containing `rf3`; anything else raises
-  `ValueError` (`binder_eval.py:97-117`).
-- Pass-rate + diversity analysis with per-`result_type` thresholds.
+Protein binder, ligand binder, and AME motif-scaffolding design; search-based
+optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
+with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
+`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:97-117`);
+pass-rate and diversity analysis per `result_type`.
 
 ## Step 1: Pre-flight
 
@@ -58,22 +55,18 @@ Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
 - `community_models.AF2_DIR.exists` false -> protein binder default eval (`colabdesign`) fails.
 - `community_models.RF3_CKPT_PATH.exists` or `tools.rf3.exists` false -> ligand binder / AME default eval (`rf3_latest`) fails.
 
-`checkpoints` is a top-level object keyed by full filename (`preflight.sh:135-150`),
-and `env` carries only `.env_loaded`, `.env_path`, `missing_required`,
-`LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`, `CKPT_PATH` (`:203-205`) — the AF2/RF3
-paths are **not** under `env`.
+`checkpoints` is keyed by full filename (`preflight.sh:135-150`); the AF2/RF3
+paths are under `community_models`, **not** `env` (`:203-205`).
 
 If a ckpt is missing, point at `complexa-setup` and have the user run
 `complexa download --complexa-<variant>` first.
 
 ## Step 2: Pick the pipeline
 
-Complexa has **one default pipeline (protein binder) and two extensions**
-(ligand binder, AME / enzyme). The pipeline is selected entirely
-by the `configs/search_*_pipeline.yaml` you pass to `complexa design` — each
-YAML pins its own model checkpoint, autoencoder, targets dict, default reward,
-and default refold backend. Switching pipelines is just "swap the config path
-and the target name comes from a different dict".
+**One default pipeline (protein binder) and two extensions** (ligand binder,
+AME / enzyme), selected entirely by the `configs/search_*_pipeline.yaml` you
+pass. Each YAML pins its own checkpoints, targets dict, reward, and refold
+backend — switching is "swap the config path, take the target from that dict".
 
 ### Default — protein binder
 
@@ -82,12 +75,9 @@ complexa design configs/search_binder_local_pipeline.yaml \
     ++run_name=pdl1_v1 ++generation.task_name=02_PDL1
 ```
 
-Use this when the user says "design a binder for X", "PDL1 binder",
-"de novo binder", "design proteins for a target", etc. — i.e. the target is
-a protein surface. The config pins `complexa.ckpt` + `complexa_ae.ckpt`, reads
-targets from `configs/targets/targets_dict.yaml`, rewards with AF2
-(`af2folding`), inverse-folds with SolubleMPNN, and evaluates with
-ColabDesign / AF2. **If the user did not specify, this is what they want.**
+For "design a binder for X", "PDL1 binder", "de novo binder" — any protein
+surface target. Rewards with AF2, inverse-folds with SolubleMPNN, evaluates with
+ColabDesign. **If the user did not specify, this is what they want.**
 
 ### Extension A — ligand binder (small-molecule pocket)
 
@@ -97,11 +87,10 @@ complexa design configs/search_ligand_binder_local_pipeline.yaml \
     ++metric.binder_folding_method=rf3_latest
 ```
 
-Switch to this when the user says "ligand binder", "small-molecule pocket",
-"SMILES target", "ATP-binding protein", or names a target ending in
-`_LIGAND` / from the FAD / SAM / OQO / 7V11 / etc. families. The config
-**also activates LoRA** (`r=32`, `lora_alpha=64`) which is required for the
-released ligand checkpoint — leave the `lora:` block alone.
+For "ligand binder", "small-molecule pocket", "SMILES target", "ATP-binding
+protein", or a target ending in `_LIGAND`. The config **activates LoRA**
+(`r=32`, `lora_alpha=64`), required by the released ligand checkpoint — leave
+the `lora:` block alone.
 
 ### Extension B — AME / motif + ligand (enzyme scaffolding)
 
@@ -110,34 +99,26 @@ complexa design configs/search_ame_local_pipeline.yaml \
     ++run_name=ame_chm ++generation.task_name=M0096_1chm
 ```
 
-Switch to this when the user says "scaffold a motif near a ligand",
-"active-site design", "enzyme scaffolding", "AME", or names a target like
-`M0024_1nzy`, `M0096_1chm` (the `M####_<pdb>` AME task naming). The config sets
-`env_vars.USE_V2_COMPLEXA_ARCH=True` (the CLI runner injects it into the
-subprocess) and uses both `MotifFeatures` and `LigandFeatures`. Default search
-is `single-pass`; switch to `best-of-n` only if you also enable the
-`CompositeRewardModel` (commented out in `ame_generate.yaml`).
+For "scaffold a motif near a ligand", "active-site design", "enzyme
+scaffolding", or an `M####_<pdb>` target. The config sets
+`env_vars.USE_V2_COMPLEXA_ARCH=True` and uses `MotifFeatures` +
+`LigandFeatures`. Default search is `single-pass`; `best-of-n` needs the
+`CompositeRewardModel` enabled (commented out in `ame_generate.yaml`).
 
 ### Pipeline cheat sheet — what changes when you switch
 
 | Knob | Protein binder (default) | Ligand binder | AME (enzyme) |
 |---|---|---|---|
 | **Pipeline YAML** | `configs/search_binder_local_pipeline.yaml` | `configs/search_ligand_binder_local_pipeline.yaml` | `configs/search_ame_local_pipeline.yaml` |
-| **Model ckpt** | `complexa.ckpt` | `complexa_ligand.ckpt` | `complexa_ame.ckpt` |
-| **Autoencoder ckpt** | `complexa_ae.ckpt` | `complexa_ligand_ae.ckpt` | `complexa_ame_ae.ckpt` |
 | **Targets dict** | `configs/targets/targets_dict.yaml` | `configs/targets/ligand_targets_dict.yaml` | `configs/design_tasks/ame_dict_v2.yaml` |
 | **Task-name pattern** | `<NN>_<NAME>` (e.g. `02_PDL1`, `22_DerF21`) | `<NN>_<PDB>_LIGAND` (e.g. `39_7V11_LIGAND`) | `M####_<pdb>` (e.g. `M0096_1chm`) |
-| **`USE_V2_COMPLEXA_ARCH`** | (unset → v1) | (unset → v1) | `"True"` (set in YAML) |
-| **LoRA** | (none) | required (`r=32, alpha=64`) | required |
-| **Default search algo** | `best-of-n` | `best-of-n` | `single-pass` |
-| **Reward model** | AF2 (`af2folding`) | RF3 (`rf3folding`) | `null` (no reward at default) |
-| **Inverse folder** | `soluble_mpnn` | `ligand_mpnn` | `ligand_mpnn` |
 | **Default refold backend** | `colabdesign` (AF2) | `rf3_latest` | `rf3_latest` |
-| **Analysis `result_type`** | `protein_binder` | `ligand_binder` | `motif_ligand_binder` |
 | **Required ckpts (`complexa download`)** | `--complexa --all` (AF2 in community) | `--complexa-ligand --all` (RF3 in community) | `--complexa-ame --all` (RF3 in community) |
 
-For the full per-pipeline breakdown (reward weights, success thresholds,
-analysis modes), see [reference/pipelines.md](reference/pipelines.md).
+Everything else the switch changes — model and autoencoder ckpts, LoRA, default
+search algorithm, reward model, inverse folder, `result_type`,
+`USE_V2_COMPLEXA_ARCH` — is pinned by the config, not typed by you. Full
+breakdown in [reference/pipelines.md](reference/pipelines.md).
 
 ## Step 3: Gather parameters
 
@@ -151,12 +132,10 @@ to sensible production settings if the user has no preference.
 - **Run name** — a short identifier appended to the output dir (e.g. `pdl1_v1`).
 - **Search algorithm** — default to `beam-search` with `beam_width=8` and
   `n_branch=4` for production. Use `single-pass` for a quick smoke test.
-- **Evaluation refold backend** — protein binder defaults to `colabdesign`
-  (AF2); ligand/AME default to `rf3_latest`. Those are the only two accepted
-  families — `colabdesign` is the only AF2 path, and there is no cheap
-  alternative backend. To iterate faster, keep the default and lower
-  `++metric.num_redesign_seqs`, `++generation.dataloader.batch_size`, or
-  `++eval_njobs` instead.
+- **Evaluation refold backend** — `colabdesign` (protein binder) or
+  `rf3_latest` (ligand/AME); these two families are the only ones accepted. To
+  iterate faster keep the default and lower `++metric.num_redesign_seqs` or
+  `++generation.dataloader.batch_size`.
 
 ## Step 4: Validate
 
@@ -173,16 +152,14 @@ aborts with `unrecognized arguments`. Validate the config as shipped:
 complexa validate design configs/search_binder_local_pipeline.yaml
 ```
 
-The validator returns non-zero on failure and prints a pass/fail report. Fix
-the reported ckpt / env problems and re-run until it returns clean.
+Returns non-zero on failure with a pass/fail report; fix the reported ckpt /
+env problems and re-run until clean.
 
 ## Step 5: Run the pipeline
 
-`complexa design` is the right tool for the full 4-stage run — it orchestrates
-`generate → filter → evaluate → analyze` as sequential subprocesses with a
-shared run name, log dir, and multi-GPU split (see `run_design_pipeline` in
-`src/proteinfoundation/cli/cli_runner.py`). Re-implementing that manually
-loses the per-stage log routing and progress prints.
+`complexa design` orchestrates `generate → filter → evaluate → analyze` as
+sequential subprocesses sharing a run name, log dir, and multi-GPU split
+(`run_design_pipeline`). Re-implementing it loses the per-stage log routing.
 
 Use `++` (forced) Hydra overrides; they apply to all stages. The minimal
 production protein-binder invocation:
@@ -200,51 +177,18 @@ For ligand binder / AME, swap the pipeline YAML and target name per Step 2's
 cheat sheet — every other override above is pipeline-agnostic and can be
 reused as-is.
 
-Add `--verbose` to stream logs to the terminal instead of `./logs/`. The skill
-does not poll progress — the user re-invokes if they want a status; point them
-at `complexa status` and `./logs/design_pipeline_*/`.
+`--verbose` streams logs to the terminal instead of `./logs/` (and, as a side
+effect, disables the multi-job fan-out). The skill does not poll progress —
+point the user at `complexa status` and `./logs/design_pipeline_*/`.
 
-### Direct module invocation (debug fallback)
+To debug one stage, or to run a single shard under a scheduler, invoke the
+Hydra module directly — see "Running one stage directly" in
+[reference/troubleshooting.md](reference/troubleshooting.md).
 
-To debug a single stage without pipeline orchestration, invoke the underlying
-Hydra module directly. `complexa generate CONFIG` is just a logged subprocess
-wrapper around this:
-
-```bash
-python -m proteinfoundation.generate \
-    --config-path "$(realpath configs)" \
-    --config-name search_binder_local_pipeline \
-    ++run_name=debug_pdl1 \
-    ++generation.task_name=02_PDL1
-```
-
-Same pattern for `proteinfoundation.{filter,evaluate,analyze}`. Use this when
-you want to attach `ipdb`, run under `nsys`, or skip the pipeline log dir.
-Prefer `complexa generate/filter/evaluate/analyze` for normal one-shot runs
-(you get logging and parallel job splitting for free).
-
-**AME-specific gotcha (when running AME with RF3 refold)**: RF3 will try to
-complete missing atoms on the ligand based on its CCD code, which produces
-shape errors in RMSD calculations and the wrong structure. Before RF3 sees the
-PDB, rename the ligand residue to `L:0` so RF3 treats it as a generic ligand
-and skips atom completion. If your AME generation outputs already encode the
-ligand this way (the canonical Complexa pipeline does), no extra step is
-needed; otherwise patch each PDB with `atomworks.io`:
-
-```python
-from atomworks.io import load_any, to_pdb_file
-atom_array = load_any("my_design.pdb")[0]
-ligand_mask = atom_array.chain_id == "A"
-atom_array.res_name[ligand_mask] = "L:0"
-to_pdb_file(atom_array, "my_design_rf3_ready.pdb")
-```
-
-Same applies if you're piping AME outputs into the `complexa-evaluate-pdbs`
-skill with an RF3 backend. Skip the rename for AF2/colabdesign refold or for
-non-AME pipelines.
-
-Wall-clock at default (`nsteps=400`, `beam_width=8`, `batch_size=16`, 100
-designs, colabdesign eval) is ~30–120 minutes on a single A100/H100.
+**AME + RF3 refold needs the ligand renamed to `L:0`** or RF3 completes missing
+ligand atoms and corrupts the RMSDs. The canonical AME pipeline already encodes
+it that way; for hand-made PDBs see "AME ligand residue name must be `L:0`" in
+[reference/troubleshooting.md](reference/troubleshooting.md).
 
 ## Step 6: Collect results
 
@@ -260,7 +204,6 @@ The results dir is `./evaluation_results/{config_name}_{task_name}`
 (`:766-767`) — it is never just `./evaluation_results/{run_name}`.
 
 Read the combined results CSV and summarize:
-
 ```bash
 ls ./evaluation_results/*/RAW_protein_binder_results_*_combined.csv       # combined
 ls ./evaluation_results/*/RAW_motif_ligand_binder_results_*_combined.csv  # AME combined
@@ -270,13 +213,12 @@ ls ./evaluation_results/*/diversity/res_div_foldseek_*.csv                # Fold
 ```
 
 The only combined CSV is `RAW_{result_type}_results_{config_name}_combined.csv`
-(`analyze.py:3036`); `binder_results_{config_name}_{job_id}.csv`
-(`evaluate.py:881`) is the per-job file written by evaluate and is never
-`_combined`. Note also that analyze's `organize_results()`
-(`analyze.py:2812-2855`) has already moved `res_filter_*` into
-`filter_results/`, `res_div_*` into `diversity/`, and `clusters_*` into
-`clusters/` by the time you look — top-level globs match nothing. AME's
-`res_filter_motif_binder_*` lands in `motif_binder_metrics/` instead.
+(`analyze.py:3036`); `binder_results_*_{job_id}.csv` (`evaluate.py:881`) is
+per-job and never `_combined`. By the time you look, `organize_results()`
+(`analyze.py:2812-2855`) has moved `res_filter_*` into `filter_results/`,
+`res_div_*` into `diversity/`, `clusters_*` into `clusters/` (AME's
+`res_filter_motif_binder_*` into `motif_binder_metrics/`) — top-level globs
+match nothing.
 
 Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
 — ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
@@ -322,37 +264,17 @@ default) is in [reference/overrides.md](reference/overrides.md).
 | `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:50-51` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
 | `aggregation.success_thresholds` (full dict, see below) | `i_pAE*31<=7.0`, `pLDDT>=0.9`, `scRMSD_ca<1.5` (protein binder) | Loosen / tighten success criteria |
 
-> **Never override `success_thresholds` partially.** `binder_analysis.py:317-318`
-> falls back to the defaults only when the key is *entirely absent*, so
-> `++aggregation.success_thresholds.i_pAE.threshold=10.0` replaces the whole
-> dict — dropping the `pLDDT` and `scRMSD_ca` criteria — and
-> `parse_threshold_spec` (`analysis_utils.py:124-129`) then defaults `scale` to
-> `1.0`, comparing a 0–1 column against `10.0`. Every sample passes and the
-> reported success rate becomes 100%. Supply the complete dict instead (note the
-> key is `scRMSD_ca`, not `scRMSD`):
->
-> ```yaml
-> aggregation:
->   success_thresholds:
->     i_pAE:     {threshold: 10.0, op: "<=", scale: 31.0, column_prefix: complex}
->     pLDDT:     {threshold: 0.9,  op: ">=", scale: 1.0,  column_prefix: complex}
->     scRMSD_ca: {threshold: 1.5,  op: "<",  scale: 1.0,  column_prefix: binder}
-> ```
+> **Never override `success_thresholds` partially.** A partial override replaces
+> the whole dict, silently dropping the other criteria, and the reported success
+> rate can become 100%. Supply the complete dict — see "success_thresholds" in
+> [reference/overrides.md](reference/overrides.md).
 
 ## Hardware requirements
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| GPU | 1x CUDA GPU, 40 GB VRAM | A100 / H100 / L40S, 80 GB VRAM |
-| CPUs | 16 | 24 (the `ncpus_` default in every pipeline config) |
-| Disk | 50 GB at `./inference/` + `./evaluation_results/` | 200 GB for sweep runs |
-| RAM | 32 GB | 64 GB+ |
-
-Typical wall-clock for 100 designs, `beam_width=8`, default `nsteps=400`:
-
-- Protein binder + colabdesign refold: ~60–120 min on 1x A100/H100.
-- Ligand binder + RF3 refold: ~90–180 min (RF3 dominates).
-- AME + RF3 refold: ~120–240 min.
+1x CUDA GPU (40 GB min, 80 GB recommended), 16 CPUs (24 is the `ncpus_`
+default), 50 GB disk, 32 GB RAM. Wall-clock for 100 designs at `beam_width=8`,
+`nsteps=400`, on 1x A100/H100: protein binder + colabdesign ~60–120 min; ligand
+binder + RF3 ~90–180 min; AME + RF3 ~120–240 min (RF3 dominates).
 
 Bumping `gen_njobs=2` and `eval_njobs=2` halves wall-clock on a 2-GPU host. **Keep the two
 equal** — eval shard *N* takes the designs named `job_N_*`, so a lower `eval_njobs` silently
@@ -367,25 +289,11 @@ more finely and driven per shard — see "Sizing shards so resume is worth havin
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `CUDA out of memory` in generate | `batch_size: 16` too big on 40GB GPU | `++generation.dataloader.batch_size=8` |
-| `CUDA out of memory` in evaluate | AF2 / RF3 batched too aggressively | `++eval_njobs=1` and `++metric.num_redesign_seqs=2` |
-| `InterpolationKeyError: AF2_DIR` | colabdesign eval but `.env` does not set `AF2_DIR` | Set `AF2_DIR` in `.env` — `colabdesign` is the only AF2 path, there is no cheaper backend to fall back to |
-| `InterpolationKeyError: RF3_CKPT_PATH` | RF3 eval but RF3 not installed | `complexa download --all` or switch eval backend |
-| `KeyError: 'task_name' not in target_dict_cfg` | Target not in `targets_dict.yaml` / `ligand_targets_dict.yaml` / `ame_dict_v2.yaml` | Use `complexa-target` skill to add it |
-| 0 designs pass success thresholds | Defaults too strict for this target | Loosen by supplying the **complete** `aggregation.success_thresholds` dict (a partial override silently drops the other criteria) |
+| `InterpolationKeyError: AF2_DIR` / `RF3_CKPT_PATH` | eval backend's weights absent | set it in `.env`, or `complexa download --all` |
+| `KeyError: 'task_name' not in target_dict_cfg` | target not in the pipeline's dict | add it with the `complexa-target` skill |
+| 0 designs pass success thresholds | defaults too strict for this target | supply the **complete** `success_thresholds` dict |
 
 For the full list (chain-ID mismatches, hotspot residues, ligand residue
 renaming for RF3, missing inverse-folding models, etc.) see
 [reference/troubleshooting.md](reference/troubleshooting.md).
 
----
-
-For per-pipeline details (which model, reward, inverse folding, evaluation
-backend, `result_type`, LoRA settings, `USE_V2_COMPLEXA_ARCH` toggle), see
-[reference/pipelines.md](reference/pipelines.md).
-
-For the full override reference (every `generation.*`, `metric.*`,
-`aggregation.*` key with type, default, example, and effect), see
-[reference/overrides.md](reference/overrides.md).
-
-For all troubleshooting cases (cause + fix + source), see
-[reference/troubleshooting.md](reference/troubleshooting.md).
