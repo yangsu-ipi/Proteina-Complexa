@@ -200,6 +200,14 @@ n_sample_dirs() {
   done
   echo "$n"
 }
+# Total designs this run owns, wherever they now live. The filter stage moves
+# non-surviving designs into filtered_out_samples/, so a live-only count drops
+# across a filter even though nothing was lost -- comparing live counts either
+# side of a filter reports a correct skip as a regeneration.
+n_all_sample_dirs() {
+  local d="$1"
+  echo $(( $(n_sample_dirs "$d") + $(n_sample_dirs "$d/filtered_out_samples") ))
+}
 n_caches()  { find "${1:-/nonexistent}" -name binder_eval_cache.json 2>/dev/null | wc -l | tr -d ' '; }
 # Refolding outputs land in a subdirectory of the design dir (AF2/ for
 # colabdesign, its own for other backends), so depth>=3 is backend-agnostic
@@ -249,7 +257,7 @@ eval_() { run_cx evaluate "evaluate" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" 
 # -----------------------------------------------------------------------------
 say "1. first run writes a marker and fold caches"
 gen
-DIRS_1=$(n_sample_dirs "$RUN_DIR")
+DIRS_1=$(n_all_sample_dirs "$RUN_DIR")
 [[ "$(n_markers "$RUN_DIR")" -ge 1 ]] && ok "shard marker written" || bad "no shard_*_complete.json in $RUN_DIR"
 [[ "$DIRS_1" -gt 0 ]] && ok "$DIRS_1 sample directories produced" || die "generate produced no sample directories"
 
@@ -273,13 +281,13 @@ PY
 # -----------------------------------------------------------------------------
 say "2. same config -> generate skips (no new sample directories)"
 gen
-DIRS_2=$(n_sample_dirs "$RUN_DIR")
+DIRS_2=$(n_all_sample_dirs "$RUN_DIR")
 SKIP_WORKED=0
 if [[ "$DIRS_2" -eq "$DIRS_1" ]]; then
-  ok "still $DIRS_2 sample directories (skipped, nothing duplicated)"
+  ok "still $DIRS_2 designs owned by this run (skipped, nothing duplicated)"
   SKIP_WORKED=1
 else
-  bad "directories went $DIRS_1 -> $DIRS_2; the shard regenerated instead of skipping"
+  bad "designs went $DIRS_1 -> $DIRS_2; the shard regenerated instead of skipping"
 fi
 
 # -----------------------------------------------------------------------------
@@ -314,7 +322,7 @@ say "4. changed generation parameter (batch_size) -> marker invalidated"
 # does.
 ALT=("++generation.dataloader.batch_size=1")
 gen "${ALT[@]}"
-DIRS_4=$(n_sample_dirs "$RUN_DIR")
+DIRS_4=$(n_all_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_4" -gt "$DIRS_2" ]]; then
   ok "regenerated on a config change ($DIRS_2 -> $DIRS_4 directories)"
 else
@@ -326,7 +334,7 @@ say "5. removed sample directory -> marker invalidated"
 # Control: the same config now skips, so anything that changes below is the
 # deletion talking and not the digest.
 gen "${ALT[@]}"
-DIRS_5CTL=$(n_sample_dirs "$RUN_DIR")
+DIRS_5CTL=$(n_all_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5CTL" -eq "$DIRS_4" ]]; then
   ok "control: matching digest skips ($DIRS_5CTL directories unchanged)"
 else
@@ -351,9 +359,9 @@ VICTIM="$RUN_DIR/$VICTIM_NAME"
 [[ -d "$VICTIM" ]] || die "recorded directory $VICTIM_NAME is already absent"
 printf '   removing recorded design %s\n' "$VICTIM_NAME"
 rm -rf "$VICTIM"
-DIRS_5a=$(n_sample_dirs "$RUN_DIR")
+DIRS_5a=$(n_all_sample_dirs "$RUN_DIR")
 gen "${ALT[@]}"
-DIRS_5b=$(n_sample_dirs "$RUN_DIR")
+DIRS_5b=$(n_all_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5b" -gt "$DIRS_5a" ]]; then
   ok "regenerated when output went missing ($DIRS_5a -> $DIRS_5b)"
 else

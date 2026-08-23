@@ -336,6 +336,11 @@ Names fix both, and are checkable without knowing which of the three save paths 
 Markers predating `sample_dirs` skip verification with a debug note rather than being treated
 as damaged.
 
+The same trap catches anything *checking* resume from outside: a live-directory count drops
+across a filter stage even though nothing was lost, so comparing live counts either side of a
+filter reports a correct skip as a regeneration. Count live plus `filtered_out_samples/` —
+that total is invariant across filtering, which is what makes it comparable at all.
+
 That check is what makes defaulting to skip safe, and skipping is the point: a resume feature
 that warns and then burns the GPU time anyway has saved nothing. Set `gen_njobs` above the GPU
 count and resume granularity becomes one shard.
