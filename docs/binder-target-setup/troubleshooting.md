@@ -244,7 +244,7 @@ cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
 before they could be forwarded — even though the script has always accepted them (the
 handler passes `sys.argv[2:]` verbatim). All five are now declared. If you hit
 `unrecognized arguments: --esm2`, either update the repo or bypass the wrapper:
-`complexa-download --esm2` (`pyproject.toml:64`, forwards `sys.argv[1:]`) or
+`complexa-download --esm2` (`pyproject.toml:72`, forwards `sys.argv[1:]`) or
 `bash env/download_startup.sh --esm2`.
 
 or skip the metric for this run:
