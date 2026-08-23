@@ -167,15 +167,12 @@ Quick decision table for the four edits most users make:
 ## Step 4: Download checkpoints
 
 **Always use the CLI here.** `complexa download` dispatches to
-`env/download_startup.sh` (~900 lines of bash with NGC URLs, retries, and
-skip-if-present logic across 5 community-model families). Rolling your own
-wget loop is a recipe for partial downloads and wrong destination paths.
+`env/download_startup.sh` — NGC URLs, retries, and skip-if-present logic across
+5 community-model families. A hand-rolled wget loop gets paths wrong.
 
-Ask which models the user actually needs — `--everything` is ≈20 GB.
-Pick from the three Complexa variants and the community-model set. Each
-Complexa variant unlocks exactly one `complexa design` pipeline; AF2 / RF3
-inside the community-model set are what `evaluate` (and reward-guided search)
-need at run time.
+Ask which models are actually needed — `--everything` is ≈20 GB. Each Complexa
+variant unlocks exactly one pipeline; AF2 / RF3 in the community set are what
+`evaluate` and reward-guided search need at run time.
 
 | Flag | What it downloads | Unlocks pipeline | Destination | Approx size |
 |------|-------------------|------------------|-------------|-------------|
@@ -194,23 +191,12 @@ need at run time.
 - AME / enzyme: `complexa download --complexa-ame --all`
 - All three: `complexa download --everything`
 
-ESMFold is not part of any `complexa download` flag; fetch it with
-`python script_utils/download/download_esmfold_model.py` if you need it.
+ESMFold is in no `complexa download` flag — fetch it with
+`python script_utils/download/download_esmfold_model.py`. Per-model destinations
+and per-flag NGC sources: [reference/downloads.md](reference/downloads.md).
 
-For the full per-model destination breakdown and per-flag NGC sources, see
-[reference/downloads.md](reference/downloads.md).
-
-Pick the smallest invocation that covers the user's goal, then run:
-
-```bash
-complexa download --complexa            # protein binder only
-complexa download --complexa-all        # all three Complexa variants
-complexa download --all                 # community models only
-complexa download --everything          # everything
-```
-
-Without arguments, `complexa download` launches an interactive wizard — prefer
-explicit flags in agent mode.
+Run the smallest invocation that covers the goal. Without arguments
+`complexa download` launches an interactive wizard — prefer explicit flags.
 
 Verify what landed:
 
@@ -218,10 +204,9 @@ Verify what landed:
 complexa download --status
 ```
 
-The status output has exactly two groups — `Complexa Models (Required):` and
-`Core Models:` — and prints either `✓ Installed (<dir>)` or a `○ Missing (<dir>):`
-header followed by one indented `✗ <filename>` line per absent file. Re-run the
-specific flag for anything flagged missing.
+Two groups — `Complexa Models (Required):` and `Core Models:` — each printing
+`✓ Installed (<dir>)` or `○ Missing (<dir>):` plus one `✗ <filename>` per absent
+file. Re-run the specific flag for anything missing.
 
 ## Step 5: Validate
 
