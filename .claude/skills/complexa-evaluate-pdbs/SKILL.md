@@ -244,8 +244,6 @@ Summarize to the user:
 
 ## Step 6: Emit manifest
 
-Capture the resolved invocation + outputs for replay.
-
 ```bash
 python3 .claude/skills/_shared/scripts/write_manifest.py \
   --output-dir ./evaluation_results/${run_name} \
@@ -254,17 +252,15 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
   --out ./eval_manifest.json
 ```
 
-The manifest pins `timestamp`, `skill`, `command`, `output_dir`, `git_sha`, `repo_root`, the CSV
-pointers it finds by walking `--output-dir`, and the invocation environment
-(`write_manifest.py:179-200`). Two caveats:
+It pins `timestamp`, `skill`, `command`, `output_dir`, `git_sha`, `repo_root`, the CSV pointers
+found by walking `--output-dir`, and the invocation environment (`write_manifest.py:179-200`).
+Two caveats:
 
-- There is **no** `result_type` field. If you want it replayable, put it in the `--command` string
+- There is **no** `result_type` field — put it in the `--command` string to keep it replayable
   (the `++result_type=…` override above already does).
-- `config`, `config_path` and `checkpoints` are read from `<output-dir>/.hydra/config.yaml`
-  (`write_manifest.py:79-80`), and no `complexa` stage writes `.hydra/` under the output dir —
-  `cli_runner.py` sets no `hydra.run.dir` override for `evaluate`/`analyze`, and the pipeline
-  configs point Hydra at `./logs/hydra_outputs/…`. So all three come out `null`, and no
-  checkpoint hashes are recorded.
+- `config`, `config_path` and `checkpoints` come out `null`, with no checkpoint hashes: they are
+  read from `<output-dir>/.hydra/config.yaml` (`write_manifest.py:79-80`) and no `complexa` stage
+  writes `.hydra/` there — the pipeline configs point Hydra at `./logs/hydra_outputs/…`.
 
 ## Most common overrides
 
