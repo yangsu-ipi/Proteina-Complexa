@@ -253,6 +253,11 @@ grep -o "'target_dict_cfg': '<filtered: [0-9]* entries>'" logs/generate.log
 
 `1` = shadow took, `45` = inline/merge worked, **`44` = nothing took**.
 
+Shards and binder refolds are reused by default (`generation.skip_completed_shards`,
+`metric.reuse_cached_folding`). Before a long campaign leans on that, confirm resume
+*invalidates* as well as reuses — `bash docs/binder-target-setup/scripts/check_resume.sh
+--config ./pipeline.yaml --samples 2`, six assertions, needs a GPU.
+
 ## Step 6: Emit manifest
 
 ```bash
@@ -282,17 +287,14 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 | Target PDB not in git | `*.pdb` globally ignored | keep target dirs outside the repo |
 | `import atomworks` fails, build "passed" | `env/build_uv_env.sh:174` uses `\|\| echo` | reinstall and read the real error |
 
-## Hardware requirements
-
-Setup and preflight need no GPU. Once running, defer to `complexa-design` and
-[`_shared/reference/hardware.md`](../_shared/reference/hardware.md) for per-pipeline VRAM
-and wall-clock.
-
 ## Reference
 
-- [`docs/binder-target-setup/README.md`](../../../docs/binder-target-setup/README.md) — index and the silent-failure table
-- [`env-and-mirrors.md`](../../../docs/binder-target-setup/env-and-mirrors.md) — mirror semantics, layouts, build recipes
-- [`target-config.md`](../../../docs/binder-target-setup/target-config.md) — one-file YAML, alternatives, Hydra mechanics
-- [`pdb-prep.md`](../../../docs/binder-target-setup/pdb-prep.md) — cleaning by pipeline, numbering, `.cif` vs `.pdb`
-- [`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md) — **read before writing or refreshing a campaign gate script**; derive required weights and the disk budget from the resolved config
-- [`troubleshooting.md`](../../../docs/binder-target-setup/troubleshooting.md) — masked imports, full silent-failure catalogue
+Setup and preflight need no GPU; for per-pipeline VRAM and wall-clock see
+[`_shared/reference/hardware.md`](../_shared/reference/hardware.md).
+
+Full detail lives in [`docs/binder-target-setup/`](../../../docs/binder-target-setup/README.md),
+whose README indexes all five files. Read
+[`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md) **before writing or
+refreshing a campaign gate script** or touching resume behaviour, and
+[`target-config.md`](../../../docs/binder-target-setup/target-config.md) before authoring a
+target YAML.

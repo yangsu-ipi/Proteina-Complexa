@@ -49,6 +49,7 @@ verify the structure against the config, *then* spend a GPU-hour.
 |---|---|---|
 | [`scripts/build_ccd_mirror.py`](scripts/build_ccd_mirror.py) | Split wwPDB `components.cif` into the CCD mirror layout atomworks expects | verified against real `components.cif` data; stdlib only |
 | [`scripts/check_target_pdb.py`](scripts/check_target_pdb.py) | Preflight a target PDB: heteroatoms, numbering, gaps, hotspot resolution | verified on a real target inside a SLURM job — 136/136 residues selected by `A58-193`, no gaps, no in-range heteroatoms, all 11 hotspots matched, `RESULT: PASS` |
+| [`scripts/check_resume.sh`](scripts/check_resume.sh) | Prove in-stage resume reuses work *and* invalidates correctly: shard skip, fold-cache reuse, and the three invalidation paths (config change, deleted output, changed folding backend) | helpers verified against real job outputs; the six live assertions need a GPU box — **unrun** |
 
 ## Quick path
 
