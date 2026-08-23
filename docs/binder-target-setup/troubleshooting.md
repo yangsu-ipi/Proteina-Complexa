@@ -127,7 +127,7 @@ functions). The destination is computed from the script's own location
 (`download_startup.sh:23-24` → `PROJECT_ROOT` → `cd`, then a relative `./ckpts`) and never
 from `.env`, so the two could not reconcile. The shipped configs side with the downloaders
 (`ckpt_path: ./ckpts`), as does `preflight.sh`'s own last-resort fallback
-(`preflight.sh:58`, `$LOCAL_CODE_PATH/ckpts`) — `.env_example` was the lone dissenter.
+(`preflight.sh:66`, `$LOCAL_CODE_PATH/ckpts`) — `.env_example` was the lone dissenter.
 
 The default is now `${LOCAL_CODE_PATH}/ckpts`, so fresh installs are correct. **An existing
 `.env` is not updated by that change** — fix it by hand, then regenerate `env.sh`:

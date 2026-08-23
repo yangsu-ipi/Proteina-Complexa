@@ -58,7 +58,7 @@ Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
 - `community_models.AF2_DIR.exists` false -> protein binder default eval (`colabdesign`) fails.
 - `community_models.RF3_CKPT_PATH.exists` or `tools.rf3.exists` false -> ligand binder / AME default eval (`rf3_latest`) fails.
 
-`checkpoints` is a top-level object keyed by full filename (`preflight.sh:98-113`),
+`checkpoints` is a top-level object keyed by full filename (`preflight.sh:135-150`),
 and `env` carries only `.env_loaded`, `.env_path`, `missing_required`,
 `LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`, `CKPT_PATH` (`:136-138`) — the AF2/RF3
 paths are **not** under `env`.
@@ -166,7 +166,7 @@ mid-evaluation after hours of generation. It does **not** validate override
 keys; there is no config-key checking in `validate.py`.
 
 `complexa validate` takes no Hydra overrides — its subparser has only `type`,
-`config`, and `--target` (`cli_runner.py:1296-1318`), so appending `++...`
+`config`, and `--target` (`cli_runner.py:1326-1348`), so appending `++...`
 aborts with `unrecognized arguments`. Validate the config as shipped:
 
 ```bash

@@ -197,7 +197,7 @@ multiple configs and key existence varies by stage). Re-check the key against
 Validating first catches missing ckpts and env vars, but **not** override keys —
 `validate.py` has no config-key validation, and `complexa validate` accepts no
 Hydra overrides at all (its subparser has only `type`, `config`, `--target`;
-`cli_runner.py:1296-1318`), so appending `++...` aborts with
+`cli_runner.py:1326-1348`), so appending `++...` aborts with
 `unrecognized arguments`:
 
 ```bash

@@ -33,7 +33,7 @@ Run cartesian-product parameter sweeps over Proteina-Complexa design pipelines. 
 bash .claude/skills/_shared/scripts/preflight.sh
 ```
 
-Read `./preflight.json` (`preflight.sh:13` sets `OUT="./preflight.json"`; only `--out` changes it, and nothing here passes `--out`). A sweep multiplies GPU time by the number of configs. **Before launching, confirm the cost with the user**:
+Read `./preflight.json` (`preflight.sh:19` sets `OUT="./preflight.json"`; only `--out` changes it, and nothing here passes `--out`). A sweep multiplies GPU time by the number of configs. **Before launching, confirm the cost with the user**:
 
 > "This sweep produces N configs × ~M minutes per config ≈ TOTAL GPU-hours. OK to proceed? (y / reduce / cancel)"
 
