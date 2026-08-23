@@ -14,6 +14,10 @@ model. This file is auto-loaded every session, so it stays short and points else
 - `assets/target_data/` — 81 tracked, pre-cleaned target PDBs.
 - `docs/` — human-facing guides. `.claude/skills/` — agent skills.
 
+Docs anchor claims to source lines. After editing anything under `src/`, run
+`python3 .claude/skills/_shared/scripts/check_citations.py --fix` — any edit above a
+cited line silently shifts every citation below it.
+
 ## CLI
 
 `complexa` (`pip install -e .`). `complexa design <pipeline.yaml> [++overrides] [--verbose]`
