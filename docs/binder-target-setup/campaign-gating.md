@@ -75,7 +75,7 @@ different questions, and `preflight.sh` now reports both:
 | `ckpt_free_gb` (alias `free_gb`), `ckpt_fs` | wherever `CKPT_PATH` lives — the install | room to **download** more weights |
 | `cwd_free_gb`, `cwd_fs` | the working directory | room for **this run's outputs** |
 
-`./inference/…` (`generate.py:64`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
+`./inference/…` (`generate.py:65`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
 campaign run writes nowhere near `CKPT_PATH`. Gating a design run on `free_gb` therefore
 measures the wrong volume — it can fail on a full install disk while the output volume is
 empty, or pass while the output volume is full.
@@ -270,8 +270,8 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:783`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:646`, called at `:714`/`:741`, plain
+  prediction in memory (`generate.py:799`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:662`, called at `:730`/`:757`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
@@ -321,7 +321,7 @@ guidance weight, reward config) invalidates the marker, not just the design coun
 that a shard finished, not that its designs survived, so the guard also counts the shard's
 `job_{job_id}_*` directories and regenerates when fewer remain than the marker claims. The
 comparison is deliberately one-sided — the ligand path writes an extra suffixed directory per
-design beyond those counted in `pdb_paths` (`generate.py:547`), so a shard can hold *more*
+design beyond those counted in `pdb_paths` (`generate.py:563`), so a shard can hold *more*
 directories than it recorded, never fewer.
 
 That check is what makes defaulting to skip safe, and skipping is the point: a resume feature

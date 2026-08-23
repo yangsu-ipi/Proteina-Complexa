@@ -111,7 +111,7 @@ Once the dry-run looks right, drop `--dryrun` to materialize `inf_{idx}_{run_nam
 > `sample_storage_path = root_path` plus `output_dir` / `results_dir = ./evaluation_results/eval_{idx}_{run_name}`
 > (`create_eval_config`, `:225-253`). `complexa design` runs all four stages —
 > `generate → filter → evaluate → analyze` (`cli_runner.py:122`) — from the one config you hand
-> it. Generation honours the injected `root_path` (`generate.py:663, :564-574`), but
+> it. Generation honours the injected `root_path` (`generate.py:679, :564-574`), but
 > **`evaluate.py` never reads `root_path`**: with `sample_storage_path` absent it builds
 > `./inference/{config_name}_{target_task_name}` and appends `_{run_name}` (`:732, :752-768`),
 > e.g. `./inference/inf_0_my_sweep_22_DerF21_search_binder_local` — not where generate wrote.

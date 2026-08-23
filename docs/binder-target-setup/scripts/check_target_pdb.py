@@ -154,7 +154,7 @@ def main() -> int:
             print(f"WARN  hotspot(s) in an unresolved gap: {in_gap}")
 
     if args.write_clean:
-        import biotite.structure.io as strucio  # same writer generate.py:556 uses
+        import biotite.structure.io as strucio  # same writer generate.py:572 uses
 
         strucio.save_structure(args.write_clean, polymer)
         print(f"wrote clean   : {args.write_clean} (heteroatoms stripped, numbering preserved)")
