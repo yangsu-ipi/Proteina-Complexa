@@ -20,7 +20,10 @@ Notes:
 - AME requires `USE_V2_COMPLEXA_ARCH=True`, set via `env_vars:` in
   `configs/search_ame_local_pipeline.yaml` (no runtime VRAM impact).
 - Multi-GPU hosts run multiple pipelines / stages in parallel by bumping
-  `gen_njobs` / `eval_njobs` — each job takes one GPU.
+  `gen_njobs` / `eval_njobs` — each job takes one GPU, pinned by index, so neither may
+  exceed the GPU count in a single `complexa design` run. To shard generation more finely
+  for resume, drive shards individually — see "Sizing shards so resume is worth having"
+  in `docs/binder-target-setup/campaign-gating.md`.
 
 ## Per-evaluation-backend requirements
 

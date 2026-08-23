@@ -355,8 +355,47 @@ filter reports a correct skip as a regeneration. Count live plus `filtered_out_s
 that total is invariant across filtering, which is what makes it comparable at all.
 
 That check is what makes defaulting to skip safe, and skipping is the point: a resume feature
-that warns and then burns the GPU time anyway has saved nothing. Set `gen_njobs` above the GPU
-count and resume granularity becomes one shard.
+that warns and then burns the GPU time anyway has saved nothing.
+
+### Sizing shards so resume is worth having
+
+**The shard is the unit of loss.** Generation has no per-design checkpointing, so an interrupted
+shard loses everything it had done; only *completed* shards are skipped on the retry. A run
+sharded to match the GPU count therefore resumes almost nothing — kill it near the end and every
+in-flight shard restarts from zero.
+
+`gen_njobs` is what divides the work (`split_by_job` splits
+`generation.dataloader.dataset.nres.nsamples` across shards), **but it is also the fan-out width
+of a single `complexa design` invocation, and the two cannot be separated there.** `run_step`
+launches all `gen_njobs` shards at once and pins each to a GPU by index —
+`job_env["CUDA_VISIBLE_DEVICES"] = str(job_id)` (`cli_runner.py:716-719`). Raising `gen_njobs`
+past the number of GPUs hands later shards device indices that do not exist. So you cannot get
+many small shards by turning that one knob up.
+
+To shard finely, drive the shards yourself and let `gen_njobs` mean only "how many pieces":
+
+```bash
+# gen_njobs: 32 in the config; one shard per array task, one GPU each
+#SBATCH --array=0-31
+complexa generate ./pipeline.yaml --verbose --job-id "$SLURM_ARRAY_TASK_ID" "${COMPLEXA_OVERRIDES[@]}"
+```
+
+`--verbose` is load-bearing: without it `stage_njobs > 1` re-triggers the fan-out and one task
+would spawn 32 subprocesses (`cli_runner.py:611`). With it, the task runs exactly its own shard,
+and the child still reads `gen_njobs` from the config so `split_by_job` divides correctly.
+
+**Choose designs-per-shard by time, not by count.** A shard should be a tolerable loss and long
+enough to amortise its startup — every shard is a fresh process that loads the checkpoint. Read
+the per-seed cost from a smoke run's `timing_{job_id}.csv` (`generation_time / seeds_in_shard`)
+rather than assuming: the CBLN1/5KC5 smoke test spent 337 s on 4 seeds at `nsteps: 400`, about
+**85 s per seed per GPU**, so a 1000-seed campaign is roughly 24 GPU-hours and a 32-way split
+puts ~45 min in each shard. Aim for a shard in the tens of minutes; minutes-long shards pay
+model loading repeatedly, hour-plus shards give resume little to save.
+
+Two caveats worth stating in the job file itself. Skipping only helps for shards that
+*finished* — a shard interrupted midway is cleared and redone whole. And `eval_njobs` is a
+separate knob with the same GPU-index pinning, so it belongs at the GPU count regardless of how
+finely generation is sharded.
 
 `scripts/check_resume.sh` exercises all of this against a throwaway `run_name`:
 
