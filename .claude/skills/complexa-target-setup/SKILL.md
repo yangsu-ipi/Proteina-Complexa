@@ -115,11 +115,8 @@ constant. The repo's guards (`cli/startup.py:121-124`,
 `patches/atomworks_patches.py:15-20`) only default these when **unset** — a wrong value
 sails past both. All-or-nothing: empty works, a valid directory works, nothing in between.
 
-Find where it is set, then fix it at source:
-
-```bash
-grep -rn "CCD_MIRROR_PATH" .env env.sh ~/.bashrc ~/.profile "$CONDA_PREFIX"/etc/conda/activate.d/ 2>/dev/null
-```
+Find where it is set and fix it at source —
+`grep -rn CCD_MIRROR_PATH .env env.sh ~/.bashrc "$CONDA_PREFIX"/etc/conda/activate.d/`.
 
 To build a mirror instead, see
 [`env-and-mirrors.md`](../../../docs/binder-target-setup/env-and-mirrors.md) —
@@ -297,4 +294,5 @@ and wall-clock.
 - [`env-and-mirrors.md`](../../../docs/binder-target-setup/env-and-mirrors.md) — mirror semantics, layouts, build recipes
 - [`target-config.md`](../../../docs/binder-target-setup/target-config.md) — one-file YAML, alternatives, Hydra mechanics
 - [`pdb-prep.md`](../../../docs/binder-target-setup/pdb-prep.md) — cleaning by pipeline, numbering, `.cif` vs `.pdb`
+- [`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md) — **read before writing or refreshing a campaign gate script**; derive required weights and the disk budget from the resolved config
 - [`troubleshooting.md`](../../../docs/binder-target-setup/troubleshooting.md) — masked imports, full silent-failure catalogue

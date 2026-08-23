@@ -42,6 +42,7 @@ verify the structure against the config, *then* spend a GPU-hour.
 | [`env-and-mirrors.md`](env-and-mirrors.md) | How `.env` is discovered (three inconsistent mechanisms) and the SLURM/batch recipe; then `CCD_MIRROR_PATH` / `PDB_MIRROR_PATH` semantics, why an invalid value crashes at import, and how to build either mirror |
 | [`target-config.md`](target-config.md) | The one-file target YAML (**preferred**), three alternatives, and the Hydra composition mechanics behind them |
 | [`pdb-prep.md`](pdb-prep.md) | Which pipelines require PDB cleaning, what the contig does and does not filter, and why `.cif` and `.pdb` numbering differ |
+| [`campaign-gating.md`](campaign-gating.md) | **Writing or refreshing a campaign gate script** — deriving the required weights and the output-disk budget from the resolved config, rather than a fixed list |
 | [`troubleshooting.md`](troubleshooting.md) | Masked Hydra import errors and the full silent-failure catalogue |
 
 | Script | Purpose | Status |

@@ -19,10 +19,15 @@ working from this summary alone.
 | File | Contents |
 |---|---|
 | `docs/binder-target-setup/README.md` | index + the silent-failure table |
-| `docs/binder-target-setup/env-and-mirrors.md` | mirror env vars, layouts, build recipes |
+| `docs/binder-target-setup/env-and-mirrors.md` | `.env` discovery, mirror env vars, layouts, build recipes |
 | `docs/binder-target-setup/target-config.md` | one-file target YAML, alternatives, Hydra mechanics |
 | `docs/binder-target-setup/pdb-prep.md` | cleaning by pipeline, numbering, `.cif` vs `.pdb` |
+| `docs/binder-target-setup/campaign-gating.md` | **read this before writing or refreshing a campaign gate script** (`check_preflight.py`-style) |
 | `docs/binder-target-setup/troubleshooting.md` | masked imports, full failure catalogue |
+
+**If this task involves generating or refreshing campaign scaffolding, read
+`campaign-gating.md` — not just the env sections.** A gate that hardcodes its required
+models or a fixed disk floor will pass while the run is broken and fail while it is fine.
 
 ## The governing fact
 
