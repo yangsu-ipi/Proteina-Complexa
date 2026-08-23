@@ -153,7 +153,7 @@ AME targets have a real mandatory checklist — see "Preparing AME Target PDBs" 
 cd /data/targets/MINE && complexa design ./pipeline.yaml --verbose
 ```
 
-The `cd` matters: `./inference/...` (`generate.py:65`) and `./logs` (`cli_runner.py:128`)
+The `cd` matters: `./inference/...` (`generate.py:66`) and `./logs` (`cli_runner.py:128`)
 are hardcoded relative paths and there is no `os.chdir` or `cwd=` anywhere.
 
 Before letting a long run proceed, confirm the intended target dict is live:

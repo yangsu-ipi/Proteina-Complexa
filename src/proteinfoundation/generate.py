@@ -9,6 +9,7 @@ quiet_startup()
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -325,6 +326,34 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     ]
 
 
+def clear_shard_output(root_path: str, marker: dict) -> int:
+    """Delete the directories a damaged shard recorded, before regenerating it.
+
+    Only reached when the digest matches, i.e. we are about to redo *exactly*
+    this request. Generation has no per-design resume, so the surviving
+    directories are a partial version of what the retry is about to produce;
+    leaving them in place makes the shard's output a mix of two attempts with
+    only the newer one recorded, and a retry silently overwrites whichever names
+    happen to collide. Names come from the marker, so nothing outside this
+    shard's own recorded output is touched -- in particular, designs from a run
+    with a *different* config are never removed, because that branch warns
+    instead of clearing.
+    """
+    names = marker.get("sample_dirs") or []
+    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
+    removed = 0
+    for name in names:
+        for base in (root_path, filtered_root):
+            path = os.path.join(base, name)
+            if os.path.isdir(path):
+                try:
+                    shutil.rmtree(path)
+                    removed += 1
+                except OSError as exc:
+                    logger.warning(f"Could not remove {path}: {exc}")
+    return removed
+
+
 def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enabled: bool) -> bool:
     """Whether this shard can be skipped, warning loudly when it cannot.
 
@@ -361,10 +390,16 @@ def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enable
     missing = missing_shard_dirs(root_path, marker)
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
+        removed = clear_shard_output(root_path, marker)
+        try:
+            os.remove(marker_path)
+        except OSError as exc:
+            logger.warning(f"Could not remove stale marker {marker_path}: {exc}")
         logger.warning(
             f"Shard {job_id} is marked complete but {len(missing)} of its "
             f"{marker.get('nsamples', '?')} sample directories are gone ({shown}). "
-            "Regenerating the shard."
+            f"Removed the {removed} that survived, plus the marker, so the shard is "
+            "regenerated as a whole rather than mixed with a partial earlier attempt."
         )
         return False
     if missing is None:
@@ -881,8 +916,6 @@ def main(cfg):
             job_id=job_id,
             motif_pdb_name=task_name,
         )
-        import shutil
-
         motif_csv = f"./{task_name or ''}_motif_info.csv"
         if os.path.exists(motif_csv):
             shutil.copy(motif_csv, root_path)
