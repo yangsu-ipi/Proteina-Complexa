@@ -6,6 +6,8 @@ from proteinfoundation.cli.startup import quiet_startup
 
 quiet_startup()
 
+import hashlib
+import json
 import os
 import sys
 import time
@@ -23,7 +25,7 @@ from atomworks.ml.encoding_definitions import AF2_ATOM37_ENCODING
 from atomworks.ml.transforms.encoding import atom_array_from_encoding
 from dotenv import load_dotenv
 from loguru import logger
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 
 from proteinfoundation.proteina import Proteina
 from proteinfoundation.rewards.base_reward import TOTAL_REWARD_KEY
@@ -234,6 +236,86 @@ def load_ckpt_n_configure_inference(cfg: dict) -> Proteina:
     model.configure_inference(cfg.generation, nn_ag=nn_ag)
 
     return model
+
+
+SHARD_MARKER_TEMPLATE = "shard_{job_id}_complete.json"
+
+
+def shard_marker_path(root_path: str, job_id: int) -> str:
+    """Path of the completion marker for one generation shard."""
+    return os.path.join(root_path, SHARD_MARKER_TEMPLATE.format(job_id=job_id))
+
+
+def generation_config_digest(cfg_gen: dict) -> str:
+    """Stable digest of the generation config, computed before job splitting.
+
+    Used to decide whether an already-complete shard was produced by the same
+    request. Hashing the whole ``generation`` subtree rather than comparing a
+    sample count keeps this correct for every code path (length-based, repeat
+    based, motif conditional features) without duplicating ``split_by_job``'s
+    arithmetic.
+    """
+    return hashlib.sha256(OmegaConf.to_yaml(cfg_gen, resolve=True).encode("utf-8")).hexdigest()
+
+
+def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str, nsamples: int) -> str:
+    """Record that this shard finished, so a later run can skip it."""
+    marker_path = shard_marker_path(root_path, job_id)
+    payload = {
+        "job_id": job_id,
+        "njobs": njobs,
+        "generation_config_sha256": digest,
+        "nsamples": nsamples,
+        "completed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(marker_path, "w") as handle:
+        json.dump(payload, handle, indent=2)
+    logger.info(f"Wrote shard completion marker: {marker_path}")
+    return marker_path
+
+
+def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enabled: bool) -> bool:
+    """Whether this shard can be skipped, warning loudly when it cannot.
+
+    A marker whose digest differs describes a *different* request, so its
+    samples must not be counted towards this one. Re-running generate over such
+    a directory duplicates designs under fresh beam-suffixed names rather than
+    overwriting them, so the mismatch is reported either way.
+    """
+    marker_path = shard_marker_path(root_path, job_id)
+    if not os.path.exists(marker_path):
+        return False
+    try:
+        with open(marker_path) as handle:
+            marker = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Ignoring unreadable shard marker {marker_path}: {exc}")
+        return False
+
+    same_request = marker.get("generation_config_sha256") == digest
+    if not same_request:
+        logger.warning(
+            f"Shard {job_id} already has output in {root_path} from a DIFFERENT generation "
+            f"config (marker {marker.get('generation_config_sha256', '?')[:12]} != current "
+            f"{digest[:12]}). Those {marker.get('nsamples', '?')} samples will not be "
+            "overwritten -- their directory names encode a stochastic beam path -- so this run "
+            "will add designs alongside them. Clear the directory or use a new run_name."
+        )
+        return False
+
+    if not skip_enabled:
+        logger.warning(
+            f"Shard {job_id} already completed with this exact config "
+            f"({marker.get('nsamples', '?')} samples). Re-generating will DUPLICATE them under "
+            "new directory names. Set generation.skip_completed_shards=true to skip instead."
+        )
+        return False
+
+    logger.info(
+        f"Shard {job_id} already complete ({marker.get('nsamples', '?')} samples, "
+        f"{marker_path}). Skipping generation."
+    )
+    return True
 
 
 def split_by_job(cfg: dict, job_id: int, njobs: int) -> dict:
@@ -579,16 +661,22 @@ def main(cfg):
 
     njobs = cfg.get("gen_njobs", 1)
 
-    # Exit if results from analysis already exist (assumes samples already there)
-    # File to store analysis (next step, this is generate) results
-    csv_filename = f"results_{config_name}_{job_id}.csv"
-    csv_path = os.path.join(root_path, "..", csv_filename)
-    # Exit if results from analysis already exist
-    if os.path.exists(csv_path):
-        logger.info(f"Results already exist at {csv_path}. Exiting generate.py.")
+    cfg_gen = cfg.generation
+
+    # Skip this shard if an earlier run already completed it with the same
+    # generation config. Checked before the checkpoint load so a skipped shard
+    # costs nothing, and computed before split_by_job so the digest does not
+    # depend on the sharding. The previous check here named
+    # results_{config_name}_{job_id}.csv, which nothing in the codebase writes.
+    gen_config_digest = generation_config_digest(cfg_gen)
+    if shard_already_complete(
+        root_path,
+        job_id,
+        gen_config_digest,
+        skip_enabled=bool(cfg_gen.get("skip_completed_shards", False)),
+    ):
         sys.exit(0)
 
-    cfg_gen = cfg.generation
     check_cfg_validity(cfg_gen.dataloader.dataset, cfg_gen.args)
 
     # Load model
@@ -711,7 +799,7 @@ def main(cfg):
             cath_codes=cath_codes,
         )
         if len(reward_df) > 0:
-            csv_path = save_rewards_to_csv(
+            save_rewards_to_csv(
                 df=reward_df,
                 root_path=root_path,
                 config_name=config_name,
@@ -738,7 +826,7 @@ def main(cfg):
         )
 
         if len(reward_df) > 0:
-            csv_path = save_rewards_to_csv(
+            save_rewards_to_csv(
                 df=reward_df,
                 root_path=root_path,
                 config_name=config_name,
@@ -759,6 +847,8 @@ def main(cfg):
             f.write("job_id,total_time,nsamples\n")
             f.write(f"{job_id},{end_time - start_time:.2f},{len(pdb_paths)}\n")
         logger.info(f"Timing information saved to: {timing_csv_path}")
+
+    write_shard_marker(root_path, job_id, njobs, gen_config_digest, len(pdb_paths))
 
 
 if __name__ == "__main__":
