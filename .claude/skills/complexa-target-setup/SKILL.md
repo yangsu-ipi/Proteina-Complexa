@@ -294,7 +294,7 @@ Setup and preflight need no GPU; for per-pipeline VRAM and wall-clock see
 
 Full detail lives in [`docs/binder-target-setup/`](../../../docs/binder-target-setup/README.md),
 whose README indexes all five files. Read
-[`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md) **before writing or
-refreshing a campaign gate script** or touching resume behaviour, and
+[`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md) **before writing a
+campaign gate, runner, or job file** — it owns shard sizing and resume — and
 [`target-config.md`](../../../docs/binder-target-setup/target-config.md) before authoring a
 target YAML.
