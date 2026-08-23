@@ -242,15 +242,69 @@ def sample_dirs(inference_dir):
 ```
 
 then assert `evaluated == len(sample_dirs(...))` for coverage, `0 < deduped <= generated` as a
-report sanity bound, and — when `filtered_out_samples/` exists — that live plus filtered-out
-equals generated. That last one is the only assertion that actually proves the filter did what
-it was asked, and it is well defined whether or not pruning happened.
+report sanity bound, and — **unconditionally** — that live plus filtered-out directories equals
+generated. Assert that last one even when nothing was pruned: it is the only check that proves
+the filter did what it was asked, and it doubles as the detector for the stale-directory hazard
+in the next section.
 
 **Know which of your numbers are independent.** The timing CSV's `nsamples` is
 `max(len(df))` over the result frames (`evaluate.py:944-946`) — the same frames the combined
 CSV is written from. So `evaluated == combined` is a schema guard, not a cross-check; keep it,
 but do not mistake it for evidence that evaluation covered the run. The genuinely independent
 numbers are the generation reward rows, the on-disk directory count, and the result rows.
+
+## Restarting a failed or interrupted run
+
+Resume granularity is **the stage**, and only manually. A failed stage raises
+`CalledProcessError` (`cli_runner.py:793-797`) which propagates out of `run_design_pipeline`, so
+later stages never run and you restart with `--steps`:
+
+```bash
+complexa design ./pipeline.yaml --steps evaluate analyze "${COMPLEXA_OVERRIDES[@]}"
+```
+
+Pass the *same* override array — a resumed leg composed differently is the same divergence the
+gate section warns about.
+
+Within a stage there is no checkpointing, and two details make a naive retry of `generate`
+actively dangerous:
+
+- **The rewards CSV is written once, at the end** (`generate.py:527` via `save_rewards_to_csv`,
+  called at `:714`/`:741`, `df.to_csv` with no append). Sample PDBs are written incrementally
+  per batch, so an interrupted generate leaves directories on disk and **no** rewards CSV.
+- **Retry directory names do not collide with the interrupted run's.** The per-design directory
+  name encodes the beam-search path (`job_0_n_195_id_3_beam_orig0_bm0-s0to100br3-…`), which is
+  stochastic, so a retry writes *new* directories alongside the abandoned ones instead of
+  overwriting them. Evaluation then folds designs that belong to no run and the counts inflate.
+
+`generate.py:582-589` looks like it guards against this — it exits early if
+`results_{config_name}_{job_id}.csv` exists — but nothing in the codebase writes that filename.
+Evaluate writes `binder_results_…`, `monomer_results_…`, and friends (`evaluate.py:853-930`);
+the bare `results_` form has no producer, so the guard is dead and generate always restarts from
+scratch. Do not rely on it.
+
+**So clear the run directory before retrying generate**, or retry at shard granularity. The
+standalone step commands take `--job-id` (`add_job_args`, applied to `generate_parser` but not
+`design_parser`), so when a multi-GPU generate loses one shard you can re-run just that shard:
+
+```bash
+complexa generate ./pipeline.yaml --job-id 3 "${COMPLEXA_OVERRIDES[@]}"
+```
+
+This is why the unconditional `live + filtered_out == generated` assertion matters: it is what
+catches a retry that silently inherited the previous attempt's directories.
+
+`filter` and `analyze` are safe to re-run. `filter` recomputes `keep_dirs` from paths that still
+exist (`filter.py:188-191`) and explicitly skips `filtered_out_samples/` when moving, so a second
+pass is a no-op; `analyze` regenerates its aggregates and its timing reader is written for
+re-runs (`analysis.py:1671-1672`). `evaluate` has no skip logic at all — no result-existence
+check, no per-design fold cache — so it redoes every AF2 fold. That is the expensive leg to
+avoid repeating.
+
+One rough edge in parallel stages: shards are launched together, then waited on in order, and
+the first non-zero return code raises immediately (`cli_runner.py:747-750`). The remaining
+`Popen` children are not killed, so a shard-0 failure leaves later shards running. Under SLURM
+the step teardown reaps them; outside SLURM, check for orphaned GPU processes before retrying.
 
 ## The pattern behind all of these
 
