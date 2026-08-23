@@ -34,7 +34,11 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     select_best_sample_idx,
     validate_ranking_criteria,
 )
-from proteinfoundation.evaluation.esm_eval import ESM_AVAILABLE, compute_esm_ppl_for_sequences
+from proteinfoundation.evaluation.esm_eval import (
+    DEFAULT_ESM_BATCH_TOKENS,
+    ESM_AVAILABLE,
+    compute_esm_ppl_for_sequences,
+)
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table
 from proteinfoundation.metrics.binder_metrics import run_binder_eval
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -427,10 +431,23 @@ def compute_binder_metrics(
                     if idx == 0:
                         all_columns.extend([f"{seq_type}_sequence", f"{seq_type}_sequence_all"])
 
-                # ESM pseudo-perplexity metrics (optional)
+                # ESM pseudo-perplexity metrics (optional).
+                #
+                # Deliberately outside the refolding cache above: these are
+                # cheap next to folding, and keeping them out means the cache
+                # fingerprint does not have to cover the sequence model. If ESM
+                # results are ever added to write_binder_eval_cache, esm_model
+                # and esm_backend MUST join binder_eval_fingerprint -- otherwise
+                # switching ESM2 to ESMC serves stale ESM2 numbers, the same
+                # failure the folding-backend fingerprint exists to prevent.
                 if cfg_metric.get("compute_esm_metrics", False) and ESM_AVAILABLE and seqs:
                     esm_model = cfg_metric.get("esm_model", "facebook/esm2_t33_650M_UR50D")
-                    esm_df = compute_esm_ppl_for_sequences(seqs, model_name=esm_model)
+                    esm_df = compute_esm_ppl_for_sequences(
+                        seqs,
+                        model_name=esm_model,
+                        backend=cfg_metric.get("esm_backend", "auto"),
+                        max_batch_tokens=cfg_metric.get("esm_batch_tokens", DEFAULT_ESM_BATCH_TOKENS),
+                    )
 
                     row_dict[f"{seq_type}_esm_pseudo_perplexity"] = esm_df["esm_pseudo_perplexity"].iloc[seq_best_idx]
                     row_dict[f"{seq_type}_esm_log_likelihood"] = esm_df["esm_log_likelihood"].iloc[seq_best_idx]
