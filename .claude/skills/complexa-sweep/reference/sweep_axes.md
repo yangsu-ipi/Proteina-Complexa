@@ -167,7 +167,7 @@ No emitted file is named `results_*.csv`; the per-job files are
 | `mean_i_pae` | `{seq}_complex_i_pAE.mean()` | Lower = better. AF2 interface PAE, stored **0–1 scaled** — multiply by 31 to report in threshold units. A naive `i_pae < 10` test passes every sample. |
 | `mean_plddt` | `{seq}_complex_pLDDT.mean()` | Higher = better. **Complex** pLDDT, 0–1. There is no interface-pLDDT column in the raw CSV — `i_plddt` does not exist. |
 | `mean_binder_scRMSD_ca` | `{seq}_binder_scRMSD_ca.mean()` | Lower = better. Binder CA scRMSD in Å. `sc_rmsd` does not exist. |
-| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:310`). |
+| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:373`). |
 | `wall_clock_min` | Timestamp delta from the per-stage logs under `./logs/` | Approximate (process wall-clock, not GPU time). With the split-stage loop from Step 4 there is one log per stage, not one per pipeline. |
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column

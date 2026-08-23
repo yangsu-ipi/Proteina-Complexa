@@ -77,3 +77,8 @@ metric:
 
   # Output control
   keep_folding_outputs: true
+
+  # Resume: reuse refolding results cached per design in binder_eval_cache.json
+  # instead of refolding. Off by default; a cache is only reused when it covers
+  # every requested sequence_type.
+  reuse_cached_folding: false

@@ -75,7 +75,7 @@ different questions, and `preflight.sh` now reports both:
 | `ckpt_free_gb` (alias `free_gb`), `ckpt_fs` | wherever `CKPT_PATH` lives — the install | room to **download** more weights |
 | `cwd_free_gb`, `cwd_fs` | the working directory | room for **this run's outputs** |
 
-`./inference/…` (`generate.py:62`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
+`./inference/…` (`generate.py:64`) and `./logs` (`cli_runner.py:128`) are cwd-relative, so a
 campaign run writes nowhere near `CKPT_PATH`. Gating a design run on `free_gb` therefore
 measures the wrong volume — it can fail on a full install disk while the output volume is
 empty, or pass while the output volume is full.
@@ -270,7 +270,7 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:658`); only afterwards does `save_predictions` write the
+  prediction in memory (`generate.py:746`); only afterwards does `save_predictions` write the
   PDBs and `save_rewards_to_csv` write the rewards CSV (`:527`, called at `:714`/`:741`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
@@ -282,11 +282,41 @@ actively dangerous:
   completed attempt writes *new* directories alongside the old ones instead of overwriting them.
   Evaluation then folds designs belonging to no run and the counts inflate.
 
-`generate.py:582-589` looks like it guards against this — it exits early if
-`results_{config_name}_{job_id}.csv` exists — but nothing in the codebase writes that filename.
-Evaluate writes `binder_results_…`, `monomer_results_…`, and friends (`evaluate.py:853-930`);
-the bare `results_` form has no producer, so the guard is dead and generate always restarts from
-scratch. Do not rely on it.
+This used to be unguarded. `generate.py` had an early-exit keyed on
+`results_{config_name}_{job_id}.csv`, a filename nothing in the codebase writes — evaluate
+writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:853-930`) — so
+the guard was dead and generate always restarted from scratch.
+
+It now keys on a **completion marker** instead. A finished shard writes
+`shard_{job_id}_complete.json` recording a SHA-256 of its `generation` config subtree, and the
+next run compares digests:
+
+| Marker state | `skip_completed_shards` | Behaviour |
+|---|---|---|
+| absent | either | generate, silently |
+| digest matches | `true` | **skip the shard** |
+| digest matches | `false` (default) | warn that regenerating will duplicate, then generate |
+| digest differs | either | warn that output from a different request is present, then generate |
+| unreadable | either | warn, then generate |
+
+Hashing the whole `generation` subtree rather than comparing a sample count keeps this correct
+for every code path — length-based, repeat-based, motif conditional features — without
+duplicating `split_by_job`'s arithmetic, which is the "two things that must agree" trap this
+document keeps returning to. It also means *any* changed generation parameter (`nsteps`,
+guidance weight, reward config) invalidates the marker, not just the design count.
+
+The default is off, so behaviour is unchanged unless a campaign opts in. Turn it on with
+`gen_njobs` above the GPU count and resume granularity becomes one shard:
+
+```bash
+complexa design ./pipeline.yaml "++generation.skip_completed_shards=true" "${COMPLEXA_OVERRIDES[@]}"
+```
+
+Two limitations to know. A run producing no rewards CSV still writes its marker, so the marker
+tracks *completion*, not output volume — pair it with the acceptance check's
+`live + filtered_out == generated` assertion. And because a completed shard is skipped rather
+than re-derived, the campaign manifest's "seed S produced these N designs" claim spans two
+processes; the digest proves they were the same *request*, not the same RNG stream.
 
 **So clear the run directory before re-running generate over it**, or retry at shard
 granularity. The
@@ -300,12 +330,19 @@ complexa generate ./pipeline.yaml --job-id 3 "${COMPLEXA_OVERRIDES[@]}"
 This is why the unconditional `live + filtered_out == generated` assertion matters: it is what
 catches a retry that silently inherited the previous attempt's directories.
 
-Repairing the dead guard is the cheapest real improvement available here. Point it at
-`rewards_{config_name}_{job_id}.csv` — the file `save_rewards_to_csv` actually writes, in
-`root_path` rather than its parent — and each shard gains a completion marker, so re-running
-generate skips finished shards instead of duplicating them. Combined with `gen_njobs` set
-higher than the GPU count, that buys shard-granular resume without any checkpointing
-machinery.
+Note that shard skipping does not remove the need for this assertion — it narrows what the
+assertion has to catch. A shard skipped on a matching digest contributes its old directories to
+the count, which is correct; a shard regenerated after a digest mismatch contributes both sets,
+which is not.
+
+`evaluate`'s binder track can now reuse work. Each design's refolding results are cached in
+`binder_eval_cache.json` next to its PDB, and `metric.reuse_cached_folding: true` loads that
+instead of refolding. The cache is only honoured when it covers every requested
+`sequence_types` entry, so widening `["self"]` to `["self", "mpnn"]` correctly recomputes rather
+than returning a partial answer. It is written alongside the pre-existing
+`sequence_type_stats.json`, whose schema is unchanged, so designs evaluated before this existed
+simply recompute once. The monomer track is unaffected — it folds a batch of sequences per call
+rather than looping per design, so it has no per-design artifact to key on.
 
 `filter` and `analyze` are safe to re-run. `filter` recomputes `keep_dirs` from paths that still
 exist (`filter.py:188-191`) and explicitly skips `filtered_out_samples/` when moving, so a second

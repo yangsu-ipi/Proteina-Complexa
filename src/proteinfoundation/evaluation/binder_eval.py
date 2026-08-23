@@ -121,6 +121,57 @@ def initialize_folding_model(
 # =============================================================================
 
 
+BINDER_EVAL_CACHE_FILENAME = "binder_eval_cache.json"
+
+
+def _binder_cache_path(sample_root_path: str) -> str:
+    return os.path.join(sample_root_path, BINDER_EVAL_CACHE_FILENAME)
+
+
+def write_binder_eval_cache(sample_root_path: str, sequence_type_stats: dict, sequences_dict: dict) -> None:
+    """Persist everything the row-building code needs from ``run_binder_eval``.
+
+    Written alongside — not instead of — ``sequence_type_stats.json``, whose
+    schema stays as it was so existing consumers are unaffected.
+    """
+    try:
+        # Serialise first so a non-encodable payload leaves no half-written file
+        # behind for the next run to trip over.
+        blob = json.dumps(
+            {"sequence_type_stats": sequence_type_stats, "sequences_dict": sequences_dict}
+        )
+        with open(_binder_cache_path(sample_root_path), "w") as handle:
+            handle.write(blob)
+    except (OSError, TypeError, ValueError) as exc:
+        # A cache is an optimisation; failing to write one must not fail evaluation.
+        logger.warning(f"Could not write binder eval cache for {sample_root_path}: {exc}")
+
+
+def read_binder_eval_cache(sample_root_path: str, sequence_types: list[str]) -> tuple[dict, dict] | None:
+    """Cached refolding results for this design, or None to recompute.
+
+    Returns None unless the cache exists, parses, and covers every requested
+    sequence type — a cache built for ``["self"]`` must not be reused for a run
+    asking for ``["self", "mpnn"]``.
+    """
+    cache_path = _binder_cache_path(sample_root_path)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path) as handle:
+            cached = json.load(handle)
+        stats = cached["sequence_type_stats"]
+        sequences = cached["sequences_dict"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.warning(f"Ignoring unusable binder eval cache {cache_path}: {exc}")
+        return None
+    missing = [t for t in sequence_types if t not in stats or t not in sequences]
+    if missing:
+        logger.info(f"Binder eval cache at {cache_path} lacks sequence types {missing}; recomputing")
+        return None
+    return stats, sequences
+
+
 def compute_binder_metrics(
     eval_config: DictConfig,
     sample_root_paths: list[str],
@@ -188,6 +239,11 @@ def compute_binder_metrics(
     # Progress bar setting
     show_progress = eval_config.get("show_progress", False)
 
+    # Reuse refolding results already on disk for a design, so an interrupted or
+    # partially-failed evaluate does not repeat the expensive folding pass.
+    reuse_cached_folding = cfg_metric.get("reuse_cached_folding", False)
+    n_reused = 0
+
     # Setup columns
     columns, flat_dict = parse_cfg_for_table(eval_config)
     all_columns = columns + ["id_gen", "pdb_path", "L", "task_name"]
@@ -224,25 +280,32 @@ def compute_binder_metrics(
             if get_fixed_residues_fn is not None:
                 fixed_residues_override = get_fixed_residues_fn(pdb_path, binder_chain)
 
-            _, _, sequence_type_stats, sequences_dict = run_binder_eval(
-                pdb_file_path=pdb_path,
-                target_pdb_path=target_pdb_path,
-                folding_model_specs=folding_model_specs,
-                tmp_path=sample_root_path,
-                target_pdb_chain=target_pdb_chain,
-                sequence_types=sequence_types,
-                inverse_folding_model=inverse_folding_model,
-                gen_target_chain=gen_target_chain,
-                binder_chain=binder_chain,
-                interface_cutoff=interface_cutoff,
-                is_target_ligand=is_target_ligand,
-                num_redesign_seqs=num_redesign_seqs,
-                fixed_residues_override=fixed_residues_override,
-            )
+            cached = read_binder_eval_cache(sample_root_path, sequence_types) if reuse_cached_folding else None
+            if cached is not None:
+                sequence_type_stats, sequences_dict = cached
+                n_reused += 1
+            else:
+                _, _, sequence_type_stats, sequences_dict = run_binder_eval(
+                    pdb_file_path=pdb_path,
+                    target_pdb_path=target_pdb_path,
+                    folding_model_specs=folding_model_specs,
+                    tmp_path=sample_root_path,
+                    target_pdb_chain=target_pdb_chain,
+                    sequence_types=sequence_types,
+                    inverse_folding_model=inverse_folding_model,
+                    gen_target_chain=gen_target_chain,
+                    binder_chain=binder_chain,
+                    interface_cutoff=interface_cutoff,
+                    is_target_ligand=is_target_ligand,
+                    num_redesign_seqs=num_redesign_seqs,
+                    fixed_residues_override=fixed_residues_override,
+                )
 
-            # Save raw stats
-            with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
-                json.dump(sequence_type_stats, f, indent=4)
+                # Save raw stats
+                with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
+                    json.dump(sequence_type_stats, f, indent=4)
+
+                write_binder_eval_cache(sample_root_path, sequence_type_stats, sequences_dict)
 
             # Extract metrics for each sequence type
             for seq_type in sequence_types:
@@ -333,6 +396,9 @@ def compute_binder_metrics(
                         )
 
         results.append(row_dict)
+
+    if reuse_cached_folding:
+        logger.info(f"Binder evaluation reused cached refolding for {n_reused}/{len(results)} designs")
 
     return pd.DataFrame(results).reindex(columns=all_columns)
 

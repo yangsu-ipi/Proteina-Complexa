@@ -242,7 +242,7 @@ cd /data/targets/MINE && complexa design ./pipeline.yaml --verbose
 ```
 
 The `cd` matters: output roots are hardcoded relative paths — `./inference/...`
-(`generate.py:62`) and `./logs` (`cli_runner.py:128`) — with no `os.chdir` or `cwd=`
+(`generate.py:64`) and `./logs` (`cli_runner.py:128`) — with no `os.chdir` or `cwd=`
 anywhere, so they land in the shell's cwd.
 
 Confirm the right target dict is live before letting a long run proceed:
