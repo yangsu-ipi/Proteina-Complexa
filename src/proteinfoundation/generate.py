@@ -26,6 +26,7 @@ from atomworks.ml.transforms.encoding import atom_array_from_encoding
 from dotenv import load_dotenv
 from loguru import logger
 from omegaconf import OmegaConf, open_dict
+from omegaconf.errors import OmegaConfBaseException
 
 from proteinfoundation.proteina import Proteina
 from proteinfoundation.rewards.base_reward import TOTAL_REWARD_KEY
@@ -254,8 +255,23 @@ def generation_config_digest(cfg_gen: dict) -> str:
     sample count keeps this correct for every code path (length-based, repeat
     based, motif conditional features) without duplicating ``split_by_job``'s
     arithmetic.
+
+    Resolution is attempted but never required. The generation subtree carries
+    ``oc.env`` interpolations for things a given run may not use at all --
+    ``af_params_dir: ${oc.env:AF2_DIR}`` (``binder_generate.yaml:135``) and, in
+    campaign configs, a ``target_path`` built from a campaign directory variable.
+    Insisting on resolution would abort generation over an unset variable that
+    the run never reads. So an unresolvable config falls back to the unresolved
+    text, with the mode mixed into the hash so the two forms cannot collide.
     """
-    return hashlib.sha256(OmegaConf.to_yaml(cfg_gen, resolve=True).encode("utf-8")).hexdigest()
+    try:
+        text = OmegaConf.to_yaml(cfg_gen, resolve=True)
+        mode = "resolved"
+    except OmegaConfBaseException as exc:
+        logger.debug(f"Generation config digest computed unresolved ({type(exc).__name__}: {exc})")
+        text = OmegaConf.to_yaml(cfg_gen, resolve=False)
+        mode = "unresolved"
+    return hashlib.sha256(f"{mode}\n{text}".encode("utf-8")).hexdigest()
 
 
 def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str, nsamples: int) -> str:
