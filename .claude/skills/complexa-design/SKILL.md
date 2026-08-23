@@ -60,7 +60,7 @@ Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
 
 `checkpoints` is a top-level object keyed by full filename (`preflight.sh:135-150`),
 and `env` carries only `.env_loaded`, `.env_path`, `missing_required`,
-`LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`, `CKPT_PATH` (`:136-138`) — the AF2/RF3
+`LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`, `CKPT_PATH` (`:203-205`) — the AF2/RF3
 paths are **not** under `env`.
 
 If a ckpt is missing, point at `complexa-setup` and have the user run
