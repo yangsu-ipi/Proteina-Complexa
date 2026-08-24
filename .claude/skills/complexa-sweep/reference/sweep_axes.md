@@ -85,7 +85,7 @@ These live at top level (the binder_evaluate config is loaded with `@_global_`),
 | `metric.inverse_folding_model` | `soluble_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` | none | MPNN variant used for redesign. |
 | `metric.compute_pre_refolding_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the generated structure (no fold) — fast. |
 | `metric.compute_refolded_structure_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the refolded structure — slower. |
-| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:79-81`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
+| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:83-85`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
 
 ## Reading the sweeper YAML format
 
