@@ -95,17 +95,88 @@ measuring something adjacent to what binder design cares about.
   subset is not reproducible and the apo and holo tables cannot be joined across
   a resume.
 
-## Not yet decided
+## Naming, against the grid
 
-- What the extended codesignability columns are called. The existing
-  `_res_co_scRMSD_{mode}_{model}` is design-level and self-only; per-sequence,
-  per-type apo values need names that do not collide with it.
-- Whether the apo gate is added at 2.0 A, matching the existing monomer
-  convention, or set from the smoke-test distribution first. The threshold is
-  geometric, so the convention transfers in principle, but no run has produced
-  the distribution yet.
-- Whether `_res_co_scRMSD_*` survives as its own reported metric once every
-  sequence has an apo number, or becomes the `self` row of the general one.
+Two independent axes have been conflated, because until now only one combination
+per axis existed.
+
+**Axis 1 — whose sequence.** `co` in `_res_co_*` means *co-designed*, the field's
+term for a model that emits sequence and structure jointly. The repo says so:
+"Co-sequence-recovery measures how well the model recovers the original sequence
+when co-designing structures" (`analysis.py`), and the logs read "Computing
+co-designability". Proteina-Complexa is such a model, which is why `self` exists
+at all -- it is read straight off the generated PDB. So `co` names the *source* of
+a sequence, and ProteinMPNN redesigns are precisely what it excludes: an external
+inverse-folder is the opposite of co-design. Extending a `co_` name to cover them
+would destroy the one distinction the prefix exists to draw.
+
+**Axis 2 — which condition the fold happens in.** holo, with the target present;
+apo, the binder alone.
+
+The grid, with what fills each cell today:
+
+|                        | holo (with target)                    | apo (alone)                       |
+|------------------------|---------------------------------------|-----------------------------------|
+| co-designed (`self`)   | `self_complex_*`, `self_binder_scRMSD_*` | `_res_co_scRMSD_{mode}_{model}` |
+| redesign (`mpnn`)      | `mpnn_complex_*`, `mpnn_binder_scRMSD_*` | **empty -- the gap**            |
+| redesign (`mpnn_fixed`)| `mpnn_fixed_complex_*`, ...              | **empty -- the gap**            |
+
+Designability sits outside the grid on purpose: it is a `min()` over
+`designability_num_seq` sequences, a design-level summary rather than a
+per-sequence value. It stays that way.
+
+**Proposed name for the empty cells:** `{seq_type}_apo_scRMSD_{mode}_{model}`,
+naming the *condition* rather than extending a name that means something else. It
+reads uniformly across `self`, `mpnn` and `mpnn_fixed`, and sits beside the
+existing holo per-type `{seq_type}_binder_scRMSD_{mode}`.
+
+Two asymmetries are deliberate. The holo column carries no `{model}` because
+`binder_folding_method` is a single value, while the apo column does because
+`monomer_folding_models` is a list. And the holo column says `binder` where the
+apo one says `apo`; renaming the holo column to match would touch a gated,
+upstream-owned name for cosmetic gain, so it is left alone and the asymmetry is
+recorded here instead.
+
+## The three open questions, answered
+
+**1. What are the new columns called?** `{seq_type}_apo_scRMSD_{mode}_{model}`,
+per the grid above. Not a `co_` name.
+
+**2. Does the apo gate start at 2.0 A?** Yes, as a starting point, but not in the
+same change that introduces the columns. Emit ungated first, read the smoke-test
+distribution, then add the threshold. scRMSD is geometric so the 2.0 A monomer
+convention transfers in principle, but no run has produced the distribution, and
+adopting a number before seeing it makes "the gate works" indistinguishable from
+"the gate is mis-calibrated".
+
+**3. Does `_res_co_scRMSD_*` survive?** Yes -- and not merely for continuity.
+It is not a binder metric: `motif_eval_utils.py` emits it for motif scaffolding,
+where there is no target and therefore no apo/holo distinction at all. Retiring
+it would break a pipeline that has nothing to do with this work. For binders it
+becomes numerically the `self` row of the grid -- same sequence, same condition,
+same seed, therefore the same fold, shared through the refold cache rather than
+computed twice. It keeps its name, and the equivalence is documented rather than
+enforced by aliasing.
+
+## A fourth question, not previously listed
+
+Designability keeps the name `_res_scRMSD_{mode}_{model}` while its meaning
+changes, since its sequences move from binder-only to complex conditioning. Old
+and new numbers would then share a column name -- the same trap as a citation
+that still points somewhere valid after the claim it supported stopped being
+true.
+
+Recommendation: emit a provenance column, `_res_mpnn_conditioning` with value
+`complex` or `binder_only`, so any CSV states which meaning its designability
+numbers carry. One column, written once per design, and it makes the two eras
+distinguishable without renaming a gated metric.
+
+## Still open
+
+- Whether `_res_mpnn_conditioning` is worth its column, or the conditioning
+  change is better recorded only here.
+- Whether the apo gate, once calibrated, applies to every sequence type or
+  only to the types a campaign intends to ship.
 
 ## Not reused: `binder_bound_unbound_RMSD`
 
