@@ -12,9 +12,9 @@ Companion to `SKILL.md`. Every `evaluate_*_from_pdb_dir.yaml` and its paired `an
 | Motif protein binder   | `configs/example/evaluate_motif_binder.yaml` (no `_from_pdb_dir` variant; set `input_mode=pdb_dir`) | `configs/analyze_motif_binder.yaml` | `motif_protein_binder` | `colabdesign`, `rf3_latest` | `protein_mpnn` / `soluble_mpnn` |
 
 Notes:
-- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:108-128` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` belongs to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:30`).
+- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:108-128` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`).
 - The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:2921`, `validate_config` at `:390-409`).
-- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:175`), `analysis_modes: [binder]` (`:182`).
+- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:183`), `analysis_modes: [binder]` (`:190`).
 - There is no shipped `evaluate_motif_protein_binder_from_pdb_dir.yaml`; reuse `configs/example/evaluate_motif_binder.yaml` with `++input_mode=pdb_dir ++sample_storage_path=<dir> ++result_type=motif_protein_binder`. That config composes `- /design_tasks/ame_dict_v2@dataset` (`:24`), so `dataset.task_name` must be a key in `configs/design_tasks/ame_dict_v2.yaml` unless you point it at your own dict — see the `motif_target_dict_cfg` note in §2.
 
 ## 2. Evaluate config schema
@@ -231,7 +231,7 @@ dicts by task name; `get_target_info` (`binder_eval_utils.py:238-252`) just look
 whatever was composed and raises otherwise. So run the command below against a copy of
 `evaluate_from_pdb_dir.yaml` whose defaults entry reads `- /targets/ligand_targets_dict@dataset`.
 The three `metric.*` / `result_type` overrides shown are already this config's shipped defaults
-(`:72`, `:84`, `:175`) and are listed for explicitness.
+(`:72`, `:84`, `:183`) and are listed for explicitness.
 
 ```bash
 complexa analysis configs/evaluate_from_pdb_dir_ligand.yaml \

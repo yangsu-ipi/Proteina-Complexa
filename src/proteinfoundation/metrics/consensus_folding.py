@@ -241,30 +241,25 @@ def _target_msas(target_seqs: list[str], cfg: dict) -> list[object | None]:
     return msas
 
 
-_ESMFOLD2_MODEL_CACHE: dict[str, object] = {}
-
-
 def _esmfold2_model(cfg: dict):
-    """Load ESMFold2 once per process, keyed on the checkpoint id.
+    """The complex-folding checkpoint, cached per process by the shared loader.
 
-    Without this the model reloads per design, which is the mistake ``run_esmfold``
-    still makes and which dominates the cost of anything called per-design.
+    Defaults to the full Experimental-Cutoff2025 checkpoint rather than the Fast
+    one: this path folds target+binder and can take a target MSA, which is the
+    setting the fork's own deploy scripts use their "critic" model for. Monomer
+    refolding uses Fast instead -- see ``esmfold2_loader``.
     """
-    from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
+    from proteinfoundation.metrics.esmfold2_loader import complex_model_id, load_esmfold2
 
-    model_id = str(cfg.get("model_id", "biohub/ESMFold2"))
-    if model_id not in _ESMFOLD2_MODEL_CACHE:
-        logger.info(f"Loading ESMFold2 for advisory refolding: {model_id}")
-        model = ESMFold2Model.from_pretrained(model_id)
-        if cfg.get("cuda", True):
-            model = model.cuda()
-        _ESMFOLD2_MODEL_CACHE[model_id] = model.eval()
-    return _ESMFOLD2_MODEL_CACHE[model_id]
+    model_id = str(cfg.get("model_id") or complex_model_id())
+    return load_esmfold2(model_id, cuda=bool(cfg.get("cuda", True)))
 
 
 def clear_consensus_model_cache() -> None:
     """Release cached advisory models (tests, or before switching checkpoints)."""
-    _ESMFOLD2_MODEL_CACHE.clear()
+    from proteinfoundation.metrics.esmfold2_loader import clear_esmfold2_cache
+
+    clear_esmfold2_cache()
 
 
 CONSENSUS_BACKENDS: dict[str, Callable[[list[str], str, dict], dict[str, float]]] = {
