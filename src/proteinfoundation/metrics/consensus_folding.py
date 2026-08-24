@@ -27,7 +27,11 @@ Adding a backend
 ----------------
 A backend is a callable::
 
-    (target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[str, float]
+    (target_seqs: list[str], binder_seq: str, cfg: dict, out_pdb_path: str | None)
+        -> dict[str, float]
+
+writing the folded complex to ``out_pdb_path`` when one is given, and otherwise
+not writing at all,
 
 keyed by the suffixes in :data:`CONSENSUS_METRIC_SUFFIXES`, with missing metrics
 simply absent. ``cfg`` is the ``metric.consensus_cfg`` mapping; if a backend reads
@@ -80,7 +84,12 @@ _GATED_PREFIX = "complex"
 # =============================================================================
 
 
-def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[str, float]:
+def _score_esmfold2(
+    target_seqs: list[str],
+    binder_seq: str,
+    cfg: dict,
+    out_pdb_path: str | None = None,
+) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
 
     Same input shape as the fork's own reference adapter
@@ -129,18 +138,36 @@ def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[
     # the return value directly would silently yield no metrics the moment anyone
     # raised it.
     results = folded if isinstance(folded, list) else [folded]
-    scored = [_esmfold2_metrics(r, sum(len(s) for s in target_seqs)) for r in results]
-    scored = [m for m in scored if m]
-    if not scored:
+    target_len = sum(len(s) for s in target_seqs)
+    # Keep results and metrics index-aligned: the chosen structure has to be the
+    # one whose metrics are reported.
+    paired = [(r, _esmfold2_metrics(r, target_len)) for r in results]
+    paired = [(r, m) for r, m in paired if m]
+    if not paired:
         return {}
+    results = [r for r, _ in paired]
+    scored = [m for _, m in paired]
     # Best-of-N by interface PAE, matching how the primary backend picks a
     # representative refold (select_best_sample_idx on i_pAE, lower is better).
     # Falls back to i_pTM, then to the first sample.
     if all("i_pAE" in m for m in scored):
-        return min(scored, key=lambda m: m["i_pAE"])
-    if all("i_pTM" in m for m in scored):
-        return max(scored, key=lambda m: m["i_pTM"])
-    return scored[0]
+        best = min(range(len(scored)), key=lambda i: scored[i]["i_pAE"])
+    elif all("i_pTM" in m for m in scored):
+        best = max(range(len(scored)), key=lambda i: scored[i]["i_pTM"])
+    else:
+        best = 0
+
+    if out_pdb_path:
+        # Write the sample the metrics describe, so a disagreement with the
+        # primary backend can be looked at rather than only read as numbers.
+        # Same call run_esmfold2 uses for monomers.
+        try:
+            os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
+            results[best].complex.to_protein_complex().to_pdb(out_pdb_path)
+            scored[best]["pdb_path"] = out_pdb_path
+        except Exception as exc:  # advisory: a failed write must not lose the metrics
+            logger.warning(f"Could not write advisory complex structure to {out_pdb_path}: {exc}")
+    return scored[best]
 
 
 def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
@@ -352,7 +379,7 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def read_consensus_cache(cache_dir: str, backend: str, fingerprint: str) -> dict[str, dict[str, float]]:
+def read_consensus_cache(cache_dir: str, backend: str, fingerprint: str) -> dict[str, dict[str, float | str]]:
     path = consensus_cache_path(cache_dir, backend)
     if not os.path.exists(path):
         return {}
@@ -385,6 +412,16 @@ def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores
 # =============================================================================
 
 
+def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str) -> str:
+    """Where a backend's folded complex for this binder goes.
+
+    Content-addressed on the binder sequence, so the path a cache entry records
+    stays valid across runs and two sequences never collide.
+    """
+    digest = hashlib.sha256(binder_seq.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(cache_dir, f"{backend}_complex", f"{digest}.pdb")
+
+
 def score_binders(
     backend: str,
     target_seqs: list[str],
@@ -392,7 +429,8 @@ def score_binders(
     cfg: dict | None = None,
     cache_dir: str | None = None,
     reuse_cache: bool = True,
-) -> list[dict[str, float]]:
+    keep_structures: bool = False,
+) -> list[dict[str, float | str]]:
     """Advisory metrics for each binder against the target, in input order.
 
     Never raises and never blocks a campaign: an unavailable backend or a failed
@@ -411,22 +449,29 @@ def score_binders(
         return [{} for _ in binder_seqs]
 
     fingerprint = consensus_fingerprint(backend, cfg, target_seqs)
-    scores: dict[str, dict[str, float]] = {}
+    scores: dict[str, dict[str, float | str]] = {}
     if cache_dir and reuse_cache:
         scores = read_consensus_cache(cache_dir, backend, fingerprint)
 
     pending = [s for s in dict.fromkeys(binder_seqs) if s and s not in scores]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
-        fresh: dict[str, dict[str, float]] = {}
+        fresh: dict[str, dict[str, float | str]] = {}
         for seq in pending:
+            out_pdb = advisory_structure_path(cache_dir, backend, seq) if (cache_dir and keep_structures) else None
             try:
-                metrics = scorer(target_seqs, seq, cfg)
+                metrics = scorer(target_seqs, seq, cfg, out_pdb)
             except Exception as exc:
                 logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
                 continue
             usable = {k: float(v) for k, v in metrics.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
             if usable:
+                # pdb_path rides along in the same entry; it is not a metric, so
+                # column emission filters on CONSENSUS_METRIC_SUFFIXES and picks
+                # it up explicitly. Entries written before structures were kept
+                # simply lack the key.
+                if metrics.get("pdb_path"):
+                    usable["pdb_path"] = metrics["pdb_path"]
                 fresh[seq] = usable
         scores.update(fresh)
         if cache_dir and fresh:
