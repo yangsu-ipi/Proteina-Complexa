@@ -81,7 +81,15 @@ metric:
   compute_motif_metrics: true
   motif_info_csv: ${oc.select:motif_info_csv,null}
   # Shared folding model(s) for all monomer-style metrics
+  # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
+  # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
   monomer_folding_models: [esmfold]
+  # Reuse a cached refold of a design when nothing determining it changed
+  # (design, folding models + their checkpoints, num_seq, MPNN temperature).
+  # scRMSD values are always cached; the folded structures only when
+  # keep_folding_outputs is set, in which case adding an RMSD mode later
+  # recomputes from them instead of refolding.
+  reuse_cached_monomer_folds: true
 
   # Fine-grained controls (usually don't need to touch)
   motif_rmsd_modes: [ca, all_atom]

@@ -20,7 +20,7 @@ from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold,
 VALID_RMSD_MODES = ["ca", "bb3o", "all_atom"]
 
 # Valid folding models
-VALID_FOLDING_MODELS = ["esmfold", "colabfold"]
+VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]
 
 
 # =============================================================================
@@ -30,9 +30,15 @@ VALID_FOLDING_MODELS = ["esmfold", "colabfold"]
 # Default monomer designability thresholds
 # Format: {mode: {model: {"threshold": float, "op": str}}}
 # These are applied to _res_scRMSD_{mode}_{model} columns during analysis
+# scRMSD is a geometric agreement between design and refold, so the 2.0 A
+# designability convention applies to any folding model, unlike confidence
+# metrics whose scales differ per model. It still assumes the models are
+# comparably accurate: a systematically better or worse folder shifts the
+# pass rate without the threshold changing meaning.
 DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS = {
     "ca": {
         "esmfold": {"threshold": 2.0, "op": "<="},
+        "esmfold2": {"threshold": 2.0, "op": "<="},
     },
 }
 
@@ -44,14 +50,26 @@ DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS = {
 # these are different metrics that users may want to control independently:
 #   - CA codesignability: evaluates model-generated sequence via CA RMSD
 #   - All-atom codesignability: evaluates model-generated sequence via all-atom RMSD
+# scRMSD is a geometric agreement between design and refold, so the 2.0 A
+# designability convention applies to any folding model, unlike confidence
+# metrics whose scales differ per model. It still assumes the models are
+# comparably accurate: a systematically better or worse folder shifts the
+# pass rate without the threshold changing meaning.
 DEFAULT_MONOMER_CA_CODESIGNABILITY_THRESHOLDS = {
     "ca": {
         "esmfold": {"threshold": 2.0, "op": "<="},
+        "esmfold2": {"threshold": 2.0, "op": "<="},
     },
 }
+# scRMSD is a geometric agreement between design and refold, so the 2.0 A
+# designability convention applies to any folding model, unlike confidence
+# metrics whose scales differ per model. It still assumes the models are
+# comparably accurate: a systematically better or worse folder shifts the
+# pass rate without the threshold changing meaning.
 DEFAULT_MONOMER_ALL_ATOM_CODESIGNABILITY_THRESHOLDS = {
     "all_atom": {
         "esmfold": {"threshold": 2.0, "op": "<="},
+        "esmfold2": {"threshold": 2.0, "op": "<="},
     },
 }
 

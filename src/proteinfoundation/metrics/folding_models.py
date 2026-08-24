@@ -152,6 +152,97 @@ def run_esmfold(
     return out_esm_paths
 
 
+def folding_model_identity(model: str) -> str:
+    """Which weights a monomer folding backend will actually use.
+
+    Goes in the refold cache key so switching checkpoints recomputes instead of
+    serving structures from a different model. esmfold2 resolves through the
+    shared loader, which honours ESMFOLD2_MONOMER_MODEL.
+    """
+    if model == "esmfold2":
+        from proteinfoundation.metrics.esmfold2_loader import monomer_model_id
+
+        return monomer_model_id()
+    if model == "esmfold":
+        return "facebook/esmfold_v1"
+    return model
+
+
+def run_esmfold2(
+    sequences: list[str],
+    path_to_esmfold_out: str,
+    name: str,
+    suffix: str,
+    cache_dir: str | None = None,
+    keep_outputs: bool = False,
+) -> list[str]:
+    """Runs ESMFold2 on sequences and stores results as PDB files.
+
+    Same contract as :func:`run_esmfold` -- one PDB per input sequence, returned
+    in input order -- so ``monomer_eval`` can dispatch to either. Differences
+    worth knowing:
+
+    * Single-chain, single-sequence. ESMFold2 accepts an MSA, but a de novo
+      binder has no meaningful alignment, so this path never passes one. The
+      Fast checkpoint is the default here for the same reason.
+    * No 1-or-8 sequence restriction. ``run_esmfold`` raises OSError for any
+      other count because its batch schedule is hardcoded; ``fold_batch``
+      length-buckets to a token budget and retries on OOM, so any count works.
+    * The model is cached per process by ``esmfold2_loader``, not reloaded per
+      call.
+
+    ``cache_dir`` is accepted for signature compatibility and ignored: ESMFold2
+    weights resolve through HF_HOME/HF_HUB_CACHE, and an explicit cache_dir would
+    override the variable the shared caches are keyed on.
+
+    Untested against real weights, which live in a private repo.
+    """
+    from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
+
+    from proteinfoundation.metrics.esmfold2_loader import load_esmfold2, monomer_model_id
+
+    if not sequences:
+        return []
+    if cache_dir:
+        logger.debug("run_esmfold2 ignores cache_dir; ESMFold2 resolves weights via HF_HOME/HF_HUB_CACHE")
+
+    model_id = monomer_model_id()
+    model = load_esmfold2(model_id)
+    builder = ESMFold2InputBuilder()
+
+    inputs = [
+        StructurePredictionInput(sequences=[ProteinInput(id="A", sequence=seq, msa=None)]) for seq in sequences
+    ]
+    logger.info(f"Running ESMFold2 ({model_id}) on {len(sequences)} sequence(s) for {name}")
+    results = builder.fold_batch(model, inputs)
+
+    os.makedirs(path_to_esmfold_out, exist_ok=True)
+    out_paths = []
+    for i, result in enumerate(results):
+        # fold_batch returns one entry per input, but an entry is itself a list
+        # when num_diffusion_samples > 1. Take the first sample: this path wants a
+        # structure to measure scRMSD against, not a ranked best-of-N.
+        single = result[0] if isinstance(result, list) else result
+        if single is None:
+            logger.warning(f"ESMFold2 returned nothing for sequence {i + 1}/{len(sequences)}; skipping")
+            continue
+        # Filename pattern mirrors run_esmfold's so anything downstream that
+        # inspects names sees the same shape. Outputs land in a per-model
+        # directory, so there is no collision between backends.
+        fname = f"esm_{i + 1}.pdb_esm_{suffix}"
+        fdir = os.path.join(path_to_esmfold_out, fname)
+        single.complex.to_protein_complex().to_pdb(fdir)
+        out_paths.append(fdir)
+
+    if not keep_outputs:
+        # Deliberately not deleting anything. run_esmfold removes two directory
+        # levels above its own output here, which would take the paths it just
+        # returned with it; monomer_eval passes keep_outputs=True for folding
+        # backends anyway.
+        logger.debug("run_esmfold2 keeps its outputs; the returned paths must stay readable")
+    return out_paths
+
+
 # I got this function from hugging face's ESM notebook example
 def _convert_esm_outputs_to_pdb(outputs) -> list[str]:
     """Takes ESMFold outputs and converts them to a list of PDBs (as strings)."""
