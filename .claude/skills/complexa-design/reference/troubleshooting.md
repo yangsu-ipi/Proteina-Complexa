@@ -54,7 +54,7 @@ environment. If `.env` does not define it, Hydra interpolation fails.
 
 **Fix:** Add `AF2_DIR=/path/to/af2_params` to `.env`. There is no cheaper
 backend to fall back to: `metric.binder_folding_method` accepts only
-`colabdesign` or a name containing `rf3` (`binder_eval.py:101-121`), so
+`colabdesign` or a name containing `rf3` (`binder_eval.py:108-128`), so
 `colabdesign` is the only AF2 path. (`esmfold` is valid only for the different
 key `metric.monomer_folding_models`.) If the GPU is the problem rather than the
 weights, lower `++generation.dataloader.batch_size`, `++eval_njobs`, or
@@ -76,7 +76,7 @@ Hydra error there. AME does **not**: `ame_generate.yaml:85` is
 `reward_model: null` with the RF3 block commented out (`:88-110`), and
 `ame_evaluate.yaml` contains no `oc.env` at all. At refold time RF3 resolves via
 `os.environ.get(...)` with a fallback under `DATA_PATH`
-(`binder_eval.py:110-115`), so the evaluate stage cannot raise an
+(`binder_eval.py:117-122`), so the evaluate stage cannot raise an
 `InterpolationKeyError` — it fails later with a missing-file error instead. RF3
 is not downloaded by `complexa download --complexa-*`; it ships with the
 community model bundle.

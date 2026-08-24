@@ -31,7 +31,7 @@ per-design success CSV.
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
 with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
-`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:101-121`);
+`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:108-128`);
 pass-rate and diversity analysis per `result_type`.
 
 ## Step 1: Pre-flight
