@@ -569,6 +569,7 @@ def compute_binder_metrics(
                         cfg=consensus_cfg,
                         cache_dir=sample_root_path,
                         reuse_cache=reuse_cached_consensus,
+                        keep_structures=cfg_metric.get("keep_folding_outputs", True),
                     )
                     new_cols = []
                     for suffix in CONSENSUS_METRIC_SUFFIXES:
@@ -579,6 +580,16 @@ def compute_binder_metrics(
                             col_all = f"{col}_all"
                             row_dict[col_all] = [m.get(suffix, np.nan) for m in advisory]
                             new_cols.append(col_all)
+                    # Where the advisory structure landed, when keep_folding_outputs
+                    # kept it. Not a metric, so emitted explicitly; deliberately not
+                    # named *_complex_* -- that prefix is reserved for gated columns
+                    # and assert_columns_are_advisory refuses it.
+                    path_col = advisory_column(seq_type, backend_name, "pdb_path")
+                    row_dict[path_col] = advisory[0].get("pdb_path") if advisory else None
+                    new_cols.append(path_col)
+                    if not consensus_best_only:
+                        row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
+                        new_cols.append(f"{path_col}_all")
                     if idx == 0:
                         # The contract of these columns is that they cannot change a
                         # pass/fail decision. Check it against the gated names rather

@@ -32,6 +32,15 @@ from colabdesign import clear_mem, mk_afdesign_model
 from colabdesign.shared.utils import copy_dict
 from loguru import logger
 
+# Subdirectory under a design's output path where AF2 complex predictions are
+# written, and the key under which that directory is passed between the two
+# functions here. It was a local literal in both, which meant changing one and
+# not the other produced a KeyError rather than a wrong path. Other backends use
+# their own names -- RF3 writes to "rf3_outputs", monomer folders to
+# "{model}_output", advisory complex folds to "{backend}_complex" -- so this is
+# deliberately not a shared convention, just the AF2 one stated once.
+AF2_SAVE_LOCATION = "AF2"
+
 
 def get_af2_advanced_settings():
     """Return default advanced settings for AF2 evaluation.
@@ -227,9 +236,8 @@ def run_af_eval(
                 rm_target_sc=advanced_settings["rm_template_sc_predict"],
             )
 
-        save_location = "AF2"
-        complex_pdb_path = os.path.join(output_path, save_location)
-        design_paths = {save_location: complex_pdb_path}
+        complex_pdb_path = os.path.join(output_path, AF2_SAVE_LOCATION)
+        design_paths = {AF2_SAVE_LOCATION: complex_pdb_path}
         os.makedirs(complex_pdb_path, exist_ok=True)
 
         mpnn_complex_statistics = []
@@ -278,8 +286,7 @@ def predict_binder_complex(
     binder_sequence = re.sub("[^A-Z]", "", binder_sequence.upper())
 
     model_num = 0
-    save_location = "AF2"
-    complex_pdb = os.path.join(design_paths[save_location], f"{mpnn_design_name}_model{model_num + 1}.pdb")
+    complex_pdb = os.path.join(design_paths[AF2_SAVE_LOCATION], f"{mpnn_design_name}_model{model_num + 1}.pdb")
     prediction_model.predict(
         seq=binder_sequence,
         models=[model_num],

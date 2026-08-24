@@ -58,6 +58,10 @@ metric:
   #   invalidates them.
   #   e.g. consensus_cfg: {target_msa: /path/target.a3m, msa_max_sequences: 16384}
   consensus_cfg: {}
+  #   Advisory structures are written when keep_folding_outputs is set, into
+  #   {design}/{backend}_complex/, with the path in
+  #   {seq_type}_{backend}_pdb_path -- so a disagreement with the primary
+  #   backend can be inspected, not just read as numbers.
   # ---------------------------------------------------------------------------
   # Pre-refolding interface metrics (on generated structures)
   # ---------------------------------------------------------------------------
