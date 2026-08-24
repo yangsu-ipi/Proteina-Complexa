@@ -190,14 +190,14 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 | `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3036`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
 | `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:548`, relocated by `organize_results`, `analyze.py:2802-2880`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
-The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:293, :220`), with one column *prefix* per requested `metric.sequence_types` value:
+The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:332, :259`), with one column *prefix* per requested `metric.sequence_types` value:
 
 | Column | Meaning |
 |---|---|
 | `{seq}_complex_i_pAE` | interface PAE of the best refold — stored **0–1 scaled** |
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
-| `{seq}_sequence` | the binder sequence (`binder_eval.py:429`) |
+| `{seq}_sequence` | the binder sequence (`binder_eval.py:466`) |
 | `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:160-171`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.
