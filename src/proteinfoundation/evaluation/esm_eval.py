@@ -15,8 +15,10 @@ model name):
 Both go through one batched scoring core: pseudo-perplexity needs one masked
 forward *per residue*, and those L forwards are independent, so they are run as
 a batch instead of a Python loop. The metric definition is unchanged --
-:func:`compute_pseudo_perplexity` is kept as the unbatched reference used by
-``script_utils/bioinformatic/verify_esm_batching.py`` to prove equivalence.
+:func:`compute_pseudo_perplexity_reference` is the unbatched reference for any
+backend, and :func:`compute_pseudo_perplexity` the older ESM2-only one that
+bypasses the backend adapter; ``script_utils/bioinformatic/verify_esm_batching.py``
+uses them to prove equivalence.
 
 Models are cached globally, keyed on (backend, model name, device), so they load
 once per session. ESM2 honours ``ESM_DIR``/``CACHE_DIR``; ESMC resolves weights
@@ -211,6 +213,62 @@ def compute_pseudo_perplexity(
         pseudo_ppl = np.exp(-avg_log_likelihood)
 
         return pseudo_ppl, avg_log_likelihood
+
+    except Exception as e:
+        logger.error(f"ESM computation failed: {e}")
+        return np.nan, np.nan
+
+
+def compute_pseudo_perplexity_reference(
+    backend: EsmBackend,
+    sequence: str,
+) -> tuple[float, float]:
+    """Unbatched pseudo-perplexity for any backend: the equivalence reference.
+
+    One masked forward per residue at batch size one, no chunking -- the metric
+    written the slow, obvious way. :func:`compute_pseudo_perplexity_batched`
+    must agree with this for every backend, which is what
+    ``script_utils/bioinformatic/verify_esm_batching.py`` checks.
+
+    What an agreement here does and does not prove: this drives the same
+    :class:`EsmBackend` ``encode``/``logits`` as the batched path, so it
+    validates the batching itself -- mask placement, chunk boundaries, the
+    log-prob gather -- but not the adapter beneath it. A wrong ``encode`` would
+    be invisible to the comparison because both sides share it. For ESM2,
+    :func:`compute_pseudo_perplexity` drives a raw HuggingFace model and
+    tokenizer instead, bypassing the adapter, so running both there covers the
+    adapter too. ESMC has no such independent path, so its guarantee stops at
+    the batching.
+    """
+    if not sequence:
+        return np.nan, np.nan
+
+    try:
+        input_ids, attention_mask = backend.encode([sequence])
+        n_tokens = input_ids.size(1)
+        n_residues = n_tokens - backend.prefix_len - backend.suffix_len
+        if n_residues != len(sequence):
+            raise RuntimeError(
+                f"ESM tokenizer produced {n_tokens} tokens for a {len(sequence)}-residue sequence, "
+                f"implying {n_residues} residues with prefix_len={backend.prefix_len} / "
+                f"suffix_len={backend.suffix_len}"
+            )
+        _verify_residue_alignment(backend, sequence, input_ids[0])
+
+        log_probs = []
+        for offset in range(n_residues):
+            position = backend.prefix_len + offset
+            masked_ids = input_ids.clone()
+            masked_ids[0, position] = backend.mask_token_id
+            with torch.no_grad():
+                logits = backend.logits(masked_ids, attention_mask)
+                # float32 for the softmax, matching the batched path, so any
+                # difference between them is a real one and not a dtype artefact.
+                log_prob = torch.log_softmax(logits[0, position].float(), dim=-1)
+                log_probs.append(log_prob[input_ids[0, position]].item())
+
+        avg_log_likelihood = sum(log_probs) / len(log_probs)
+        return float(np.exp(-avg_log_likelihood)), float(avg_log_likelihood)
 
     except Exception as e:
         logger.error(f"ESM computation failed: {e}")

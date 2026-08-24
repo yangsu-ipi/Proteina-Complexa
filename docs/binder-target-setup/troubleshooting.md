@@ -225,10 +225,10 @@ evaluate config sets `compute_esm_metrics: true`
 (`configs/pipeline/binder/binder_evaluate.yaml:35`).
 
 **Do not just `mkdir` the directory.** `_resolve_esm_dir` tests only `os.path.isdir`
-(`evaluation/esm_eval.py:372-377`), so an empty directory resolves, becomes the *first*
-load location ahead of the HF cache (`:425-426`), and then `from_pretrained(...,
+(`evaluation/esm_eval.py:430-435`), so an empty directory resolves, becomes the *first*
+load location ahead of the HF cache (`:483-484`), and then `from_pretrained(...,
 local_files_only=True)` fails. With `force_offline=True` — the default on
-`compute_esm_ppl_for_sequences` (`:645`) — you get `RuntimeError: ESM model not found in
+`compute_esm_ppl_for_sequences` (`:703`) — you get `RuntimeError: ESM model not found in
 local paths` **partway through evaluation**, after generation has already spent the GPU
 time. Silencing the gate this way makes the failure later and more expensive. Gate on
 `community_models.ESM_DIR.has_weights` instead of `.exists`.
@@ -254,7 +254,7 @@ or skip the metric for this run:
 ```
 
 Do the download on a login node, not inside the job. Without a local copy,
-`_resolve_esm_dir()` returns `None` (`evaluation/esm_eval.py:362-378`) and the code falls
+`_resolve_esm_dir()` returns `None` (`evaluation/esm_eval.py:420-436`) and the code falls
 back to a HuggingFace fetch *during evaluation* — which needs network and possibly a token
 on the compute node, mid-run.
 
