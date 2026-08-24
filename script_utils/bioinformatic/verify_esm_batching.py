@@ -19,9 +19,24 @@ Three modes:
       the same sequences and reports max deviation plus the speedup.
 
   --model esmc_600m --backend esmc
-      ESMC has no unbatched reference (the reference is ESM2-specific), so this
-      checks budget-invariance instead: two different batch budgets must agree,
-      which catches chunk-boundary errors.
+      Same reference-vs-batched comparison, via the backend-agnostic reference.
+      Note what it covers: the reference and the batched path share
+      EsmBackend.encode/logits, so agreement proves the batching (mask
+      placement, chunk boundaries, the gather) and not the adapter beneath it.
+      For esm2 an extra pass drives a raw HuggingFace model and tokenizer,
+      bypassing the adapter, so that route covers both. ESMC has no independent
+      path, so its guarantee stops at the batching.
+
+  --mock-esmc
+      Runs the same comparison through EsmBackend's ESMC branch -- _tokenize and
+      forward(sequence_tokens=) returning .sequence_logits -- using a weightless
+      stand-in. Real ESMC cannot be loaded at present (the fork's builders leave
+      parameters on the meta device), so this is the only coverage that path has.
+
+  --skip-reference
+      Fall back to budget-invariance -- the batched path against itself at
+      different budgets. Weaker, but the reference costs one forward per
+      residue, which is worth avoiding on a 6B model.
 
 Exit code is non-zero if any check exceeds tolerance.
 """
@@ -38,6 +53,7 @@ from proteinfoundation.evaluation.esm_eval import (
     EsmBackend,
     compute_pseudo_perplexity,
     compute_pseudo_perplexity_batched,
+    compute_pseudo_perplexity_reference,
     get_esm_backend,
     resolve_backend,
 )
@@ -123,8 +139,81 @@ def build_synthetic_backend(seed: int = 0) -> EsmBackend:
     )
 
 
+class _MockESMCOutput:
+    """Stands in for ESMC's forward output, which exposes sequence_logits."""
+
+    def __init__(self, logits):
+        self.sequence_logits = logits
+
+
+class _MockESMC(torch.nn.Module):
+    """An ESMC-shaped wrapper around any masked LM.
+
+    ESMC's adapter path in EsmBackend differs from ESM2's: tokenisation goes
+    through ``model._tokenize(list_of_sequences)`` and the forward takes
+    ``sequence_tokens=`` and returns ``.sequence_logits``. The real ESMC cannot
+    currently be loaded at all -- the fork's builders construct under
+    init_empty_weights and then load via huggingface_hub's load_torch_model,
+    which does not pass assign=True, so parameters stay on the meta device --
+    so this mock is the only way to exercise that path.
+    """
+
+    def __init__(self, inner, tokenizer):
+        super().__init__()
+        self.inner = inner
+        self.tok = tokenizer
+
+    def _tokenize(self, sequences):
+        return self.tok(sequences, padding=True)["input_ids"]
+
+    def forward(self, sequence_tokens=None):
+        return _MockESMCOutput(self.inner(input_ids=sequence_tokens).logits)
+
+
+def build_mock_esmc_backend(seed: int = 0) -> EsmBackend:
+    """A backend that goes through EsmBackend's ESMC branch, with no weights."""
+    base = build_synthetic_backend(seed)
+    return EsmBackend(
+        kind="esmc",
+        model=_MockESMC(base.model, base.tokenizer),
+        tokenizer=base.tokenizer,
+        device="cpu",
+        mask_token_id=base.mask_token_id,
+    )
+
+
+def compare_generic_reference(backend: EsmBackend, sequences: list[str], budgets: list[int], tol: float) -> bool:
+    """Backend-agnostic unbatched reference vs batched, over several budgets."""
+    ok = True
+    for seq in sequences:
+        t0 = time.perf_counter()
+        ref_ppl, ref_ll = compute_pseudo_perplexity_reference(backend, seq)
+        ref_secs = time.perf_counter() - t0
+        if ref_ll != ref_ll:  # NaN
+            print(f"  L={len(seq):>4}  reference returned NaN -- cannot compare")
+            ok = False
+            continue
+
+        for budget in budgets:
+            t0 = time.perf_counter()
+            new_ppl, new_ll = compute_pseudo_perplexity_batched(backend, seq, max_batch_tokens=budget)
+            new_secs = time.perf_counter() - t0
+            d_ll = abs(new_ll - ref_ll)
+            d_ppl = abs(new_ppl - ref_ppl) / max(abs(ref_ppl), 1e-12)
+            good = d_ll < tol and d_ppl < tol
+            ok &= good
+            print(
+                f"  L={len(seq):>4}  budget={budget:>6}  "
+                f"ll {ref_ll:+.8f} -> {new_ll:+.8f} (d={d_ll:.2e})  "
+                f"ppl {ref_ppl:.6f} -> {new_ppl:.6f} (rel={d_ppl:.2e})  "
+                f"{ref_secs:.2f}s -> {new_secs:.2f}s ({ref_secs / max(new_secs, 1e-9):.1f}x)  "
+                f"{'OK' if good else 'FAIL'}"
+            )
+    return ok
+
+
 def compare_reference(backend: EsmBackend, sequences: list[str], budgets: list[int], tol: float) -> bool:
-    """Reference (unbatched) vs batched, over several batch budgets."""
+    """ESM2-only reference (raw HF model, bypassing the adapter) vs batched."""
     ok = True
     for seq in sequences:
         t0 = time.perf_counter()
@@ -179,27 +268,48 @@ def main() -> int:
     ap.add_argument("--budgets", default="64,1024,16384", help="Comma-separated token budgets to test")
     ap.add_argument("--tol", type=float, default=1e-4, help="Max allowed deviation")
     ap.add_argument("--allow-download", action="store_true", help="Permit network fetch of weights")
+    ap.add_argument(
+        "--mock-esmc",
+        action="store_true",
+        help="Route a weightless model through EsmBackend's ESMC branch (_tokenize / sequence_logits)",
+    )
+    ap.add_argument(
+        "--skip-reference",
+        action="store_true",
+        help="Skip the unbatched reference (one forward per residue) and only check budget-invariance",
+    )
     args = ap.parse_args()
 
     sequences = args.seq or DEFAULT_SEQUENCES
     budgets = [int(b) for b in args.budgets.split(",")]
 
-    if args.model is None:
+    if args.mock_esmc:
+        print("Mode: mock ESMC (exercises EsmBackend's ESMC branch, no weights required)")
+        backend = build_mock_esmc_backend()
+        kind = "esmc"
+    elif args.model is None:
         print("Mode: synthetic (tiny random-weight ESM on CPU, no weights required)")
         backend = build_synthetic_backend()
-        print(f"Reference vs batched over {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
-        ok = compare_reference(backend, sequences, budgets, args.tol)
+        kind = "esm2"
     else:
         kind = resolve_backend(args.model, args.backend)
         print(f"Mode: real weights ({kind}:{args.model})")
         backend = get_esm_backend(args.model, backend=args.backend, force_offline=not args.allow_download)
+
+    if args.skip_reference:
+        print(f"Budget-invariance over {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
+        print("(--skip-reference: batched against itself; checks chunk boundaries only)")
+        ok = compare_budgets(backend, sequences, budgets, args.tol)
+    else:
+        print(f"Backend-agnostic reference vs batched, {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
+        ok = compare_generic_reference(backend, sequences, budgets, args.tol)
         if kind == "esm2":
-            print(f"Reference vs batched over {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
-            ok = compare_reference(backend, sequences, budgets, args.tol)
+            # Second pass through a raw HF model and tokenizer, which the
+            # backend-agnostic reference cannot do: it also covers the adapter.
+            print("\nAdapter cross-check (raw HuggingFace model, bypassing EsmBackend):")
+            ok &= compare_reference(backend, sequences, budgets, args.tol)
         else:
-            print(f"Budget-invariance over {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
-            print("(no unbatched reference exists for esmc; this checks chunk boundaries)")
-            ok = compare_budgets(backend, sequences, budgets, args.tol)
+            print("\n(no adapter cross-check for this backend: no independent path exists)")
 
     print("\nRESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
