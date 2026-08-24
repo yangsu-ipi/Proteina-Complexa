@@ -95,7 +95,7 @@ ligand and let the model build the rest of the protein around them.
   criteria simultaneously.
 - Pre- and post-refolding interface metrics are **disabled**:
   `compute_pre_refolding_metrics` and `compute_refolded_structure_metrics` are
-  both `false` (`ame_evaluate.yaml:68, :76`), as are all four sub-toggles
+  both `false` (`ame_evaluate.yaml:73, :81`), as are all four sub-toggles
   (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:401-403`
   reads only `bioinformatics` and `tmol`.
 - Quick command:

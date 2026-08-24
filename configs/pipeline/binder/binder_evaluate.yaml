@@ -55,7 +55,12 @@ metric:
   # models -- ESMFold2 runs on a compressed confidence scale -- so these are
   # diagnostic columns, not filters. Empty = off.
   consensus_backends: []      # e.g. [esmfold2]
-  consensus_best_only: true   # score only the ranked-best sequence per type
+  # Score every sequence per type (default). Scoring only the ranked-best one
+  # conditions the advisory sample on the primary backend's ranking, which
+  # makes rank disagreement unmeasurable and biases any calibration to the
+  # primary's upper tail. Set true for cheap monitoring of a backend whose
+  # relationship to the primary one is already characterised.
+  consensus_best_only: false
   reuse_cached_consensus: true
   # backend settings. For esmfold2: num_loops, num_sampling_steps,
   # num_diffusion_samples (>1 folds N and keeps the best by i_pAE).
