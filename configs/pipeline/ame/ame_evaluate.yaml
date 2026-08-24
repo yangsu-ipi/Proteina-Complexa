@@ -32,6 +32,9 @@ metric:
   # or esmc_pkg (the esm package's own ESMC -- currently cannot load)
   esm_backend: auto
   esm_batch_tokens: 16384
+  # Reuse per-design ESM scores from esm_eval_cache.json. Keyed on
+  # (esm_model, esm_backend, sequence), so a model switch recomputes.
+  reuse_cached_esm: true
   # ---------------------------------------------------------------------------
   # Pre-refolding interface metrics (on generated structures)
   # ---------------------------------------------------------------------------

@@ -29,7 +29,9 @@ internally and accepts no ``cache_dir``). Set ``HF_HUB_OFFLINE=1`` to force
 fully offline mode; that requires an already-warm cache.
 """
 
+import hashlib
 import importlib.util
+import json
 import os
 
 import numpy as np
@@ -79,6 +81,12 @@ HF_BACKENDS = (BACKEND_ESM2, BACKEND_ESMC)
 # Lower it if a long-sequence batch runs out of memory; the code also halves on
 # OOM by itself.
 DEFAULT_ESM_BATCH_TOKENS = 16384
+
+# Per-design cache of sequence scores, written beside binder_eval_cache.json.
+# Deliberately a separate file: adding the sequence model to
+# binder_eval_fingerprint would change every fingerprint and invalidate the
+# refolding caches already on disk, forcing a full refold to gain ESM caching.
+ESM_CACHE_FILENAME = "esm_eval_cache.json"
 
 ESM_METRIC_COLS = [
     "esm_pseudo_perplexity",
@@ -733,6 +741,71 @@ def clear_esm_cache():
 
 
 # =============================================================================
+# Score Cache
+# =============================================================================
+
+
+def esm_cache_fingerprint(model_name: str, backend: str = "auto") -> str:
+    """Identity of the scorer: everything that changes the numbers.
+
+    Covers the model name and the resolved backend, so an ESM2-to-ESMC switch
+    cannot serve stale scores. Deliberately excludes ``max_batch_tokens``: the
+    batched and unbatched paths are verified equivalent
+    (``script_utils/bioinformatic/verify_esm_batching.py``), so the batch budget
+    is a performance knob and keying on it would discard a valid cache.
+
+    It also does not cover kernel availability. Installing transformer_engine or
+    xformers shifts values by what the fork calls rounding noise, and cached
+    entries will predate that; clear the caches if that matters for a comparison.
+    """
+    canonical = json.dumps(
+        {"model_name": model_name, "backend": resolve_backend(model_name, backend)},
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _esm_cache_path(cache_dir: str) -> str:
+    return os.path.join(cache_dir, ESM_CACHE_FILENAME)
+
+
+def read_esm_cache(cache_dir: str, fingerprint: str) -> dict[str, list[float]]:
+    """Cached ``{sequence: [pppl, log_likelihood]}``, or empty.
+
+    Returns empty rather than raising for anything unexpected -- a cache is an
+    optimisation, and a bad one must not stop an evaluation.
+    """
+    path = _esm_cache_path(cache_dir)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as handle:
+            cached = json.load(handle)
+        if cached.get("fingerprint") != fingerprint:
+            logger.info(
+                f"ESM cache at {path} was produced by a different scorer "
+                f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
+            )
+            return {}
+        scores = cached["scores"]
+        return {k: v for k, v in scores.items() if isinstance(v, list) and len(v) == 2}
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        logger.warning(f"Ignoring unusable ESM cache {path}: {exc}")
+        return {}
+
+
+def write_esm_cache(cache_dir: str, fingerprint: str, scores: dict[str, list[float]]) -> None:
+    """Persist sequence scores. Never raises."""
+    try:
+        # Serialise first so a non-encodable payload leaves no half-written file.
+        blob = json.dumps({"fingerprint": fingerprint, "scores": scores})
+        with open(_esm_cache_path(cache_dir), "w") as handle:
+            handle.write(blob)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning(f"Could not write ESM cache for {cache_dir}: {exc}")
+
+
+# =============================================================================
 # Public API
 # =============================================================================
 
@@ -743,15 +816,23 @@ def compute_esm_ppl_for_sequences(
     force_offline: bool = True,
     backend: str = "auto",
     max_batch_tokens: int = DEFAULT_ESM_BATCH_TOKENS,
+    cache_dir: str | None = None,
+    reuse_cache: bool = True,
 ) -> pd.DataFrame:
     """Compute ESM pseudo-perplexity for a list of sequences.
 
     Args:
         sequences: List of protein sequences.
-        model_name: HF model name (ESM2) or registry name (ESMC).
+        model_name: HF model name, or a registry name for the esmc_pkg backend.
         force_offline: If True, only load from local cache (no network requests).
-        backend: ``auto``, ``esm2``, or ``esmc``.
+        backend: ``auto``, ``esm2``, ``esmc``, or ``esmc_pkg``.
         max_batch_tokens: Token budget for one batched forward.
+        cache_dir: Directory holding a per-design score cache. When every
+            sequence is already cached the model is never loaded at all, which is
+            the point: scoring is a per-residue masked forward per sequence, and
+            a resumed evaluation would otherwise repay it in full while the
+            refolding it accompanies costs nothing.
+        reuse_cache: Set False to rescore and overwrite.
 
     Returns:
         DataFrame with sequences and their ESM metrics, one row per input in
@@ -765,35 +846,50 @@ def compute_esm_ppl_for_sequences(
         logger.warning("No sequences provided for ESM evaluation")
         return pd.DataFrame(columns=["sequence"] + ESM_METRIC_COLS)
 
-    logger.info(f"Computing ESM pseudo-perplexity for {len(sequences)} sequences")
+    fingerprint = esm_cache_fingerprint(model_name, backend)
+    scores: dict[str, list[float]] = {}
+    if cache_dir and reuse_cache:
+        scores = read_esm_cache(cache_dir, fingerprint)
 
-    try:
-        esm_backend = get_esm_backend(model_name, backend=backend, force_offline=force_offline)
-    except (RuntimeError, ValueError) as e:
-        logger.error(f"Failed to load ESM model: {e}")
-        return pd.DataFrame(
-            [
-                {
-                    "sequence": seq,
-                    "esm_pseudo_perplexity": np.nan,
-                    "esm_log_likelihood": np.nan,
-                }
-                for seq in sequences
-            ]
+    # Deduplicate: the same sequence can appear more than once in a request, and
+    # the metric depends only on (model, sequence).
+    pending = [s for s in dict.fromkeys(sequences) if s and s not in scores]
+    n_reused = len(set(sequences)) - len(pending)
+
+    if pending:
+        logger.info(
+            f"Computing ESM pseudo-perplexity for {len(pending)} sequences"
+            + (f" ({n_reused} reused from cache)" if n_reused else "")
         )
+        try:
+            esm_backend = get_esm_backend(model_name, backend=backend, force_offline=force_offline)
+        except (RuntimeError, ValueError) as e:
+            logger.error(f"Failed to load ESM model: {e}")
+            esm_backend = None
 
-    results = []
-    for seq in sequences:
-        pppl, log_ll = compute_pseudo_perplexity_batched(esm_backend, seq, max_batch_tokens=max_batch_tokens)
-        results.append(
-            {
-                "sequence": seq,
-                "esm_pseudo_perplexity": pppl,
-                "esm_log_likelihood": log_ll,
-            }
-        )
+        if esm_backend is not None:
+            fresh = {}
+            for seq in pending:
+                pppl, log_ll = compute_pseudo_perplexity_batched(esm_backend, seq, max_batch_tokens=max_batch_tokens)
+                # Never cache a failure: a NaN here means the model or the
+                # sequence failed, and persisting it would make one bad run
+                # permanent for every later resume.
+                if pppl == pppl and log_ll == log_ll:
+                    fresh[seq] = [float(pppl), float(log_ll)]
+            scores.update(fresh)
+            if cache_dir and fresh:
+                write_esm_cache(cache_dir, fingerprint, scores)
+    else:
+        logger.info(f"ESM pseudo-perplexity for {len(sequences)} sequences served entirely from cache")
 
-    logger.info(f"ESM evaluation complete for {len(sequences)} sequences")
+    results = [
+        {
+            "sequence": seq,
+            "esm_pseudo_perplexity": scores.get(seq, [np.nan, np.nan])[0],
+            "esm_log_likelihood": scores.get(seq, [np.nan, np.nan])[1],
+        }
+        for seq in sequences
+    ]
     return pd.DataFrame(results)
 
 

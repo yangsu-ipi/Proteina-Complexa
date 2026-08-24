@@ -203,6 +203,45 @@ def read_binder_eval_cache(
     return stats, sequences
 
 
+def sequences_for_type(
+    seq_type: str,
+    sequences_dict: dict,
+    sequence_type_stats: dict,
+) -> list[str]:
+    """The sequences whose metrics this row reports, in stats order.
+
+    ``sequences_dict[type]`` and ``sequence_type_stats[type]["complex_stats"]``
+    are parallel lists built in append order, and the row's headline values index
+    the second while its sequences used to come from the first. Nothing joined
+    them, so a filter or reorder applied to one and not the other would silently
+    pair a sequence with another sequence's structural metrics.
+
+    ``aa_stats`` now records the sequence each row was computed from, which makes
+    it the source of truth: it is appended in the same iteration as the complex
+    and RMSD stats, so indexing it with ``best_idx`` is aligned by construction.
+    Caches written before that field existed have no sequences, so fall back to
+    the old behaviour there, and report a mismatch loudly rather than emitting
+    misaligned metrics.
+    """
+    dict_seqs = [s["seq"] for s in sequences_dict.get(seq_type, [])]
+    aa_stats = sequence_type_stats.get(seq_type, {}).get("aa_stats", [])
+    stats_seqs = [a.get("sequence") for a in aa_stats]
+
+    if not stats_seqs or any(s is None for s in stats_seqs):
+        # Pre-existing cache entry: no recorded sequences to check against.
+        return dict_seqs
+
+    if stats_seqs != dict_seqs:
+        logger.error(
+            f"Sequence/stats misalignment for '{seq_type}': "
+            f"{len(dict_seqs)} sequences vs {len(stats_seqs)} stats rows"
+            + ("" if len(stats_seqs) != len(dict_seqs) else " (same length, different order or content)")
+            + ". Using the sequences recorded with the stats, so per-sequence "
+            "metrics stay paired with the structures they came from."
+        )
+    return stats_seqs
+
+
 def compute_binder_metrics(
     eval_config: DictConfig,
     sample_root_paths: list[str],
@@ -331,9 +370,7 @@ def compute_binder_metrics(
                 fixed_residues_override=fixed_residues_override,
             )
             cached = (
-                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types)
-                if reuse_cached_folding
-                else None
+                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types) if reuse_cached_folding else None
             )
             if cached is not None:
                 sequence_type_stats, sequences_dict = cached
@@ -359,9 +396,7 @@ def compute_binder_metrics(
                 with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
                     json.dump(sequence_type_stats, f, indent=4)
 
-                write_binder_eval_cache(
-                    sample_root_path, fingerprint, sequence_type_stats, sequences_dict
-                )
+                write_binder_eval_cache(sample_root_path, fingerprint, sequence_type_stats, sequences_dict)
 
             # Extract metrics for each sequence type
             for seq_type in sequence_types:
@@ -422,8 +457,10 @@ def compute_binder_metrics(
                 if idx == 0:
                     all_columns.extend([f"{seq_type}_aa_counts", f"{seq_type}_aa_interface_counts"])
 
-                # Store sequences (best and all)
-                seqs = [s["seq"] for s in sequences_dict[seq_type]]
+                # Store sequences (best and all). Taken from the stats rather
+                # than from sequences_dict so they stay paired with the metrics
+                # on this row -- see sequences_for_type.
+                seqs = sequences_for_type(seq_type, sequences_dict, sequence_type_stats)
                 if seqs:
                     seq_best_idx = 0 if seq_type == "self" else best_idx
                     row_dict[f"{seq_type}_sequence"] = seqs[seq_best_idx]
@@ -433,13 +470,18 @@ def compute_binder_metrics(
 
                 # ESM pseudo-perplexity metrics (optional).
                 #
-                # Deliberately outside the refolding cache above: these are
-                # cheap next to folding, and keeping them out means the cache
-                # fingerprint does not have to cover the sequence model. If ESM
-                # results are ever added to write_binder_eval_cache, esm_model
-                # and esm_backend MUST join binder_eval_fingerprint -- otherwise
-                # switching ESM2 to ESMC serves stale ESM2 numbers, the same
-                # failure the folding-backend fingerprint exists to prevent.
+                # Cached separately from the refolding above, in
+                # esm_eval_cache.json beside binder_eval_cache.json. Adding the
+                # sequence model to binder_eval_fingerprint would change every
+                # fingerprint and invalidate the refolding caches already on
+                # disk, forcing a full refold to gain ESM caching; a separate
+                # cache keyed on (model, backend, sequence) avoids that and
+                # reuses per sequence, so growing sequence_types keeps what it
+                # already has. It also cannot serve ESM2 numbers for an ESMC run.
+                #
+                # Not an optimisation to skip: a 6B scorer costs ~15s per
+                # 140-residue sequence, so a resumed evaluation would repay hours
+                # of scoring while the folding it accompanies is free.
                 if cfg_metric.get("compute_esm_metrics", False) and ESM_AVAILABLE and seqs:
                     esm_model = cfg_metric.get("esm_model", "facebook/esm2_t33_650M_UR50D")
                     esm_df = compute_esm_ppl_for_sequences(
@@ -447,6 +489,8 @@ def compute_binder_metrics(
                         model_name=esm_model,
                         backend=cfg_metric.get("esm_backend", "auto"),
                         max_batch_tokens=cfg_metric.get("esm_batch_tokens", DEFAULT_ESM_BATCH_TOKENS),
+                        cache_dir=sample_root_path,
+                        reuse_cache=cfg_metric.get("reuse_cached_esm", True),
                     )
 
                     row_dict[f"{seq_type}_esm_pseudo_perplexity"] = esm_df["esm_pseudo_perplexity"].iloc[seq_best_idx]
