@@ -101,13 +101,13 @@ The standalone `configs/analyze*.yaml` files are not runnable on their own: they
 | Design type | Use the protein-binder default? | Config (drives `evaluate` **and** `analyze`) | `result_type` | Backend as shipped |
 |---|---|---|---|---|
 | Protein binder | **Yes (default)** | `configs/evaluate_from_pdb_dir.yaml` (see the defect note above) | `protein_binder` — **must be overridden** | `rf3_latest` (`:72`) |
-| Ligand binder (binder + small-molecule) | Same config, no overrides needed | `configs/evaluate_from_pdb_dir.yaml` | `ligand_binder` (shipped default, `:167`) | `rf3_latest` (`:72`) |
+| Ligand binder (binder + small-molecule) | Same config, no overrides needed | `configs/evaluate_from_pdb_dir.yaml` | `ligand_binder` (shipped default, `:175`) | `rf3_latest` (`:72`) |
 | AME / motif + ligand (enzyme outputs) | No — needs motif-aware config | `configs/evaluate_ame_from_pdb_dir.yaml` | `motif_ligand_binder` | `rf3_latest` |
 | Motif protein binder (standalone) | No — no `_from_pdb_dir` variant | `configs/example/evaluate_motif_binder.yaml` + `++input_mode=pdb_dir` | `motif_protein_binder` — override; the config's own default is `motif_ligand_binder` | `rf3_latest` (`:75`) |
 
 `configs/evaluate_from_pdb_dir.yaml` as shipped is a **ligand-binder** config:
 `binder_folding_method: rf3_latest` (`:72`), `inverse_folding_model: ligand_mpnn` (`:84`),
-`result_type: ligand_binder` (`:167`), `aggregation.analysis_modes: [binder]` (`:174`). Omit the
+`result_type: ligand_binder` (`:175`), `aggregation.analysis_modes: [binder]` (`:182`). Omit the
 overrides in the protein-binder command above and you get a ligand-binder run, not an AF2
 protein-binder one.
 

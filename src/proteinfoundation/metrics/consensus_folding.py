@@ -30,7 +30,9 @@ A backend is a callable::
     (target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[str, float]
 
 keyed by the suffixes in :data:`CONSENSUS_METRIC_SUFFIXES`, with missing metrics
-simply absent. Register it in :data:`CONSENSUS_BACKENDS`. Imports must be lazy
+simply absent. ``cfg`` is the ``metric.consensus_cfg`` mapping; if a backend reads
+file paths from it, add those keys to :data:`_PATH_VALUED_CFG_KEYS` so the cache
+keys on contents rather than filenames. Register it in :data:`CONSENSUS_BACKENDS`. Imports must be lazy
 so an uninstalled backend costs nothing, and failures must raise -- the caller
 converts them to NaN so one bad design never fails a campaign.
 
@@ -81,12 +83,19 @@ _GATED_PREFIX = "complex"
 def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
 
-    Uses the same input shape as the fork's own reference adapter
+    Same input shape as the fork's own reference adapter
     (``oracle/backends/local_esmfold2.py``): one ProteinInput per chain, target
-    chains first so the binder is the last asym id, and ``msa=None``. Note the
-    fork's CLI calls a target MSA the "validated production path"; this runs
-    single-sequence like that reference adapter, which is a difference worth
-    remembering when comparing against published ESMFold2 numbers.
+    chains first so the binder is the last asym id.
+
+    The target may carry an MSA (``consensus_cfg.target_msa`` or
+    ``target_msa_paths``), which is what the fork's CLI calls the "validated
+    production path"; without one this runs single-sequence like that reference
+    adapter, worth remembering when comparing against published ESMFold2 numbers.
+    The binder never carries one -- see :func:`_target_msas`.
+
+    Note ``msa_trunk_depth`` is a ProductionFoldConfig field consumed by
+    ``fold_complex_production``, not by ``builder.fold``, so the depth control
+    available here is ``msa_max_sequences`` at load time.
 
     Untested against real weights: they live in a private repo and were not
     available where this was written. Treat the first real run as the test.
@@ -94,7 +103,13 @@ def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[
     from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
 
     model = _esmfold2_model(cfg)
-    chains = [ProteinInput(id=f"T{i}", sequence=s, msa=None) for i, s in enumerate(target_seqs)]
+    target_msas = _target_msas(target_seqs, cfg)
+    chains = [
+        ProteinInput(id=f"T{i}", sequence=s, msa=m)
+        for i, (s, m) in enumerate(zip(target_seqs, target_msas, strict=True))
+    ]
+    # msa=None for the binder, always. A de novo miniprotein has no meaningful
+    # alignment, and this is not a knob for that reason.
     chains.append(ProteinInput(id="B", sequence=binder_seq, msa=None))
     request = StructurePredictionInput(sequences=chains)
 
@@ -152,6 +167,78 @@ def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
 
 def _np(x) -> np.ndarray:
     return np.asarray(x.detach().cpu() if hasattr(x, "detach") else x)
+
+
+# Loaded MSAs, keyed on (path, max_sequences). Reading and validating an a3m per
+# design would be wasteful and would repeat the same error message per design.
+_MSA_CACHE: dict[tuple[str, int], object] = {}
+
+
+def _load_msa(path: str, max_sequences: int):
+    """Load and validate one a3m, or raise with a message naming the problem.
+
+    Applies the same two checks the fork's own CLI applies before folding: the
+    alignment's query must be the sequence being folded, and the alignment must
+    have depth >= 2. A silently-ignored or mismatched MSA is worse than none,
+    because the run would look like it used one.
+
+    Do not edit an MSA while a run is in flight. The parsed alignment is cached
+    here for the process while the cache fingerprint is recomputed from disk per
+    design, so an in-place edit mid-run would key fresh scores to new contents
+    while still folding against the alignment loaded earlier.
+    """
+    from esm.utils.msa import MSA
+
+    key = (os.path.abspath(path), int(max_sequences))
+    if key not in _MSA_CACHE:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"target MSA not found: {path}")
+        _MSA_CACHE[key] = MSA.from_a3m(path, max_sequences=int(max_sequences))
+    return _MSA_CACHE[key]
+
+
+def _target_msas(target_seqs: list[str], cfg: dict) -> list[object | None]:
+    """One MSA (or None) per target chain, from cfg.
+
+    ``target_msa`` accepts a single path for a single-chain target;
+    ``target_msa_paths`` a list aligned with the target chains, with null for
+    chains that have none. The binder never gets one: de novo miniproteins have
+    no meaningful alignment, and handing the model a spurious one would change
+    the prediction for the worse.
+    """
+    paths = cfg.get("target_msa_paths")
+    if paths is None:
+        single = cfg.get("target_msa")
+        paths = [single] + [None] * (len(target_seqs) - 1) if single else None
+    if not paths:
+        return [None] * len(target_seqs)
+    paths = list(paths)
+    if len(paths) != len(target_seqs):
+        raise ValueError(
+            f"target_msa_paths has {len(paths)} entries for {len(target_seqs)} target chain(s); "
+            "pass one entry per chain (null where a chain has no MSA)"
+        )
+
+    max_sequences = int(cfg.get("msa_max_sequences", 16384))
+    if max_sequences < 1:
+        raise ValueError("msa_max_sequences must be positive")
+
+    msas: list[object | None] = []
+    for chain_idx, (path, seq) in enumerate(zip(paths, target_seqs, strict=True)):
+        if not path:
+            msas.append(None)
+            continue
+        msa = _load_msa(path, max_sequences)
+        query = msa.query.replace("-", "").upper()
+        if query != seq.upper():
+            raise ValueError(
+                f"target MSA {path} does not match target chain {chain_idx}: "
+                f"query is {len(query)} residues, chain is {len(seq)}"
+            )
+        if msa.depth < 2:
+            raise ValueError(f"target MSA {path} has depth {msa.depth}; need at least 2 sequences")
+        msas.append(msa)
+    return msas
 
 
 _ESMFOLD2_MODEL_CACHE: dict[str, object] = {}
@@ -221,14 +308,49 @@ def assert_columns_are_advisory(columns: list[str], gated_columns: set[str]) -> 
 # =============================================================================
 
 
+# cfg keys whose values are file paths. Their *contents* belong in the cache key:
+# editing an MSA in place while leaving its path alone would otherwise serve
+# scores computed against the old alignment.
+_PATH_VALUED_CFG_KEYS = ("target_msa", "target_msa_paths")
+
+
+def _digest_file(path: str) -> str:
+    try:
+        with open(path, "rb") as handle:
+            return "sha256:" + hashlib.sha256(handle.read()).hexdigest()[:32]
+    except OSError:
+        # Unreadable now; the scorer will fail and say so. Keep the path so the
+        # key still changes if it is later pointed somewhere else.
+        return f"unreadable:{path}"
+
+
+def cfg_for_fingerprint(cfg: dict) -> dict:
+    """cfg with file paths replaced by content digests."""
+    resolved = {}
+    for key in sorted(cfg):
+        value = cfg[key]
+        if key in _PATH_VALUED_CFG_KEYS and value:
+            if isinstance(value, str):
+                resolved[key] = _digest_file(value)
+            elif isinstance(value, (list, tuple)):
+                resolved[key] = [_digest_file(v) if v else None for v in value]
+            else:
+                resolved[key] = value
+        else:
+            resolved[key] = value
+    return resolved
+
+
 def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> str:
     """Identity of an advisory scorer: backend, its settings, and the target.
 
     The target is part of the key because these are complex metrics -- the same
-    binder against a different target is a different number.
+    binder against a different target is a different number. Settings are taken
+    through :func:`cfg_for_fingerprint` so an MSA is keyed on its contents rather
+    than its filename.
     """
     canonical = json.dumps(
-        {"backend": backend, "cfg": {k: cfg[k] for k in sorted(cfg)}, "target_seqs": list(target_seqs)},
+        {"backend": backend, "cfg": cfg_for_fingerprint(cfg), "target_seqs": list(target_seqs)},
         sort_keys=True,
         default=str,
     )
