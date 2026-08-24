@@ -78,14 +78,14 @@ These live at top level (the binder_evaluate config is loaded with `@_global_`),
 
 | Key | Default | Typical sweep | Cost multiplier | Effect |
 |---|---|---|---|---|
-| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:101-121` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` belongs to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:30`). |
+| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` belongs to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:30`). |
 | `metric.num_redesign_seqs` | 2 | 1, 2, 4, 8, 16 | linear | Number of MPNN redesigns to refold per binder. Higher = more reliable designability signal. |
 | `metric.sequence_types` | `[self]` | `[self]`, `[self, mpnn]`, `[self, mpnn_fixed]` | linear per type | Which sequences to evaluate: generated, MPNN-redesigned, or MPNN with fixed interface. |
 | `metric.interface_cutoff` | 8.0 | 6.0, 8.0, 10.0 | none | Angstrom cutoff defining interface residues for MPNN_fixed and interface metrics. |
 | `metric.inverse_folding_model` | `soluble_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` | none | MPNN variant used for redesign. |
 | `metric.compute_pre_refolding_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the generated structure (no fold) — fast. |
 | `metric.compute_refolded_structure_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the refolded structure — slower. |
-| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:56-58`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
+| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:68-70`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
 
 ## Reading the sweeper YAML format
 
@@ -167,7 +167,7 @@ No emitted file is named `results_*.csv`; the per-job files are
 | `mean_i_pae` | `{seq}_complex_i_pAE.mean()` | Lower = better. AF2 interface PAE, stored **0–1 scaled** — multiply by 31 to report in threshold units. A naive `i_pae < 10` test passes every sample. |
 | `mean_plddt` | `{seq}_complex_pLDDT.mean()` | Higher = better. **Complex** pLDDT, 0–1. There is no interface-pLDDT column in the raw CSV — `i_plddt` does not exist. |
 | `mean_binder_scRMSD_ca` | `{seq}_binder_scRMSD_ca.mean()` | Lower = better. Binder CA scRMSD in Å. `sc_rmsd` does not exist. |
-| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:466`). |
+| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:511`). |
 | `wall_clock_min` | Timestamp delta from the per-stage logs under `./logs/` | Approximate (process wall-clock, not GPU time). With the split-stage loop from Step 4 there is one log per stage, not one per pipeline. |
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column

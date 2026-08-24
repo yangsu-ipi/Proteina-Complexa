@@ -46,6 +46,18 @@ metric:
   # Reuse per-design ESM scores from esm_eval_cache.json. Keyed on
   # (esm_model, esm_backend, sequence), so a model switch recomputes.
   reuse_cached_esm: true
+  # ---------------------------------------------------------------------------
+  # Advisory second-opinion refolding (gates nothing)
+  # ---------------------------------------------------------------------------
+  # Fold the same complexes with another model and emit
+  # {seq_type}_{backend}_{i_pAE,i_pTM,pTM,pLDDT} for comparison against the
+  # primary backend above. Absolute cutoffs do not transfer between folding
+  # models -- ESMFold2 runs on a compressed confidence scale -- so these are
+  # diagnostic columns, not filters. Empty = off.
+  consensus_backends: []      # e.g. [esmfold2]
+  consensus_best_only: true   # score only the ranked-best sequence per type
+  reuse_cached_consensus: true
+  consensus_cfg: {}           # backend settings, e.g. {num_sampling_steps: 50}
   # Ranking criteria for best refolded sample (null = defaults)
   ranking_criteria: null
 
