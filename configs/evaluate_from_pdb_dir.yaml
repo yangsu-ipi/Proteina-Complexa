@@ -91,7 +91,9 @@ metric:
   # for one batched masked forward -- lower it if long sequences run out of
   # memory (the code also halves on OOM by itself).
   esm_model: facebook/esm2_t33_650M_UR50D
-  esm_backend: auto  # auto, esm2, esmc
+  # auto, esm2, esmc (transformers-format ESMC repo, e.g. biohub/ESMC-6B),
+  # or esmc_pkg (the esm package's own ESMC -- currently cannot load)
+  esm_backend: auto
   esm_batch_tokens: 16384
   
   # Ranking criteria for best refolded sample
