@@ -199,7 +199,7 @@ def run_esmfold2(
     """
     from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
 
-    from proteinfoundation.metrics.esmfold2_loader import load_esmfold2, monomer_model_id
+    from proteinfoundation.metrics.esmfold2_loader import deterministic_seed, load_esmfold2, monomer_model_id
 
     if not sequences:
         return []
@@ -210,11 +210,15 @@ def run_esmfold2(
     model = load_esmfold2(model_id)
     builder = ESMFold2InputBuilder()
 
-    inputs = [
-        StructurePredictionInput(sequences=[ProteinInput(id="A", sequence=seq, msa=None)]) for seq in sequences
-    ]
-    logger.info(f"Running ESMFold2 ({model_id}) on {len(sequences)} sequence(s) for {name}")
-    results = builder.fold_batch(model, inputs)
+    inputs = [StructurePredictionInput(sequences=[ProteinInput(id="A", sequence=seq, msa=None)]) for seq in sequences]
+    # fold_batch takes one seed for the whole call, not one per sequence, so this
+    # is keyed on the design and the sequence set that is being folded. Same
+    # design, same sequences, same structures -- which is what makes a resumed
+    # run agree with the cached values it reuses. ESMFold2 is a diffusion
+    # sampler; unseeded, two runs disagree.
+    seed = deterministic_seed(name, suffix, *sequences)
+    logger.info(f"Running ESMFold2 ({model_id}) on {len(sequences)} sequence(s) for {name} (seed {seed})")
+    results = builder.fold_batch(model, inputs, seed=seed)
 
     os.makedirs(path_to_esmfold_out, exist_ok=True)
     out_paths = []

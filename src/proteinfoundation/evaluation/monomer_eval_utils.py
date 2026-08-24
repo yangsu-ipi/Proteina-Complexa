@@ -112,6 +112,8 @@ def monomer_fold_fingerprint(
     recorded per entry so a newly requested mode is a partial miss rather than a
     full invalidation.
     """
+    from proteinfoundation.metrics.esmfold2_loader import SEED_DERIVATION_VERSION
+
     canonical = json.dumps(
         {
             "reference_pdb_path": reference_pdb_path,
@@ -121,6 +123,11 @@ def monomer_fold_fingerprint(
             "num_seq_per_target": num_seq_per_target,
             "pmpnn_sampling_temp": pmpnn_sampling_temp,
             "binder_chain": binder_chain,
+            # The seed derives from the stored sequences, which are an output
+            # rather than a key, so what needs covering here is the derivation
+            # itself: change it and a cached entry would disagree with a fresh
+            # computation while the fingerprint stayed put.
+            "seed_derivation": SEED_DERIVATION_VERSION,
         },
         sort_keys=True,
         default=str,
