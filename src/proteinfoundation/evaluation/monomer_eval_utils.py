@@ -27,7 +27,9 @@ from dataclasses import dataclass, field
 # =============================================================================
 
 VALID_RMSD_MODES = ["ca", "bb3o", "all_atom"]
-VALID_FOLDING_MODELS = ["esmfold", "colabfold"]
+# esmfold2 folds single-chain single-sequence via the Fast checkpoint; see
+# folding_models.run_esmfold2 and metrics.esmfold2_loader.
+VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]
 
 # Default folding configuration
 DEFAULT_DESIGNABILITY_MODES = ["ca"]

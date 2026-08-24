@@ -78,6 +78,8 @@ metric:
   # Monomer metrics
   # ---------------------------------------------------------------------------
   compute_monomer_metrics: false
+  # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
+  # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
   monomer_folding_models: [esmfold]
 
   compute_designability: true

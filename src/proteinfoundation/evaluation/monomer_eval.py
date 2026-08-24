@@ -110,7 +110,7 @@ def fold_sequences(
     Returns:
         Dictionary mapping model names to lists of FoldingResults
     """
-    from proteinfoundation.metrics.folding_models import run_colabfold, run_esmfold
+    from proteinfoundation.metrics.folding_models import run_colabfold, run_esmfold, run_esmfold2
 
     # Set cache directory (expand ~ to home directory)
     if os.getenv("CACHE_DIR"):
@@ -131,6 +131,15 @@ def fold_sequences(
         try:
             if model == "esmfold":
                 out_paths = run_esmfold(
+                    sequences,
+                    model_output_dir,
+                    name,
+                    suffix=suffix,
+                    cache_dir=cache_dir,
+                    keep_outputs=True,
+                )
+            elif model == "esmfold2":
+                out_paths = run_esmfold2(
                     sequences,
                     model_output_dir,
                     name,

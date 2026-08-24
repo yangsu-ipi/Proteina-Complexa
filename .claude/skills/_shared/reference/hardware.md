@@ -38,8 +38,9 @@ Binder / complex folding is selected via
 `++metric.binder_folding_method=colabdesign|rf3_latest` — those are the only two accepted
 values (`binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for
 anything else). ESMFold is **not** a valid binder backend; it is accepted only for the
-separate monomer key `++metric.monomer_folding_models=[esmfold]`
-(`monomer_eval_utils.py:30`, `VALID_FOLDING_MODELS = ["esmfold", "colabfold"]`).
+separate monomer key `++metric.monomer_folding_models=[esmfold]` — which also accepts
+`esmfold2` (single-chain, single-sequence, Fast-Cutoff2025 checkpoint)
+(`monomer_eval_utils.py:32`, `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`).
 
 ## Search-algorithm cost multipliers
 

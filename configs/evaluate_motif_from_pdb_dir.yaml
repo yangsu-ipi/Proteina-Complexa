@@ -81,6 +81,8 @@ metric:
   compute_motif_metrics: true
   motif_info_csv: ${oc.select:motif_info_csv,null}
   # Shared folding model(s) for all monomer-style metrics
+  # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
+  # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
   monomer_folding_models: [esmfold]
 
   # Fine-grained controls (usually don't need to touch)

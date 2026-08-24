@@ -112,6 +112,8 @@ metric:
   # =========================================================================
   # Used by designability, codesignability, and motif-region variants.
   # Override per-metric with designability_folding_models / codesignability_folding_models.
+  # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
+  # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
   monomer_folding_models: ["esmfold"]
 
   # =========================================================================

@@ -28,6 +28,8 @@ dataset:
 # =============================================================================
 metric:
   compute_motif_metrics: true
+  # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
+  # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
   monomer_folding_models: [esmfold]
 
   motif_rmsd_modes: [ca, all_atom]
