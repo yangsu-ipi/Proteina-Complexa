@@ -339,7 +339,7 @@ def compute_binder_metrics(
     # backends fold protein-protein complexes, so a ligand target has no target
     # sequence to fold against and the whole feature is skipped.
     consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
-    consensus_best_only = cfg_metric.get("consensus_best_only", True)
+    consensus_best_only = cfg_metric.get("consensus_best_only", False)
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
     reuse_cached_consensus = cfg_metric.get("reuse_cached_consensus", True)
     consensus_target_seqs: list[str] = []
@@ -558,8 +558,18 @@ def compute_binder_metrics(
                 # Scored per design and cached like the ESM scores, because a
                 # diffusion folder costs minutes per complex -- far more than the
                 # primary refold -- and a resumed evaluation must not repay it.
-                # Defaults to the ranked-best sequence only: these columns are for
-                # comparison against the primary backend, not for a distribution.
+                #
+                # Scores every sequence by default. Folding only the ranked-best
+                # one would condition the advisory sample on the primary
+                # backend's ranking, which is the opposite of what calibration
+                # needs: it makes rank disagreement unmeasurable (whether this
+                # backend would pick a different winner), estimates any fit on
+                # the primary's upper tail only, and never folds the sequences
+                # the primary rejected -- the interesting failures. Since the
+                # point of these columns is to decide whether the backend could
+                # replace the primary one, best-only defeats it.
+                # consensus_best_only=true remains available for cheap monitoring
+                # once a backend is characterised.
                 for backend_name in consensus_backends:
                     to_score = [seqs[seq_best_idx]] if consensus_best_only else seqs
                     advisory = score_binders(
