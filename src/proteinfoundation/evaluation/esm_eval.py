@@ -9,8 +9,10 @@ model name):
 
 * ``esm2`` -- HuggingFace ``AutoModelForMaskedLM`` (default,
   ``facebook/esm2_t33_650M_UR50D``).
-* ``esmc`` -- the ``esm`` package's ``ESMC`` (EvolutionaryScale, or the Biohub
-  fork that also ships ESMFold2; the two are the same model).
+* ``esmc`` -- a transformers-format ESMC repo, loaded by the same
+  ``AutoModelForMaskedLM``. This is how ESMFold2 itself loads ESMC.
+* ``esmc_pkg`` -- the ``esm`` package's own ``ESMC`` class, which currently
+  cannot load (its builders leave parameters on the meta device).
 
 Both go through one batched scoring core: pseudo-perplexity needs one masked
 forward *per residue*, and those L forwards are independent, so they are run as
@@ -53,13 +55,24 @@ except ImportError as e:
 
 DEFAULT_ESM_MODEL = "facebook/esm2_t33_650M_UR50D"
 
-# Registry name understood by the installed ``esm`` package. Kept as a default
-# only; a wrong name fails loudly at load time and the error lists the valid
-# keys from that package's LOCAL_MODEL_REGISTRY.
-DEFAULT_ESMC_MODEL = "esmc_600m"
+# Transformers-format ESMC repo, loaded through AutoModelForMaskedLM. This is the
+# ESMC that works: ESMFold2 itself loads ESMC this way (its load_esmc() imports
+# transformers.models.esmc), and the class is registered in the Auto mappings.
+DEFAULT_ESMC_MODEL = "biohub/ESMC-6B"
+
+# Registry name understood by the installed ``esm`` package, for the esmc_pkg
+# backend. A wrong name fails loudly and the error lists the valid keys from that
+# package's LOCAL_MODEL_REGISTRY.
+DEFAULT_ESMC_PKG_MODEL = "esmc_600m"
 
 BACKEND_ESM2 = "esm2"
 BACKEND_ESMC = "esmc"
+BACKEND_ESMC_PKG = "esmc_pkg"
+
+# Backends served by AutoTokenizer + AutoModelForMaskedLM. They share one code
+# path, so anything true of ESM2 loading is true of ESMC loading -- including the
+# raw-HuggingFace reference that gives the batching an independent cross-check.
+HF_BACKENDS = (BACKEND_ESM2, BACKEND_ESMC)
 
 # Budget for one batched forward, in tokens (rows x padded length). A 100-residue
 # sequence scores in ceil(100 / (16384 // 102)) = 1 forward instead of 100.
@@ -137,10 +150,10 @@ class EsmBackend:
             ``(input_ids, attention_mask)``. ``attention_mask`` is None for
             backends that derive padding themselves.
         """
-        if self.kind == BACKEND_ESMC:
-            # ESMC._tokenize takes a list and pads internally. Passing
-            # sequence_id=None to forward lets it derive the pad mask, which
-            # also avoids its flash-attention assert on the mask dtype.
+        if self.kind == BACKEND_ESMC_PKG:
+            # The esm package's ESMC._tokenize takes a list and pads internally.
+            # Passing sequence_id=None to forward lets it derive the pad mask,
+            # which also avoids its flash-attention assert on the mask dtype.
             ids = self.model._tokenize(sequences)
             return ids.to(self.device), None
 
@@ -151,7 +164,7 @@ class EsmBackend:
 
     def logits(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
         """Run a forward pass and return ``[B, T, V]`` logits."""
-        if self.kind == BACKEND_ESMC:
+        if self.kind == BACKEND_ESMC_PKG:
             return self.model.forward(sequence_tokens=input_ids).sequence_logits
         return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
 
@@ -159,15 +172,33 @@ class EsmBackend:
 def resolve_backend(model_name: str, backend: str = "auto") -> str:
     """Resolve the backend for a model name.
 
-    ``auto`` treats any name containing "esmc" as ESMC and everything else as
-    ESM2, so ``esmc_600m`` and ``biohub/esmc-600m-2024-12`` both route to ESMC
-    while ``facebook/esm2_t33_650M_UR50D`` does not.
+    Three backends:
+
+    * ``esm2`` -- HuggingFace ``AutoModelForMaskedLM``.
+    * ``esmc`` -- the same loader, for a transformers-format ESMC repo. Biohub's
+      transformers fork registers ``ESMCForMaskedLM`` in the Auto mappings, and
+      its tokenizer uses standard ``input_ids`` naming, so ESMC needs no special
+      handling here.
+    * ``esmc_pkg`` -- the ``esm`` package's own ``ESMC`` class. Kept for
+      completeness and currently unusable: that package's builders construct
+      under ``init_empty_weights()`` and then load via huggingface_hub's
+      ``load_torch_model``, which never passes ``assign=True``, so parameters
+      stay on the meta device and moving the model raises. ESMFold2 does not use
+      this implementation either.
+
+    ``auto`` sends any name containing "esmc" to the ``esmc`` backend and
+    everything else to ``esm2``. Note that resolves ESMC to the *working* route:
+    reaching the package implementation requires asking for ``esmc_pkg``
+    explicitly.
     """
     backend = (backend or "auto").lower()
-    if backend in (BACKEND_ESM2, BACKEND_ESMC):
+    if backend in (BACKEND_ESM2, BACKEND_ESMC, BACKEND_ESMC_PKG):
         return backend
     if backend != "auto":
-        raise ValueError(f"Unknown ESM backend '{backend}'. Expected one of: auto, {BACKEND_ESM2}, {BACKEND_ESMC}")
+        raise ValueError(
+            f"Unknown ESM backend '{backend}'. Expected one of: auto, "
+            f"{BACKEND_ESM2}, {BACKEND_ESMC}, {BACKEND_ESMC_PKG}"
+        )
     return BACKEND_ESMC if "esmc" in model_name.lower() else BACKEND_ESM2
 
 
@@ -471,8 +502,13 @@ def _resolve_cache_dir() -> str | None:
 # =============================================================================
 
 
-def _load_esm2(model_name: str, device: str, force_offline: bool) -> EsmBackend:
-    """Load an ESM2 masked-LM from ESM_DIR, then the HF cache."""
+def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: str = BACKEND_ESM2) -> EsmBackend:
+    """Load a HuggingFace masked LM from ESM_DIR, then the HF cache.
+
+    Serves both ``esm2`` and ``esmc``: Biohub's transformers fork registers
+    ESMCForMaskedLM in the Auto mappings, so a transformers-format ESMC repo
+    loads through exactly this path.
+    """
     if not ESM_AVAILABLE:
         raise RuntimeError("ESM/transformers not available. Install with: pip install transformers")
 
@@ -534,7 +570,7 @@ def _load_esm2(model_name: str, device: str, force_offline: bool) -> EsmBackend:
     model.eval()
 
     return EsmBackend(
-        kind=BACKEND_ESM2,
+        kind=kind,
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -542,8 +578,12 @@ def _load_esm2(model_name: str, device: str, force_offline: bool) -> EsmBackend:
     )
 
 
-def _load_esmc(model_name: str, device: str) -> EsmBackend:
-    """Load ESMC from the ``esm`` package.
+def _load_esmc_pkg(model_name: str, device: str) -> EsmBackend:
+    """Load ESMC from the ``esm`` package (the non-working implementation).
+
+    Prefer ``esm_backend=esmc`` with a transformers-format repo. This path is
+    kept because the package registry carries sizes the transformers repos may
+    not, but as of 2026-08-24 it cannot actually load: see resolve_backend.
 
     Weights come from snapshot_download, so they follow HF_HOME/HF_HUB_CACHE --
     ESM_DIR and CACHE_DIR do not apply here. The repos are gated: an HF token
@@ -599,7 +639,7 @@ def _load_esmc(model_name: str, device: str) -> EsmBackend:
         )
 
     return EsmBackend(
-        kind=BACKEND_ESMC,
+        kind=BACKEND_ESMC_PKG,
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -657,10 +697,10 @@ def get_esm_backend(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    if kind == BACKEND_ESMC:
-        loaded = _load_esmc(model_name, device)
+    if kind == BACKEND_ESMC_PKG:
+        loaded = _load_esmc_pkg(model_name, device)
     else:
-        loaded = _load_esm2(model_name, device, force_offline)
+        loaded = _load_hf_masked_lm(model_name, device, force_offline, kind)
 
     _ESM_BACKEND_CACHE[key] = loaded
     logger.info(f"ESM backend loaded ({kind}:{model_name}) on {device} and cached for reuse")

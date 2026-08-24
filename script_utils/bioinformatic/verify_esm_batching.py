@@ -18,8 +18,9 @@ Three modes:
       Real ESM2 weights. Runs the unbatched reference and the batched path over
       the same sequences and reports max deviation plus the speedup.
 
-  --model esmc_600m --backend esmc
-      Same reference-vs-batched comparison, via the backend-agnostic reference.
+  --model biohub/ESMC-6B
+      A transformers-format ESMC repo routes through the same
+      AutoModelForMaskedLM path as ESM2, so it gets the adapter cross-check too.
       Note what it covers: the reference and the batched path share
       EsmBackend.encode/logits, so agreement proves the batching (mask
       placement, chunk boundaries, the gather) and not the adapter beneath it.
@@ -28,7 +29,7 @@ Three modes:
       path, so its guarantee stops at the batching.
 
   --mock-esmc
-      Runs the same comparison through EsmBackend's ESMC branch -- _tokenize and
+      Runs the same comparison through EsmBackend's esmc_pkg branch -- _tokenize and
       forward(sequence_tokens=) returning .sequence_logits -- using a weightless
       stand-in. Real ESMC cannot be loaded at present (the fork's builders leave
       parameters on the meta device), so this is the only coverage that path has.
@@ -50,6 +51,8 @@ import torch
 sys.path.insert(0, "src")
 
 from proteinfoundation.evaluation.esm_eval import (
+    BACKEND_ESMC_PKG,
+    HF_BACKENDS,
     EsmBackend,
     compute_pseudo_perplexity,
     compute_pseudo_perplexity_batched,
@@ -174,7 +177,7 @@ def build_mock_esmc_backend(seed: int = 0) -> EsmBackend:
     """A backend that goes through EsmBackend's ESMC branch, with no weights."""
     base = build_synthetic_backend(seed)
     return EsmBackend(
-        kind="esmc",
+        kind=BACKEND_ESMC_PKG,
         model=_MockESMC(base.model, base.tokenizer),
         tokenizer=base.tokenizer,
         device="cpu",
@@ -263,7 +266,7 @@ def compare_budgets(backend: EsmBackend, sequences: list[str], budgets: list[int
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=None, help="Real model to load (HF name for esm2, registry name for esmc)")
-    ap.add_argument("--backend", default="auto", help="auto, esm2, or esmc")
+    ap.add_argument("--backend", default="auto", help="auto, esm2, esmc, or esmc_pkg")
     ap.add_argument("--seq", action="append", default=None, help="Sequence to score (repeatable)")
     ap.add_argument("--budgets", default="64,1024,16384", help="Comma-separated token budgets to test")
     ap.add_argument("--tol", type=float, default=1e-4, help="Max allowed deviation")
@@ -271,7 +274,7 @@ def main() -> int:
     ap.add_argument(
         "--mock-esmc",
         action="store_true",
-        help="Route a weightless model through EsmBackend's ESMC branch (_tokenize / sequence_logits)",
+        help="Route a weightless model through the esmc_pkg branch (_tokenize / sequence_logits)",
     )
     ap.add_argument(
         "--skip-reference",
@@ -284,9 +287,11 @@ def main() -> int:
     budgets = [int(b) for b in args.budgets.split(",")]
 
     if args.mock_esmc:
-        print("Mode: mock ESMC (exercises EsmBackend's ESMC branch, no weights required)")
+        print("Mode: mock esmc_pkg (exercises the esm-package adapter branch, no weights required)")
         backend = build_mock_esmc_backend()
-        kind = "esmc"
+        # esmc_pkg, not esmc: the mock speaks the esm package's API, so the
+        # raw-HuggingFace cross-check cannot drive it and must be skipped.
+        kind = BACKEND_ESMC_PKG
     elif args.model is None:
         print("Mode: synthetic (tiny random-weight ESM on CPU, no weights required)")
         backend = build_synthetic_backend()
@@ -303,9 +308,11 @@ def main() -> int:
     else:
         print(f"Backend-agnostic reference vs batched, {len(sequences)} sequences, budgets={budgets}, tol={args.tol}")
         ok = compare_generic_reference(backend, sequences, budgets, args.tol)
-        if kind == "esm2":
+        if kind in HF_BACKENDS:
             # Second pass through a raw HF model and tokenizer, which the
             # backend-agnostic reference cannot do: it also covers the adapter.
+            # Applies to esmc too -- a transformers-format ESMC repo travels the
+            # same AutoModelForMaskedLM path as ESM2.
             print("\nAdapter cross-check (raw HuggingFace model, bypassing EsmBackend):")
             ok &= compare_reference(backend, sequences, budgets, args.tol)
         else:

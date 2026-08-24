@@ -1,0 +1,47 @@
+2026-08-24 01:36:38.585 | DEBUG    | proteinfoundation.evaluation.esm_eval:get_esm_backend:652 - Set HF_HUB_OFFLINE=1 to force offline mode
+2026-08-24 01:36:38.585 | DEBUG    | proteinfoundation.evaluation.esm_eval:_resolve_cache_dir:465 - No CACHE_DIR; deferring to HuggingFace (HF_HOME / HF_HUB_CACHE)
+2026-08-24 01:36:38.585 | INFO     | proteinfoundation.evaluation.esm_eval:_load_esm2:491 - Loading ESM model: facebook/esm2_t33_650M_UR50D (HF default cache: None)
+2026-08-24 01:36:39.307 | INFO     | proteinfoundation.evaluation.esm_eval:_load_esm2:503 - Loaded ESM model from HF default cache (offline)
+2026-08-24 01:36:39.895 | INFO     | proteinfoundation.evaluation.esm_eval:get_esm_backend:666 - ESM backend loaded (esm2:facebook/esm2_t33_650M_UR50D) on cuda and cached for reuse
+2026-08-24 01:36:41.134 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 33 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:36:41.252 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 2 forward(s) at batch_size=29 (esm2)
+2026-08-24 01:36:41.364 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 1 forward(s) at batch_size=33 (esm2)
+2026-08-24 01:36:42.986 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 50 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:36:43.234 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 3 forward(s) at batch_size=19 (esm2)
+2026-08-24 01:36:43.462 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 1 forward(s) at batch_size=50 (esm2)
+2026-08-24 01:36:50.194 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 140 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:36:52.066 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 20 forward(s) at batch_size=7 (esm2)
+2026-08-24 01:36:53.751 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 2 forward(s) at batch_size=115 (esm2)
+2026-08-24 01:36:54.730 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 33 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:36:54.847 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 2 forward(s) at batch_size=29 (esm2)
+2026-08-24 01:36:54.959 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 1 forward(s) at batch_size=33 (esm2)
+2026-08-24 01:36:56.600 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 50 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:36:56.848 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 3 forward(s) at batch_size=19 (esm2)
+2026-08-24 01:36:57.077 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 1 forward(s) at batch_size=50 (esm2)
+2026-08-24 01:37:03.803 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 140 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:37:05.686 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 20 forward(s) at batch_size=7 (esm2)
+2026-08-24 01:37:07.377 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 2 forward(s) at batch_size=115 (esm2)
+Mode: real weights (esm2:facebook/esm2_t33_650M_UR50D)
+Backend-agnostic reference vs batched, 3 sequences, budgets=[64, 1024, 16384], tol=0.0001
+  L=  33  budget=    64  ll -2.77878303 -> -2.77878303 (d=0.00e+00)  ppl 16.099417 -> 16.099417 (rel=0.00e+00)  0.74s -> 0.50s (1.5x)  OK
+  L=  33  budget=  1024  ll -2.77878303 -> -2.77878288 (d=1.56e-07)  ppl 16.099417 -> 16.099414 (rel=1.56e-07)  0.74s -> 0.12s (6.3x)  OK
+  L=  33  budget= 16384  ll -2.77878303 -> -2.77878285 (d=1.85e-07)  ppl 16.099417 -> 16.099414 (rel=1.85e-07)  0.74s -> 0.11s (6.6x)  OK
+  L=  50  budget=    64  ll -1.88266805 -> -1.88266805 (d=0.00e+00)  ppl 6.571013 -> 6.571013 (rel=0.00e+00)  0.81s -> 0.81s (1.0x)  OK
+  L=  50  budget=  1024  ll -1.88266805 -> -1.88266795 (d=9.89e-08)  ppl 6.571013 -> 6.571013 (rel=9.89e-08)  0.81s -> 0.25s (3.3x)  OK
+  L=  50  budget= 16384  ll -1.88266805 -> -1.88266794 (d=1.04e-07)  ppl 6.571013 -> 6.571013 (rel=1.04e-07)  0.81s -> 0.23s (3.6x)  OK
+  L= 140  budget=    64  ll -1.42675270 -> -1.42675270 (d=0.00e+00)  ppl 4.165152 -> 4.165152 (rel=0.00e+00)  3.36s -> 3.37s (1.0x)  OK
+  L= 140  budget=  1024  ll -1.42675270 -> -1.42675224 (d=4.60e-07)  ppl 4.165152 -> 4.165150 (rel=4.60e-07)  3.36s -> 1.87s (1.8x)  OK
+  L= 140  budget= 16384  ll -1.42675270 -> -1.42675225 (d=4.49e-07)  ppl 4.165152 -> 4.165150 (rel=4.49e-07)  3.36s -> 1.69s (2.0x)  OK
+
+Adapter cross-check (raw HuggingFace model, bypassing EsmBackend):
+  L=  33  budget=    64  ll -2.77878303 -> -2.77878303 (d=0.00e+00)  ppl 16.099417 -> 16.099417 (rel=0.00e+00)  0.49s -> 0.49s (1.0x)  OK
+  L=  33  budget=  1024  ll -2.77878303 -> -2.77878288 (d=1.56e-07)  ppl 16.099417 -> 16.099414 (rel=1.56e-07)  0.49s -> 0.12s (4.2x)  OK
+  L=  33  budget= 16384  ll -2.77878303 -> -2.77878285 (d=1.85e-07)  ppl 16.099417 -> 16.099414 (rel=1.85e-07)  0.49s -> 0.11s (4.4x)  OK
+  L=  50  budget=    64  ll -1.88266805 -> -1.88266805 (d=0.00e+00)  ppl 6.571013 -> 6.571013 (rel=0.00e+00)  0.82s -> 0.82s (1.0x)  OK
+  L=  50  budget=  1024  ll -1.88266805 -> -1.88266795 (d=9.89e-08)  ppl 6.571013 -> 6.571013 (rel=9.89e-08)  0.82s -> 0.25s (3.3x)  OK
+  L=  50  budget= 16384  ll -1.88266805 -> -1.88266794 (d=1.04e-07)  ppl 6.571013 -> 6.571013 (rel=1.04e-07)  0.82s -> 0.23s (3.6x)  OK
+  L= 140  budget=    64  ll -1.42675270 -> -1.42675270 (d=0.00e+00)  ppl 4.165152 -> 4.165152 (rel=0.00e+00)  3.36s -> 3.36s (1.0x)  OK
+  L= 140  budget=  1024  ll -1.42675270 -> -1.42675224 (d=4.60e-07)  ppl 4.165152 -> 4.165150 (rel=4.60e-07)  3.36s -> 1.88s (1.8x)  OK
+  L= 140  budget= 16384  ll -1.42675270 -> -1.42675225 (d=4.49e-07)  ppl 4.165152 -> 4.165150 (rel=4.49e-07)  3.36s -> 1.69s (2.0x)  OK
+
+RESULT: PASS

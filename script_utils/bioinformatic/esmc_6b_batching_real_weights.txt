@@ -1,0 +1,53 @@
+2026-08-24 01:28:51.106 | DEBUG    | proteinfoundation.evaluation.esm_eval:get_esm_backend:652 - Set HF_HUB_OFFLINE=1 to force offline mode
+2026-08-24 01:28:51.106 | DEBUG    | proteinfoundation.evaluation.esm_eval:_resolve_cache_dir:465 - No CACHE_DIR; deferring to HuggingFace (HF_HOME / HF_HUB_CACHE)
+2026-08-24 01:28:51.106 | INFO     | proteinfoundation.evaluation.esm_eval:_load_esm2:491 - Loading ESM model: biohub/ESMC-6B (HF default cache: None)
+ESMC: transformer_engine is not installed; falling back to pure-PyTorch LayerNorm+Linear / LayerNorm+MLP. Outputs will differ numerically — measured on the unnormalized residual stream (before the final LayerNorm), ~O(10) max-diff in fp32 and ~O(100) in bf16; after the final LayerNorm these shrink to a few ULP and perplexity stays within rounding noise. Install with `pip install transformer-engine[pytorch]` to enable fused fp32-reduction LayerNorm.
+ESMC: neither xformers nor flash-attn is installed; falling back to PyTorch ``F.scaled_dot_product_attention``. The attention reduction order in bf16 differs from a fused kernel by ~1 bf16 ULP per attention block; compounded across the 80-block stack this reaches ~O(100) max-diff on the unnormalized residual stream. Install xformers (preferred) with `pip install xformers` for a fused attention kernel.
+ESMC: flash-attn rotary kernel not installed; falling back to pure-PyTorch RoPE. For faster GPU inference run `pip install flash-attn`.
+Mode: real weights (esm2:biohub/ESMC-6B)
+🚨 No checkpoint found for ESMCForSequenceClassification.forward. Please add a `checkpoint` arg to `auto_docstring` or add one in ESMCConfig's docstring
+🚨 No checkpoint found for ESMCForTokenClassification.forward. Please add a `checkpoint` arg to `auto_docstring` or add one in ESMCConfig's docstring
+Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00, 150.26it/s]
+2026-08-24 01:28:51.286 | INFO     | proteinfoundation.evaluation.esm_eval:_load_esm2:503 - Loaded ESM model from HF default cache (offline)
+2026-08-24 01:28:55.009 | INFO     | proteinfoundation.evaluation.esm_eval:get_esm_backend:666 - ESM backend loaded (esm2:biohub/ESMC-6B) on cuda and cached for reuse
+2026-08-24 01:28:59.870 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 33 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:29:00.791 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 2 forward(s) at batch_size=29 (esm2)
+2026-08-24 01:29:01.730 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 1 forward(s) at batch_size=33 (esm2)
+2026-08-24 01:29:09.469 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 50 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:29:11.568 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 3 forward(s) at batch_size=19 (esm2)
+2026-08-24 01:29:13.557 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 1 forward(s) at batch_size=50 (esm2)
+2026-08-24 01:29:58.070 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 140 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:30:13.729 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 20 forward(s) at batch_size=7 (esm2)
+2026-08-24 01:30:29.210 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 2 forward(s) at batch_size=115 (esm2)
+2026-08-24 01:30:34.036 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 33 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:30:34.977 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 2 forward(s) at batch_size=29 (esm2)
+2026-08-24 01:30:35.939 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 33 residues in 1 forward(s) at batch_size=33 (esm2)
+2026-08-24 01:30:43.832 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 50 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:30:45.971 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 3 forward(s) at batch_size=19 (esm2)
+2026-08-24 01:30:47.998 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 50 residues in 1 forward(s) at batch_size=50 (esm2)
+2026-08-24 01:31:33.084 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 140 forward(s) at batch_size=1 (esm2)
+2026-08-24 01:31:48.805 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 20 forward(s) at batch_size=7 (esm2)
+2026-08-24 01:32:04.326 | DEBUG    | proteinfoundation.evaluation.esm_eval:_masked_log_probs:359 - ESM scored 140 residues in 2 forward(s) at batch_size=115 (esm2)
+Backend-agnostic reference vs batched, 3 sequences, budgets=[64, 1024, 16384], tol=0.0001
+  L=  33  budget=    64  ll -2.82166560 -> -2.82166560 (d=0.00e+00)  ppl 16.804817 -> 16.804817 (rel=0.00e+00)  2.49s -> 2.37s (1.1x)  OK
+  L=  33  budget=  1024  ll -2.82166560 -> -2.82166565 (d=5.42e-08)  ppl 16.804817 -> 16.804818 (rel=5.42e-08)  2.49s -> 0.92s (2.7x)  OK
+  L=  33  budget= 16384  ll -2.82166560 -> -2.82166562 (d=2.17e-08)  ppl 16.804817 -> 16.804818 (rel=2.17e-08)  2.49s -> 0.94s (2.7x)  OK
+  L=  50  budget=    64  ll -1.82032608 -> -1.82032608 (d=0.00e+00)  ppl 6.173871 -> 6.173871 (rel=0.00e+00)  3.87s -> 3.87s (1.0x)  OK
+  L=  50  budget=  1024  ll -1.82032608 -> -1.82032562 (d=4.59e-07)  ppl 6.173871 -> 6.173868 (rel=4.59e-07)  3.87s -> 2.10s (1.8x)  OK
+  L=  50  budget= 16384  ll -1.82032608 -> -1.82032570 (d=3.79e-07)  ppl 6.173871 -> 6.173869 (rel=3.79e-07)  3.87s -> 1.99s (1.9x)  OK
+  L= 140  budget=    64  ll -0.22138057 -> -0.22138057 (d=0.00e+00)  ppl 1.247798 -> 1.247798 (rel=0.00e+00)  22.18s -> 22.34s (1.0x)  OK
+  L= 140  budget=  1024  ll -0.22138057 -> -0.22138061 (d=4.16e-08)  ppl 1.247798 -> 1.247798 (rel=4.16e-08)  22.18s -> 15.66s (1.4x)  OK
+  L= 140  budget= 16384  ll -0.22138057 -> -0.22138062 (d=5.37e-08)  ppl 1.247798 -> 1.247798 (rel=5.37e-08)  22.18s -> 15.48s (1.4x)  OK
+
+Adapter cross-check (raw HuggingFace model, bypassing EsmBackend):
+  L=  33  budget=    64  ll -2.82166560 -> -2.82166560 (d=0.00e+00)  ppl 16.804817 -> 16.804817 (rel=0.00e+00)  2.42s -> 2.41s (1.0x)  OK
+  L=  33  budget=  1024  ll -2.82166560 -> -2.82166565 (d=5.42e-08)  ppl 16.804817 -> 16.804818 (rel=5.42e-08)  2.42s -> 0.94s (2.6x)  OK
+  L=  33  budget= 16384  ll -2.82166560 -> -2.82166562 (d=2.17e-08)  ppl 16.804817 -> 16.804818 (rel=2.17e-08)  2.42s -> 0.96s (2.5x)  OK
+  L=  50  budget=    64  ll -1.82032608 -> -1.82032608 (d=0.00e+00)  ppl 6.173871 -> 6.173871 (rel=0.00e+00)  3.94s -> 3.95s (1.0x)  OK
+  L=  50  budget=  1024  ll -1.82032608 -> -1.82032562 (d=4.59e-07)  ppl 6.173871 -> 6.173868 (rel=4.59e-07)  3.94s -> 2.14s (1.8x)  OK
+  L=  50  budget= 16384  ll -1.82032608 -> -1.82032570 (d=3.79e-07)  ppl 6.173871 -> 6.173869 (rel=3.79e-07)  3.94s -> 2.03s (1.9x)  OK
+  L= 140  budget=    64  ll -0.22138057 -> -0.22138057 (d=0.00e+00)  ppl 1.247798 -> 1.247798 (rel=0.00e+00)  22.53s -> 22.56s (1.0x)  OK
+  L= 140  budget=  1024  ll -0.22138057 -> -0.22138061 (d=4.16e-08)  ppl 1.247798 -> 1.247798 (rel=4.16e-08)  22.53s -> 15.72s (1.4x)  OK
+  L= 140  budget= 16384  ll -0.22138057 -> -0.22138062 (d=5.37e-08)  ppl 1.247798 -> 1.247798 (rel=5.37e-08)  22.53s -> 15.52s (1.5x)  OK
+
+RESULT: PASS
