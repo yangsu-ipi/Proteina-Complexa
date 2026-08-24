@@ -1310,7 +1310,7 @@ metric:
 | Variable | Description |
 |----------|-------------|
 | `ESM_DIR` | Directory for ESM model cache |
-| `CACHE_DIR` | Fallback cache directory if `ESM_DIR` is unset |
+| `CACHE_DIR` | Fallback cache directory if `ESM_DIR` is unset. When unset, HuggingFace resolves it (`HF_HOME` / `HF_HUB_CACHE`, else `~/.cache/huggingface/hub`) |
 
 ### Ligand Evaluation
 
