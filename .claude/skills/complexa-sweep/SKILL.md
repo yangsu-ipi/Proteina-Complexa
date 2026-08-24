@@ -190,7 +190,7 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 | `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3036`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
 | `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:548`, relocated by `organize_results`, `analyze.py:2802-2880`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
-The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:377, :266`), with one column *prefix* per requested `metric.sequence_types` value:
+The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:377, :383`), with one column *prefix* per requested `metric.sequence_types` value:
 
 | Column | Meaning |
 |---|---|
