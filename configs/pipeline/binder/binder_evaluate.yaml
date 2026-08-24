@@ -60,6 +60,14 @@ metric:
   # backend settings. For esmfold2: num_loops, num_sampling_steps,
   # num_diffusion_samples (>1 folds N and keeps the best by i_pAE).
   # Note esmfold2 pLDDT is 0-1 and on a compressed scale vs AF2.
+  #   Optional target MSA for advisory refolding. De novo binders have no
+  #   meaningful alignment, so only the target may carry one -- the binder never
+  #   does. Single-chain target: target_msa. Multi-chain: target_msa_paths, one
+  #   entry per target chain (null where a chain has none). The alignment's query
+  #   must equal that chain's sequence and its depth must be >= 2, both checked
+  #   before folding. Cached scores key on MSA contents, so editing one in place
+  #   invalidates them.
+  #   e.g. consensus_cfg: {target_msa: /path/target.a3m, msa_max_sequences: 16384}
   consensus_cfg: {}
   # Ranking criteria for best refolded sample (null = defaults)
   ranking_criteria: null
