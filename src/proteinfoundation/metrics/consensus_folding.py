@@ -91,24 +91,50 @@ def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[
     Untested against real weights: they live in a private repo and were not
     available where this was written. Treat the first real run as the test.
     """
-    from esm.models.esmfold2 import ProteinInput, StructurePredictionInput
-    from esm.models.esmfold2.interface_metrics import pae_interaction
+    from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
 
     model = _esmfold2_model(cfg)
     chains = [ProteinInput(id=f"T{i}", sequence=s, msa=None) for i, s in enumerate(target_seqs)]
     chains.append(ProteinInput(id="B", sequence=binder_seq, msa=None))
     request = StructurePredictionInput(sequences=chains)
 
-    from esm.models.esmfold2.processor import ESMFold2InputBuilder
-
     builder = ESMFold2InputBuilder()
-    result = builder.fold(
+    folded = builder.fold(
         model,
         request,
         num_loops=int(cfg.get("num_loops", 20)),
         num_sampling_steps=int(cfg.get("num_sampling_steps", 200)),
         num_diffusion_samples=int(cfg.get("num_diffusion_samples", 1)),
     )
+
+    # fold() returns a bare MolecularComplexResult only when
+    # num_diffusion_samples == 1; otherwise a list (processor.py, "if
+    # num_diffusion_samples == 1 and len(results) == 1"). Since
+    # num_diffusion_samples is a documented consensus_cfg knob, reading fields off
+    # the return value directly would silently yield no metrics the moment anyone
+    # raised it.
+    results = folded if isinstance(folded, list) else [folded]
+    scored = [_esmfold2_metrics(r, sum(len(s) for s in target_seqs)) for r in results]
+    scored = [m for m in scored if m]
+    if not scored:
+        return {}
+    # Best-of-N by interface PAE, matching how the primary backend picks a
+    # representative refold (select_best_sample_idx on i_pAE, lower is better).
+    # Falls back to i_pTM, then to the first sample.
+    if all("i_pAE" in m for m in scored):
+        return min(scored, key=lambda m: m["i_pAE"])
+    if all("i_pTM" in m for m in scored):
+        return max(scored, key=lambda m: m["i_pTM"])
+    return scored[0]
+
+
+def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
+    """Reduce one MolecularComplexResult to advisory metrics.
+
+    Field names are as declared on the dataclass (plddt, ptm, iptm, pae); each is
+    optional there, so every one is guarded.
+    """
+    from esm.models.esmfold2.interface_metrics import pae_interaction
 
     metrics: dict[str, float] = {}
     if getattr(result, "iptm", None) is not None:
@@ -117,13 +143,15 @@ def _score_esmfold2(target_seqs: list[str], binder_seq: str, cfg: dict) -> dict[
         metrics["pTM"] = float(result.ptm)
     plddt = getattr(result, "plddt", None)
     if plddt is not None:
-        metrics["pLDDT"] = float(np.asarray(plddt.detach().cpu() if hasattr(plddt, "detach") else plddt).mean())
+        metrics["pLDDT"] = float(_np(plddt).mean())
     pae = getattr(result, "pae", None)
     if pae is not None:
-        pae_np = np.asarray(pae.detach().cpu() if hasattr(pae, "detach") else pae)
-        target_len = sum(len(s) for s in target_seqs)
-        metrics["i_pAE"] = float(pae_interaction(pae_np, target_len))
+        metrics["i_pAE"] = float(pae_interaction(_np(pae), target_len))
     return metrics
+
+
+def _np(x) -> np.ndarray:
+    return np.asarray(x.detach().cpu() if hasattr(x, "detach") else x)
 
 
 _ESMFOLD2_MODEL_CACHE: dict[str, object] = {}
