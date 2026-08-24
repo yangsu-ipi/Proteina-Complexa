@@ -112,6 +112,8 @@ def _score_esmfold2(
     from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
 
     model = _esmfold2_model(cfg)
+    from proteinfoundation.metrics.esmfold2_loader import deterministic_seed
+
     target_msas = _target_msas(target_seqs, cfg)
     chains = [
         ProteinInput(id=f"T{i}", sequence=s, msa=m)
@@ -123,12 +125,21 @@ def _score_esmfold2(
     request = StructurePredictionInput(sequences=chains)
 
     builder = ESMFold2InputBuilder()
+    # Folded one binder at a time here, so the seed can be a pure function of the
+    # fold's inputs: the same target and binder always give the same structure,
+    # and a cached score therefore equals a recomputed one. cfg may pin a seed
+    # instead, e.g. to draw a second independent sample of the same complex.
+    seed = cfg.get("seed")
+    if seed is None:
+        seed = deterministic_seed(*target_seqs, binder_seq)
+    logger.debug(f"Advisory fold of a {len(binder_seq)}-residue binder (seed {seed})")
     folded = builder.fold(
         model,
         request,
         num_loops=int(cfg.get("num_loops", 20)),
         num_sampling_steps=int(cfg.get("num_sampling_steps", 200)),
         num_diffusion_samples=int(cfg.get("num_diffusion_samples", 1)),
+        seed=int(seed),
     )
 
     # fold() returns a bare MolecularComplexResult only when
@@ -371,8 +382,18 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     through :func:`cfg_for_fingerprint` so an MSA is keyed on its contents rather
     than its filename.
     """
+    from proteinfoundation.metrics.esmfold2_loader import SEED_DERIVATION_VERSION
+
     canonical = json.dumps(
-        {"backend": backend, "cfg": cfg_for_fingerprint(cfg), "target_seqs": list(target_seqs)},
+        {
+            "backend": backend,
+            "cfg": cfg_for_fingerprint(cfg),
+            "target_seqs": list(target_seqs),
+            # Every input to the seed is already covered -- target_seqs here, the
+            # binder sequence as the entry key, an explicit cfg.seed in cfg --
+            # but the derivation that turns them into a seed is not.
+            "seed_derivation": SEED_DERIVATION_VERSION,
+        },
         sort_keys=True,
         default=str,
     )

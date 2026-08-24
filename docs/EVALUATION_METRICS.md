@@ -176,6 +176,13 @@ metric:
   compute_ss: true
 ```
 
+> **Pending change.** Designability currently redesigns the binder *in isolation*
+> and is target-agnostic. It will move to redesigning in the context of the
+> target, sharing a subset of those sequences with complex refolding so one
+> sequence carries both an apo and a holo verdict. Reasoning and the options
+> rejected: [design-notes/apo-holo-redesign-sharing.md](design-notes/apo-holo-redesign-sharing.md).
+> Numbers will not be comparable across that change.
+
 **Workflow per sample:**
 
 1. **Designability** — ProteinMPNN redesigns the sequence → fold with ESMFold → compute scRMSD vs generated structure
