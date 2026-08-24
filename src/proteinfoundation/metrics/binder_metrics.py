@@ -376,6 +376,11 @@ def run_binder_eval(
         sequence_type_stats[seq_type]["rmsd_stats"].append(rmsd_stat[new_seq_name])
         sequence_type_stats[seq_type]["aa_stats"].append(
             {
+                # The sequence this row's metrics were computed from. Downstream
+                # code used to recover it by indexing sequences_dict in parallel,
+                # which is only correct while both lists stay in append order and
+                # fails silently otherwise. Recording it makes that join checkable.
+                "sequence": sequence,
                 "residue_counts": dict(all_counts),
                 "interface_counts": dict(interface_counts),
                 "binder_length": binder_length,
