@@ -40,7 +40,7 @@ values (`binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not sup
 anything else). ESMFold is **not** a valid binder backend; it is accepted only for the
 separate monomer key `++metric.monomer_folding_models=[esmfold]` — which also accepts
 `esmfold2` (single-chain, single-sequence, Fast-Cutoff2025 checkpoint)
-(`monomer_eval_utils.py:32`, `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`).
+(`monomer_eval_utils.py:37`, `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`).
 
 ## Search-algorithm cost multipliers
 

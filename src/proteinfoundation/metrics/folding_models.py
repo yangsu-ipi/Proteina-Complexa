@@ -152,6 +152,22 @@ def run_esmfold(
     return out_esm_paths
 
 
+def folding_model_identity(model: str) -> str:
+    """Which weights a monomer folding backend will actually use.
+
+    Goes in the refold cache key so switching checkpoints recomputes instead of
+    serving structures from a different model. esmfold2 resolves through the
+    shared loader, which honours ESMFOLD2_MONOMER_MODEL.
+    """
+    if model == "esmfold2":
+        from proteinfoundation.metrics.esmfold2_loader import monomer_model_id
+
+        return monomer_model_id()
+    if model == "esmfold":
+        return "facebook/esmfold_v1"
+    return model
+
+
 def run_esmfold2(
     sequences: list[str],
     path_to_esmfold_out: str,

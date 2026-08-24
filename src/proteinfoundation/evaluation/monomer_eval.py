@@ -26,7 +26,13 @@ from loguru import logger
 from omegaconf import DictConfig
 
 from proteinfoundation.evaluation.binder_eval_utils import extract_binder_chain_to_pdb, get_binder_chain_from_complex
-from proteinfoundation.evaluation.monomer_eval_utils import DesignabilityResult, FoldingResult
+from proteinfoundation.evaluation.monomer_eval_utils import (
+    DesignabilityResult,
+    FoldingResult,
+    monomer_fold_fingerprint,
+    read_monomer_fold_cache,
+    write_monomer_fold_cache,
+)
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table
 from proteinfoundation.metrics.inverse_folding_models import run_proteinmpnn
@@ -272,6 +278,75 @@ def compute_scrmsd_from_folded(
     )
 
 
+def _result_from_cache(
+    cached: dict,
+    rmsd_modes: list[str],
+    reference_pdb_path: str,
+) -> DesignabilityResult | None:
+    """Rebuild a result from cache, or None to recompute.
+
+    Three outcomes. A full hit needs every requested mode present. A partial hit
+    -- a mode is missing but the folded structures were kept and still exist --
+    computes only the missing modes from those structures, which is the payoff for
+    caching them: adding an RMSD mode costs a reload rather than a refold. Anything
+    else recomputes.
+
+    The partial path is limited to a single folding model, because
+    DesignabilityResult.folded_paths is flat across models and cannot be split
+    back apart; with two models a partial miss simply refolds.
+    """
+    have = cached["rmsd_values"]
+    missing = [m for m in rmsd_modes if m not in have]
+    sequences = list(cached.get("sequences") or [])
+    paths = list(cached.get("folded_paths") or [])
+
+    if not missing:
+        logger.info(f"Reusing cached refold for {len(sequences)} sequence(s), modes {rmsd_modes}")
+        return DesignabilityResult(
+            rmsd_values={m: have[m] for m in rmsd_modes},
+            best_rmsd={m: cached["best_rmsd"][m] for m in rmsd_modes},
+            folded_paths=paths,
+            sequences=sequences,
+        )
+
+    models = sorted({model for by_model in have.values() for model in by_model})
+    reusable = (
+        cached.get("structures_kept") and len(models) == 1 and paths and all(os.path.exists(pth) for pth in paths)
+    )
+    if not reusable:
+        why = (
+            "structures were not kept"
+            if not cached.get("structures_kept")
+            else "structures are missing from disk"
+            if paths and not all(os.path.exists(pth) for pth in paths)
+            else f"{len(models)} folding models cannot be separated"
+        )
+        logger.info(f"Cached refold lacks mode(s) {missing} and {why}; refolding")
+        return None
+
+    model = models[0]
+    logger.info(f"Cached refold lacks mode(s) {missing}; computing them from {len(paths)} kept structure(s)")
+    synthetic = {
+        model: [
+            FoldingResult(pdb_path=pth, sequence=seq, model_name=model, success=True)
+            for pth, seq in zip(paths, sequences + [""] * len(paths), strict=False)
+        ]
+    }
+    extra = compute_scrmsd_from_folded(
+        reference_pdb_path=reference_pdb_path,
+        folding_results=synthetic,
+        rmsd_modes=missing,
+    )
+    merged_values = {**{m: have[m] for m in rmsd_modes if m in have}, **extra.rmsd_values}
+    merged_best = {**{m: cached["best_rmsd"][m] for m in rmsd_modes if m in have}, **extra.best_rmsd}
+    return DesignabilityResult(
+        rmsd_values={m: merged_values[m] for m in rmsd_modes},
+        best_rmsd={m: merged_best[m] for m in rmsd_modes},
+        folded_paths=paths,
+        sequences=sequences,
+    )
+
+
 def evaluate_self_consistency(
     pdb_path: str,
     output_dir: str,
@@ -283,6 +358,7 @@ def evaluate_self_consistency(
     cache_dir: str | None = None,
     keep_outputs: bool = False,
     binder_chain: str | None = None,
+    reuse_cache: bool = True,
 ) -> DesignabilityResult:
     """
     Unified function to evaluate designability/codesignability.
@@ -303,12 +379,39 @@ def evaluate_self_consistency(
         cache_dir: Cache directory for model weights
         keep_outputs: Whether to keep folding outputs
         binder_chain: Chain ID of the binder for ProteinMPNN (only if use_pdb_seq=False)
+        reuse_cache: Reuse a cached refold of this design when the request matches.
+            Values are always cached; folded structures only when keep_outputs is
+            set, in which case a newly requested RMSD mode can be computed from
+            them instead of refolding.
 
     Returns:
         DesignabilityResult with all RMSD values
     """
     name = pdb_name_from_path(pdb_path)
     os.makedirs(output_dir, exist_ok=True)
+
+    suffix = "pdb" if use_pdb_seq else "mpnn"
+
+    # Reuse a previous refold of this design when nothing that determines it has
+    # changed. Sequences are stored rather than keyed on: ProteinMPNN samples at
+    # pmpnn_sampling_temp with no seed, so a resumed run generates different
+    # sequences and there would be nothing to match.
+    from proteinfoundation.metrics.folding_models import folding_model_identity
+
+    fingerprint = monomer_fold_fingerprint(
+        reference_pdb_path=pdb_path,
+        suffix=suffix,
+        folding_models=list(folding_models),
+        model_identities={m: folding_model_identity(m) for m in folding_models},
+        num_seq_per_target=num_seq_per_target,
+        pmpnn_sampling_temp=pmpnn_sampling_temp,
+        binder_chain=binder_chain,
+    )
+    cached = read_monomer_fold_cache(output_dir, suffix, fingerprint) if reuse_cache else None
+    if cached is not None:
+        reused = _result_from_cache(cached, rmsd_modes, pdb_path)
+        if reused is not None:
+            return reused
 
     # Step 1: Get sequences
     sequences = get_sequences_for_evaluation(
@@ -319,8 +422,6 @@ def evaluate_self_consistency(
         tmp_path=output_dir,
         binder_chain=binder_chain,
     )
-
-    suffix = "pdb" if use_pdb_seq else "mpnn"
 
     # Step 2: Fold sequences
     folding_results = fold_sequences(
@@ -342,6 +443,7 @@ def evaluate_self_consistency(
 
     # Add sequences to result (for saving alongside RMSD values)
     result.sequences = sequences
+    write_monomer_fold_cache(output_dir, suffix, fingerprint, result, keep_outputs)
 
     # Cleanup if not keeping outputs
     if not keep_outputs:
@@ -588,6 +690,7 @@ def compute_monomer_metrics(
                     num_seq_per_target=cfg_metric.get("designability_num_seq", 8),
                     keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                     binder_chain=binder_chain,
+                    reuse_cache=cfg_metric.get("reuse_cached_monomer_folds", True),
                 )
 
                 for model in designability_folding_models:
@@ -623,6 +726,7 @@ def compute_monomer_metrics(
                     rmsd_modes=codesignability_modes,
                     folding_models=codesignability_folding_models,
                     keep_outputs=cfg_metric.get("keep_folding_outputs", True),
+                    reuse_cache=cfg_metric.get("reuse_cached_monomer_folds", True),
                 )
 
                 for model in codesignability_folding_models:
