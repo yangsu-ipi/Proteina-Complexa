@@ -41,6 +41,13 @@ from proteinfoundation.evaluation.esm_eval import (
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table
 from proteinfoundation.metrics.binder_metrics import run_binder_eval
+from proteinfoundation.metrics.consensus_folding import (
+    CONSENSUS_METRIC_SUFFIXES,
+    advisory_column,
+    assert_columns_are_advisory,
+    available_backends,
+    score_binders,
+)
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.rewards.base_reward import REWARD_KEY
 
@@ -327,6 +334,44 @@ def compute_binder_metrics(
     }
     n_reused = 0
 
+    # Advisory second-opinion refolding. Off unless metric.consensus_backends is
+    # set; emits {seq_type}_{backend}_{metric} columns and gates nothing. These
+    # backends fold protein-protein complexes, so a ligand target has no target
+    # sequence to fold against and the whole feature is skipped.
+    consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
+    consensus_best_only = cfg_metric.get("consensus_best_only", True)
+    consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
+    reuse_cached_consensus = cfg_metric.get("reuse_cached_consensus", True)
+    consensus_target_seqs: list[str] = []
+    if consensus_backends:
+        unknown = [b for b in consensus_backends if b not in available_backends()]
+        if unknown:
+            logger.error(f"Unknown consensus_backends {unknown}; known: {available_backends()}. Skipping those.")
+            consensus_backends = [b for b in consensus_backends if b not in unknown]
+    if consensus_backends and is_target_ligand:
+        logger.info("Advisory refolding skipped: these backends fold protein complexes, target is a ligand")
+        consensus_backends = []
+    if consensus_backends:
+        from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb
+
+        for chain in target_pdb_chain:
+            try:
+                seq = extract_seq_from_pdb(target_pdb_path, chain_id=chain)
+            except Exception as exc:  # advisory: a missing target sequence must not stop evaluation
+                logger.error(f"Advisory refolding disabled: cannot read target chain {chain}: {exc}")
+                consensus_target_seqs = []
+                break
+            if seq:
+                consensus_target_seqs.append(seq)
+        if not consensus_target_seqs:
+            consensus_backends = []
+        else:
+            logger.info(
+                f"Advisory refolding enabled: {consensus_backends}, target "
+                f"{len(consensus_target_seqs)} chain(s)/{sum(len(s) for s in consensus_target_seqs)} residues, "
+                f"{'best sequence only' if consensus_best_only else 'all sequences'}"
+            )
+
     # Setup columns
     columns, flat_dict = parse_cfg_for_table(eval_config)
     all_columns = columns + ["id_gen", "pdb_path", "L", "task_name"]
@@ -507,6 +552,39 @@ def compute_binder_metrics(
                                 f"{seq_type}_esm_log_likelihood_all",
                             ]
                         )
+
+                # Advisory second-opinion refolding (optional, gates nothing).
+                #
+                # Scored per design and cached like the ESM scores, because a
+                # diffusion folder costs minutes per complex -- far more than the
+                # primary refold -- and a resumed evaluation must not repay it.
+                # Defaults to the ranked-best sequence only: these columns are for
+                # comparison against the primary backend, not for a distribution.
+                for backend_name in consensus_backends:
+                    to_score = [seqs[seq_best_idx]] if consensus_best_only else seqs
+                    advisory = score_binders(
+                        backend_name,
+                        consensus_target_seqs,
+                        to_score,
+                        cfg=consensus_cfg,
+                        cache_dir=sample_root_path,
+                        reuse_cache=reuse_cached_consensus,
+                    )
+                    new_cols = []
+                    for suffix in CONSENSUS_METRIC_SUFFIXES:
+                        col = advisory_column(seq_type, backend_name, suffix)
+                        row_dict[col] = advisory[0].get(suffix, np.nan) if advisory else np.nan
+                        new_cols.append(col)
+                        if not consensus_best_only:
+                            col_all = f"{col}_all"
+                            row_dict[col_all] = [m.get(suffix, np.nan) for m in advisory]
+                            new_cols.append(col_all)
+                    if idx == 0:
+                        # The contract of these columns is that they cannot change a
+                        # pass/fail decision. Check it against the gated names rather
+                        # than trusting the naming convention.
+                        assert_columns_are_advisory(new_cols, set(all_columns))
+                        all_columns.extend(new_cols)
 
         results.append(row_dict)
 
