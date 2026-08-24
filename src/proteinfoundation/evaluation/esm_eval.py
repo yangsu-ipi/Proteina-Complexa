@@ -378,12 +378,21 @@ def _resolve_esm_dir() -> str | None:
     return None
 
 
-def _resolve_cache_dir() -> str:
-    """Resolve the HuggingFace cache directory for downloading ESM models.
+def _resolve_cache_dir() -> str | None:
+    """Resolve the HuggingFace cache directory for ESM models, or None.
 
     Priority:
     1. CACHE_DIR environment variable
-    2. ~/.cache (default)
+    2. None -- let HuggingFace resolve it (HF_HOME / HF_HUB_CACHE, else
+       ~/.cache/huggingface/hub)
+
+    Returning None rather than a path matters twice. It used to return
+    ``~/.cache``, which is one level above the real hub cache
+    (``~/.cache/huggingface/hub``), so weights already present were reported
+    missing and re-downloaded into a second, parallel tree. And because an
+    explicit ``cache_dir=`` overrides HF_HOME entirely, any value here silently
+    disabled HF_HOME -- the very variable the shared weight caches are keyed on.
+    ``run_esmfold`` already passes None unless CACHE_DIR is set; this matches it.
 
     Note: ESM_DIR is handled separately as a local model path, not as a
     download cache. This prevents HuggingFace from downloading model files
@@ -395,9 +404,8 @@ def _resolve_cache_dir() -> str:
         logger.debug(f"Using CACHE_DIR from environment: {cache_dir}")
         return cache_dir
 
-    default_cache = os.path.expanduser("~/.cache")
-    logger.debug(f"Using default cache: {default_cache}")
-    return default_cache
+    logger.debug("No CACHE_DIR; deferring to HuggingFace (HF_HOME / HF_HUB_CACHE)")
+    return None
 
 
 # =============================================================================
@@ -416,7 +424,7 @@ def _load_esm2(model_name: str, device: str, force_offline: bool) -> EsmBackend:
     load_locations = []
     if esm_dir:
         load_locations.append(("ESM_DIR", esm_dir))
-    load_locations.append(("cache", cache_dir))
+    load_locations.append(("CACHE_DIR" if cache_dir else "HF default cache", cache_dir))
 
     model = None
     tokenizer = None
@@ -442,13 +450,19 @@ def _load_esm2(model_name: str, device: str, force_offline: bool) -> EsmBackend:
 
     if model is None:
         if force_offline:
-            search_paths = ", ".join(loc for _, loc in load_locations)
+            # Only name cache_dir in the hint when one is actually in force;
+            # otherwise the download lands wherever HF_HOME points, which is
+            # where the loader will look next time.
+            cache_kwarg = f", cache_dir='{cache_dir}'" if cache_dir else ""
+            search_paths = ", ".join(
+                f"{label}={loc}" if loc else f"{label}=HF_HOME/HF_HUB_CACHE" for label, loc in load_locations
+            )
             logger.error(
                 f"Failed to load ESM model from local paths: {search_paths}\n"
                 f"The model may not be downloaded yet. To download, run:\n"
                 f'  python -c "from transformers import AutoTokenizer, AutoModelForMaskedLM; '
-                f"AutoTokenizer.from_pretrained('{model_name}', cache_dir='{cache_dir}'); "
-                f"AutoModelForMaskedLM.from_pretrained('{model_name}', cache_dir='{cache_dir}')\""
+                f"AutoTokenizer.from_pretrained('{model_name}'{cache_kwarg}); "
+                f"AutoModelForMaskedLM.from_pretrained('{model_name}'{cache_kwarg})\""
             )
             raise RuntimeError(f"ESM model not found in local paths: {search_paths}")
 
