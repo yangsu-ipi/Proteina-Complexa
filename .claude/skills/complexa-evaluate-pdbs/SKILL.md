@@ -24,7 +24,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 
 ## What this skill enables
 
-- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` is valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:30`: `VALID_FOLDING_MODELS = ["esmfold", "colabfold"]`) — the two keys are easy to conflate.
+- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:32`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
 - For motif inputs: motif RMSD (CA + all-atom), motif-region designability/codesignability, sequence recovery.
