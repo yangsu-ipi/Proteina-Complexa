@@ -495,13 +495,57 @@ def calculate_prot_prot_binder_rmsd(
     # Compute complex RMSD (CA only — full-complex all-atom is rarely useful)
     complex_scRMSD_ca = rmsd_metric(gen_complex_coors, refolded_complex_coors, mode="ca")
 
+    # Binder RMSD after superimposing on the TARGET.
+    #
+    # The third of three ways to superimpose a refolded complex, and the only one
+    # that sees placement: binder-aligned RMSD is blind to where the binder sits
+    # because it fits the binder onto itself, and complex-aligned RMSD dilutes
+    # placement error across whichever chain has more residues. Fitting on the
+    # target -- effectively the same structure in both complexes -- leaves the
+    # binder's deviation as fold *and* placement together. Subtracting
+    # binder_scRMSD_ca is what isolates placement; this number alone does not.
+    #
+    # Emitted, not gated: there is no distribution to pick a threshold from yet.
+    binder_scRMSD_target_aligned_ca = float("nan")
+    gen_target_chains = [c for c in gen_complex_chains if c != gen_binder_chain]
+    refolded_target_chains = [c for c in refolded_complex_chains if c != refolded_binder_chain]
+    if gen_target_chains and refolded_target_chains:
+        gen_target_coors = atomarray_to_atom37_coords(gen_complex, gen_target_chains)
+        refolded_target_coors = atomarray_to_atom37_coords(refolded_complex, refolded_target_chains)
+        n_target, n_binder = gen_target_coors.shape[0], gen_binder_coors.shape[0]
+        if refolded_target_coors.shape[0] == n_target and refolded_binder_coors.shape[0] == n_binder:
+            # Concatenated explicitly rather than sliced out of the complex arrays,
+            # so the target/binder split is stated here instead of resting on the
+            # chain ordering that produced them.
+            gen_ca = torch.cat([gen_target_coors[:, 1, :], gen_binder_coors[:, 1, :]], dim=0)
+            refolded_ca = torch.cat([refolded_target_coors[:, 1, :], refolded_binder_coors[:, 1, :]], dim=0)
+            target_mask = torch.zeros(n_target + n_binder, dtype=torch.bool)
+            target_mask[:n_target] = True
+            aligned_gen, centered_refolded = kabsch_align_ligand(
+                gen_ca.unsqueeze(0),
+                refolded_ca.unsqueeze(0),
+                mask=target_mask.unsqueeze(0),
+            )
+            deviation = aligned_gen[0][~target_mask] - centered_refolded[0][~target_mask]
+            binder_scRMSD_target_aligned_ca = deviation.pow(2).sum(dim=-1).mean().sqrt().item()
+        else:
+            logger.warning(
+                f"{'[' + label + '] ' if label else ''}Target-aligned binder RMSD skipped: residue counts "
+                f"differ between generated and refolded complex "
+                f"(target {n_target} vs {refolded_target_coors.shape[0]}, "
+                f"binder {n_binder} vs {refolded_binder_coors.shape[0]})"
+            )
+
     tag = f"[{label}] " if label else ""
     logger.info(
         f"{tag}binder scRMSD — CA: {binder_scRMSD_ca:.4f}, "
         f"bb3: {binder_scRMSD_bb3:.4f}, bb3o: {binder_scRMSD_bb3o:.4f}, "
         f"all-atom: {binder_scRMSD_allatom:.4f}"
     )
-    logger.info(f"{tag}complex scRMSD CA: {complex_scRMSD_ca:.4f}")
+    logger.info(
+        f"{tag}complex scRMSD CA: {complex_scRMSD_ca:.4f}, "
+        f"binder scRMSD CA on target alignment: {binder_scRMSD_target_aligned_ca:.4f}"
+    )
 
     rmsd_result = {
         # Mode-suffixed keys (consistent with calculate_ligand_binder_rmsd)
@@ -510,6 +554,8 @@ def calculate_prot_prot_binder_rmsd(
         "binder_scRMSD_bb3o": binder_scRMSD_bb3o,
         "binder_scRMSD_allatom": binder_scRMSD_allatom,
         "complex_scRMSD_ca": complex_scRMSD_ca,
+        # Aligned on the target, measured over the binder -- see above.
+        "binder_scRMSD_target_aligned_ca": binder_scRMSD_target_aligned_ca,
         # Legacy keys for backward compatibility
         "binder_scRMSD": binder_scRMSD_ca,
         "complex_scRMSD": complex_scRMSD_ca,

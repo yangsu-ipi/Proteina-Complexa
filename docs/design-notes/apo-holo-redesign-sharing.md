@@ -562,17 +562,20 @@ implements two of the three:
 |---|---|---|---|
 | binder | binder | `{seq_type}_binder_scRMSD_*` | binder fold accuracy; the target is in neither the fit nor the RMSD |
 | complex | complex | `{seq_type}_complex_scRMSD_ca` | fold and placement together, diluted by residue count |
-| target | binder | -- not implemented | placement -- the clean docking measure |
+| target | binder | `{seq_type}_binder_scRMSD_target_aligned_ca` | fold *and* placement -- the only one that sees where the binder sits |
 
-The third is the one that isolates docking, and the machinery for it exists:
-`kabsch_align_ligand` already does the mirror image for ligand targets (align on
-the binder, measure the ligand). Reversed, it gives target-aligned binder RMSD.
-Note it would measure fold *and* placement together; subtracting the first row
-isolates placement.
+The third is implemented now, reusing `kabsch_align_ligand`, which already did the
+mirror image for ligand targets (align on the binder, measure the ligand).
+Emitted, not gated: a threshold needs a distribution nobody has, which is the same
+position the apo columns started from.
 
-Worth adding, and deliberately not added yet: a new docking metric invites the
-same question the apo columns just went through -- emitted or gated, and at what
-threshold -- and answering it needs a distribution nobody has.
+It measures fold *and* placement together, so it is read against
+`binder_scRMSD_ca` rather than alone -- 1.0 A binder-aligned against 1.1 A
+target-aligned is well placed; 1.0 A against 4.0 A folded correctly and docked
+elsewhere. Verified against cases with known answers: identical complexes give 0,
+a rigid motion of the whole complex gives 0 (the fit absorbs it), a binder
+displaced by *d* gives exactly *d*, and a pure deformation gives the deformation
+magnitude.
 
 ## Still open
 
@@ -604,8 +607,6 @@ threshold -- and answering it needs a distribution nobody has.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
-- **Target-aligned binder RMSD**, the missing docking measure. Machinery exists;
-  the threshold question does not have an answer yet.
 - **Confirming 2.0 A.** The gate is live at the monomer convention's value. The
   apo distribution from a real binder run has still not been looked at, and the
   threshold should be revisited against it.
