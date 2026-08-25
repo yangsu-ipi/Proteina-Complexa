@@ -416,8 +416,9 @@ no arrangement of this pipeline will confirm it. It is carried on domain
 knowledge, deliberately, and that is recorded here so a later in-silico null
 result is read as consistent rather than as evidence against.
 
-`{seq_type}_mpnn_score_all` is emitted beside `{seq_type}_pass_all` so the harm
-check can be run on an existing smoke test rather than argued.
+`{seq_type}_redesign_score_all` is emitted beside `{seq_type}_pass_all`, with
+`redesign_score_kind` saying which way it points, so the harm check can be run on
+an existing smoke test rather than argued.
 
 **And it is a starting point, not a decision.** Binding is one attribute of a
 good binder; expressibility is another; there are more, and ranking on the

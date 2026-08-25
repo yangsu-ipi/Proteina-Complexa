@@ -769,8 +769,8 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_sequence` | Best sequence selected by ranking |
 | `{seq}_complex_i_pAE_all` | All i_pAE values (list, one per MPNN sequence) |
 | `{seq}_binder_scRMSD_all` | All scRMSD values (list) |
-| `{seq}_mpnn_score` | Inverse folder's own quality score for the best sequence; absent for `self` |
-| `{seq}_mpnn_score_all` | Per-sequence inverse-folder scores (list) |
+| `{seq}_redesign_score` | Inverse folder's own quality score for the best sequence; absent for `self`, which was never inverse-folded |
+| `{seq}_redesign_score_all` | Per-sequence inverse-folder scores (list) |
 | `redesign_score_kind` | Which convention those scores follow — see below |
 | `{seq}_pass` | 1/0: does the best sequence meet every success criterion |
 | `{seq}_pass_all` | Per-sequence 1/0 verdicts (list) |
@@ -800,7 +800,9 @@ failures = [(s, p) for row_s, row_v, row_p in zip(seqs, passes, paths)
             for s, v, p in zip(row_s, row_v, row_p) if not v]
 ```
 
-**The score's direction depends on `metric.inverse_folding_model`**, so read
+The score is named for what it scores rather than for the scorer, because the
+scorer is whatever `metric.inverse_folding_model` selects — three different
+models, two different conventions. **Its direction depends on that key**, so read
 `redesign_score_kind` before ordering by it:
 
 | `inverse_folding_model` | reported as | `redesign_score_kind` | better |
