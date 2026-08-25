@@ -55,6 +55,7 @@ from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
     assert_columns_are_advisory,
+    assert_headline_indices_agree,
     available_backends,
     score_binders,
 )
@@ -893,6 +894,10 @@ def compute_binder_metrics(
                         # pass/fail decision. Check it against the gated names rather
                         # than trusting the naming convention.
                         assert_columns_are_advisory(new_cols, set(all_columns))
+                        # And that the headline they carry is the same sequence the
+                        # primary headline describes. Checked on the row, so a
+                        # future call site cannot reintroduce the mismatch quietly.
+                        assert_headline_indices_agree(row_dict, seq_type, backend_name)
                         all_columns.extend(new_cols)
 
         results.append(row_dict)
