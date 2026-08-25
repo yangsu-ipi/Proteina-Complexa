@@ -13,7 +13,7 @@ from loguru import logger
 from torch import Tensor
 from transformers import logging as hf_logging
 
-from proteinfoundation.metrics.inverse_folding_models import inverse_fold
+from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues,
     get_interface_residues_atomistic,
@@ -169,19 +169,16 @@ def run_binder_eval(
     all_interface_residues = []
 
     ## Defining target-specific inverse folding arguments
-    assert inverse_folding_model in [
-        "protein_mpnn",
-        "ligand_mpnn",
-        "soluble_mpnn",
-    ], f"Inverse folding model {inverse_folding_model} not supported"
-    if is_target_ligand:  # For ligand targets, use LigandMPNN, and full atom input
-        inverse_folding_model = "ligand_mpnn"  # Set to ligand_mpnn anyway for ligand targets
-        mpnn_input_pdb = updated_pdb_path.replace("_updated.pdb", ".pdb")
+    inverse_folding_model = resolve_inverse_folding_model(inverse_folding_model, is_target_ligand)
+    # ProteinMPNN runs CA-only and takes the _updated view; the others are
+    # all-atom models and take the design PDB, which carries backbone atoms they
+    # can use. Keyed on the resolved model rather than on is_target_ligand, so an
+    # explicitly configured ligand_mpnn on a protein target also gets all-atom
+    # input instead of a CA-only file it cannot make use of.
+    if inverse_folding_model == "protein_mpnn":
+        mpnn_input_pdb = updated_pdb_path
     else:
-        if inverse_folding_model == "soluble_mpnn":  # Use full atom input for SolubleMPNN
-            mpnn_input_pdb = updated_pdb_path.replace("_updated.pdb", ".pdb")
-        else:  # For C-alpha only input for ProteinMPNN
-            mpnn_input_pdb = updated_pdb_path
+        mpnn_input_pdb = updated_pdb_path.replace("_updated.pdb", ".pdb")
 
     if num_redesign_seqs is None:
         num_redesign_seqs = 8 if not is_target_ligand else 1

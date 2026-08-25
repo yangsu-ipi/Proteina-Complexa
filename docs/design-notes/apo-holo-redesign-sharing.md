@@ -300,11 +300,17 @@ two produce opinions about the same sequences rather than two models' views of
 one backbone. `redesign_model` records which, on both CSVs, because designability
 numbers are not comparable across runs that set it differently.
 
-One residual asymmetry: the complex track forces `ligand_mpnn` for ligand targets
-regardless of config, and `compute_monomer_metrics` cannot tell whether a target
-is a ligand. Both shipped ligand configs already set `ligand_mpnn`, so they agree
-in practice, and `redesign_model` on the two CSVs makes a disagreement visible in
-the data rather than only in a reader's assumptions.
+The ligand override lives in `resolve_inverse_folding_model`, which both tracks
+call, so the rule has one definition rather than a copy per track. It warns when
+it overrides. Discarding a configured value silently leaves the mistake in the
+config to surprise someone later while the run looks like it did what was asked,
+and the resolved value is what `redesign_model` and `redesign_score_kind` report
+-- so recording the configured one would have named the wrong model and, worse,
+the wrong sort direction for the scores.
+
+It warns rather than raises: a ligand target configured with `protein_mpnn` is a
+recoverable mistake with an unambiguous repair, and failing a long campaign over
+something the pipeline can fix is the worse outcome.
 
 The ligand case was also quietly wrong before this. Designability reads the
 complex, and for a ligand target that complex contains the ligand -- which

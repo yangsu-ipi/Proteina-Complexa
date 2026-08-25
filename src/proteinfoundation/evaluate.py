@@ -362,6 +362,9 @@ def run_monomer_evaluation(
         root_path=output_dir,
         protein_type=protein_type,
         show_progress=show_progress,
+        # Only the binder path has a target to be a ligand. A pure monomer run has
+        # no target dict to read, so asking would fail rather than answer.
+        is_target_ligand=(get_target_info(cfg)[3] if protein_type == "binder" else False),
     )
 
     return df
