@@ -370,12 +370,23 @@ done on sequence and structure alone.
 
 What survives that, roughly in order of how cheaply it is already available:
 
-- **ProteinMPNN's own score**, its negative log-likelihood for the sequence it
-  drew, averaged over designed positions -- lower is better
-  (`protein_mpnn_utils._scores`, an NLL). Already parsed by
-  `extract_gen_seqs_proteinmpnn` into `sequences_dict`, already persisted in
-  `binder_eval_cache.json`, and until now read by nothing. Free. **The first
-  criterion, explicitly provisional** -- see below.
+- **The inverse folder's own score.** Already parsed into `sequences_dict`,
+  already persisted in `binder_eval_cache.json`, and until now read by nothing.
+  Free. **The first criterion, explicitly provisional** -- see below.
+
+  It is not one quantity. ProteinMPNN reports `score=`, an NLL averaged over
+  designed positions (`protein_mpnn_utils._scores`), lower better.
+  LigandMPNN and SolubleMPNN report `overall_confidence=`, `np.exp(-loss)` in
+  (0, 1], higher better. Both land under the key `"score"`. They are
+  monotonically related, so they rank identically up to direction -- which is
+  precisely why a ranking must read `REDESIGN_SCORE_KIND` rather than assume:
+  hardcoding one convention ranks correctly for one model and selects the *worst*
+  sequences for the other, and the values themselves cannot tell you which
+  happened. `redesign_score_kind` is emitted per run for that reason.
+
+  It also means the binder pipeline, which configures `soluble_mpnn`, is already
+  scoring with the soluble model -- so the expressibility-aware score is in hand
+  without adding anything.
 - **`seqid`**, recovery against the input sequence, parsed and unused likewise.
   For a co-designed binder this measures agreement with the model's own sequence,
   which is a different thing from quality.
