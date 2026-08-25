@@ -155,8 +155,14 @@ def run_case(pdb_path, workdir, label, context_chains, design_chain, small, larg
         a == b,
         "identical" if a == b else f"{sum(x != y for x, y in zip(a, b, strict=False))}/{len(a)} differ",
     )
+    # Measured on the long run too, because that is what the prefix is checked
+    # against. A short run of 2 can be fully distinct while the 8 it is compared
+    # to are near-identical, and then matching the first 2 says nothing -- the
+    # sequences would agree whatever the RNG did.
     ok &= report(
-        "non-degeneracy: sequences within a run differ", len(set(a)) > 1, f"{len(set(a))} distinct of {len(a)}"
+        "non-degeneracy: sequences within a run differ",
+        len(set(a)) > 1 and len(set(big)) > 1,
+        f"{len(set(a))}/{len(a)} distinct (short), {len(set(big))}/{len(big)} distinct (long)",
     )
     ok &= report(
         "seed plumbing: ProteinMPNN used the seed we passed",
@@ -178,6 +184,13 @@ def run_case(pdb_path, workdir, label, context_chains, design_chain, small, larg
     if not holds:
         print(f"      short run [0]: {a[0]}")
         print(f"      long  run [0]: {big[0]}")
+    elif len(a) < 4 or len(set(big)) < len(big):
+        # Agreement over few sequences, or over a draw that repeats itself, is
+        # weak evidence for something the sharing step will rely on everywhere.
+        print(
+            f"      NOTE: only {len(a)} sequence(s) compared and {len(set(big))}/{len(big)} of the "
+            f"long run distinct; raise --small for a stronger result."
+        )
     return holds
 
 
