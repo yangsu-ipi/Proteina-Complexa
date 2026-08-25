@@ -20,6 +20,12 @@ happens next instead of an argument doing it.
      disqualification: the score tracks expressibility, which the gate does not
      measure. What would argue against ranking is a clear negative relationship.
 
+     Scores are normalised to higher-is-better using redesign_score_kind before
+     any correlation, and grouped by it. ProteinMPNN reports an NLL and
+     Soluble/LigandMPNN a confidence -- they point opposite ways, so a raw
+     correlation reports a supporting result as a harmful one, and pooling two
+     kinds is meaningless even when each is individually right.
+
 Usage:
   python script_utils/bioinformatic/read_apo_smoke_test.py <binder_results_*.csv> [--seq-type mpnn]
 """
@@ -190,26 +196,49 @@ def main() -> int:
     passes = f"{seq}_pass_all"
     if scores not in df.columns or passes not in df.columns:
         print(f"  need {scores} and {passes}")
+    elif "redesign_score_kind" not in df.columns:
+        print("  redesign_score_kind is absent, so the score's direction is unknown -- refusing to")
+        print("  correlate. ProteinMPNN reports an NLL (lower better) and Soluble/LigandMPNN a")
+        print("  confidence (higher better); reading one as the other inverts the conclusion.")
     else:
-        pairs = paired(df, seq, "redesign_score", "pass")
-        if not pairs:
-            print("  no paired values (self is never inverse-folded)")
-        else:
-            passed = [s for s, p in pairs if p]
-            failed = [s for s, p in pairs if not p]
-            kind = str(df.get("redesign_score_kind", pd.Series(["?"])).dropna().iloc[0])
-            print(f"  score kind: {kind}   n={len(pairs)}  passing={len(passed)} failing={len(failed)}")
+        # Grouped by score kind, and never pooled across kinds. The two conventions
+        # point opposite ways, so a pooled correlation is meaningless even when
+        # every input is individually correct -- and pooling is reachable here,
+        # since this script accepts several CSVs.
+        for kind, group in df.groupby("redesign_score_kind", dropna=True):
+            pairs = paired(group, seq, "redesign_score", "pass")
+            if not pairs:
+                print(f"  [{kind}] no paired values (self is never inverse-folded)")
+                continue
+            # Normalise to higher-is-better so the sign of rho means one thing.
+            if kind == "nll_lower_better":
+                pairs = [(-score, ok) for score, ok in pairs]
+                shown = "-NLL (negated so higher is better)"
+            else:
+                shown = "confidence (higher is better)"
+            passed = [score for score, ok in pairs if ok]
+            failed = [score for score, ok in pairs if not ok]
+            models = sorted(set(group.get("redesign_model", pd.Series(dtype=str)).dropna().astype(str)))
+            print(f"  [{kind}] {shown}   model(s)={models or '?'}   n={len(pairs)}")
+            print(f"    passing={len(passed)} failing={len(failed)}")
             for label, values in (("passing", passed), ("failing", failed)):
                 if values:
-                    describe(f"score of {label}", values)
+                    describe(f"    score of {label}", values)
             rho = spearman(pairs)
             if rho is None:
-                print("  too few sequences for a rank correlation")
+                print("    too few sequences for a rank correlation")
+                continue
+            print(f"    spearman(better-is-higher score, pass) = {rho:+.3f}")
+            if rho > 0.2:
+                verdict = "higher-scoring sequences pass more often -- ranking should not cost pass rate"
+            elif rho < -0.2:
+                verdict = "higher-scoring sequences pass LESS often -- ranking would cost pass rate; investigate"
             else:
-                print(f"  spearman(score, pass) = {rho:+.3f}")
-                print("  A value near zero is the EXPECTED result: this score tracks expressibility,")
-                print("  which the gate does not measure. Ranking by it is argued against only by a")
-                print("  clear relationship in the direction that costs pass rate.")
+                verdict = "no relationship, which is the EXPECTED result"
+            print(f"    -> {verdict}")
+        print("  This score tracks expressibility, which the gate does not measure, so a null")
+        print("  result supports ranking rather than arguing against it. Only a clear negative")
+        print("  relationship -- after the normalisation above -- is evidence of harm.")
     return 0
 
 
