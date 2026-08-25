@@ -178,7 +178,7 @@ Pass-rate filter (applied by analyze), evaluated separately for each `sequence_t
 the results. The command above requests `sequence_types=[self,mpnn_fixed]`, so the columns are
 `self_*` and `mpnn_fixed_*` — there are no `mpnn_*` columns to filter on. Thresholding reads the
 `_all` list columns that `build_column_name` constructs
-(`binder_analysis_utils.py:181-192`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
+(`binder_analysis_utils.py:182-193`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
 `mpnn_fixed` the criteria are:
 
 `mpnn_fixed_complex_i_pAE_all * 31 <= 7.0 AND mpnn_fixed_complex_pLDDT_all >= 0.9 AND mpnn_fixed_binder_scRMSD_ca_all < 1.5`

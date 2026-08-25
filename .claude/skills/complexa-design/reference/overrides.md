@@ -216,7 +216,7 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 ### Threshold overrides must be complete dicts
 
-`binder_analysis.py:406-407` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+`binder_analysis.py:411-412` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
 only when `success_thresholds` is *entirely absent*. Supplying a single metric
 replaces the whole dict, and `parse_threshold_spec`
 (`analysis_utils.py:124-129`) then fills the missing `scale` with `1.0`. So

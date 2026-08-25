@@ -40,7 +40,7 @@ inverse folding so the redesigned binder is soluble.
   default to 0.0 and can be enabled by override.
 - Default success thresholds: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca <
   1.5` Å, and `apo scRMSD_ca < 2.0` Å — **four** criteria
-  (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:76-115`). The apo
+  (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:76-116`). The apo
   one asks whether the binder folds as designed *without* its target; it needs
   `metric.compute_apo_metrics` (on by default) and a criterion whose column is
   absent removes gating entirely rather than weakening it.

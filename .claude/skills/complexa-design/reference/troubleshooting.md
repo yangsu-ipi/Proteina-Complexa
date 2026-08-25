@@ -321,7 +321,7 @@ TrkA, etc.) and may be too strict for harder targets or smaller search
 budgets.
 
 **Fix:** Loosen the thresholds — but you must supply the **complete**
-`success_thresholds` dict. `binder_analysis.py:406-407` uses
+`success_thresholds` dict. `binder_analysis.py:411-412` uses
 `DEFAULT_PROTEIN_BINDER_THRESHOLDS` only when the key is entirely absent, so a
 per-metric override such as
 `++aggregation.success_thresholds.i_pAE.threshold=10.0` replaces the whole dict:
