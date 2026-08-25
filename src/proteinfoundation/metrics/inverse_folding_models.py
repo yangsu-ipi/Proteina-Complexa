@@ -73,6 +73,44 @@ REDESIGN_SCORE_KIND = {
 }
 
 
+def resolve_inverse_folding_model(configured: str, is_target_ligand: bool) -> str:
+    """The inverse folder a run will actually use.
+
+    One definition of a rule that was previously applied in one track and not the
+    other: a ligand target must be redesigned by LigandMPNN, because the other
+    models cannot see a ligand. ProteinMPNN does not fail on one -- it finds no CA
+    atoms in the ligand chain and drops it, redesigning against a pocket that is
+    not there.
+
+    The override is announced. It discards a configured value, and doing that
+    silently leaves the mistake in the config file to surprise someone later,
+    while the run looks like it did what was asked. Warning rather than raising:
+    the mistake is recoverable and the repair is unambiguous, so failing a long
+    campaign over it would be the worse outcome.
+
+    Args:
+        configured: ``metric.inverse_folding_model``.
+        is_target_ligand: Whether the target is a ligand.
+
+    Returns:
+        The model to use, which may differ from *configured*.
+
+    Raises:
+        ValueError: If *configured* names no known model.
+    """
+    if configured not in REDESIGN_SCORE_KIND:
+        raise ValueError(
+            f"Inverse folding model '{configured}' not supported; expected one of {sorted(REDESIGN_SCORE_KIND)}"
+        )
+    if is_target_ligand and configured != "ligand_mpnn":
+        logger.warning(
+            f"Ligand target: inverse_folding_model '{configured}' cannot see the ligand; using 'ligand_mpnn'. "
+            f"Set metric.inverse_folding_model=ligand_mpnn in the config to silence this."
+        )
+        return "ligand_mpnn"
+    return configured
+
+
 def extract_gen_seqs_ligandmpnn(
     path_to_file: str,
     backbone_name: str,

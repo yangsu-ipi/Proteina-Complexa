@@ -36,7 +36,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
-from proteinfoundation.metrics.inverse_folding_models import inverse_fold
+from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
 from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
@@ -638,6 +638,7 @@ def compute_monomer_metrics(
     root_path: str,
     protein_type: str = "monomer",
     show_progress: bool = False,
+    is_target_ligand: bool = False,
 ) -> pd.DataFrame:
     """
     Compute monomer metrics: designability, codesignability, novelty, sequence recovery.
@@ -693,14 +694,12 @@ def compute_monomer_metrics(
     do_seq_rec = cfg_metric.get("compute_co_sequence_recovery", monomer_on)
     do_ss = cfg_metric.get("compute_ss", True)
 
-    # The same key the complex track reads, so both tracks redesign with one
-    # model. Ligand targets are the one place they can still diverge: the complex
-    # track forces ligand_mpnn for them regardless of config, and nothing here
-    # knows whether the target is a ligand. Both shipped ligand configs already
-    # set ligand_mpnn, so the two agree in practice -- and redesign_model records
-    # what was actually used, so a disagreement shows up in the data rather than
-    # only in a reader's assumptions.
-    inverse_folding_model = cfg_metric.get("inverse_folding_model", "protein_mpnn")
+    # The same key resolved the same way the complex track resolves it, ligand
+    # override included, so the two tracks cannot end up redesigning with
+    # different models. redesign_model records the resolved value.
+    inverse_folding_model = resolve_inverse_folding_model(
+        cfg_metric.get("inverse_folding_model", "protein_mpnn"), is_target_ligand
+    )
 
     # Provenance for the designability numbers. Declared with the columns because
     # the frame is built with reindex(columns=columns) and anything absent here
