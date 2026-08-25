@@ -26,7 +26,7 @@ from atomworks.ml.encoding_definitions import AF2_ATOM37_ENCODING
 from atomworks.ml.transforms.encoding import atom_array_from_encoding
 from dotenv import load_dotenv
 from loguru import logger
-from omegaconf import OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.errors import OmegaConfBaseException
 
 from proteinfoundation.proteina import Proteina
@@ -248,6 +248,19 @@ def shard_marker_path(root_path: str, job_id: int) -> str:
     return os.path.join(root_path, SHARD_MARKER_TEMPLATE.format(job_id=job_id))
 
 
+# Keys that say *how* to run, not *what* to generate. They must not change the
+# identity of a request: skip_completed_shards is the documented way to force a
+# rerun, and if it were hashed then using it would look like a different config
+# and -- now that a mismatch aborts -- would refuse to do the thing it exists for.
+GENERATION_DIGEST_IGNORED_KEYS = ("skip_completed_shards",)
+
+# Bumped when the digest formula changes. Recorded in the marker so a marker
+# written by an older formula is recognised as incomparable rather than as a
+# mismatch: aborting a resume because *our* hash changed would be a false alarm
+# on a hard failure, which is worse than the warning it replaced.
+GENERATION_DIGEST_VERSION = 2
+
+
 def generation_config_digest(cfg_gen: dict) -> str:
     """Stable digest of the generation config, computed before job splitting.
 
@@ -265,14 +278,23 @@ def generation_config_digest(cfg_gen: dict) -> str:
     the run never reads. So an unresolvable config falls back to the unresolved
     text, with the mode mixed into the hash so the two forms cannot collide.
     """
+    cfg_for_digest = cfg_gen
+    if any(k in cfg_gen for k in GENERATION_DIGEST_IGNORED_KEYS):
+        cfg_for_digest = cfg_gen.copy() if isinstance(cfg_gen, DictConfig) else OmegaConf.create(dict(cfg_gen))
+        # struct mode forbids deletion unless opened
+        with open_dict(cfg_for_digest):
+            for key in GENERATION_DIGEST_IGNORED_KEYS:
+                if key in cfg_for_digest:
+                    del cfg_for_digest[key]
+
     try:
-        text = OmegaConf.to_yaml(cfg_gen, resolve=True)
+        text = OmegaConf.to_yaml(cfg_for_digest, resolve=True)
         mode = "resolved"
     except OmegaConfBaseException as exc:
         logger.debug(f"Generation config digest computed unresolved ({type(exc).__name__}: {exc})")
-        text = OmegaConf.to_yaml(cfg_gen, resolve=False)
+        text = OmegaConf.to_yaml(cfg_for_digest, resolve=False)
         mode = "unresolved"
-    return hashlib.sha256(f"{mode}\n{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"v{GENERATION_DIGEST_VERSION}\n{mode}\n{text}".encode("utf-8")).hexdigest()
 
 
 def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str,
@@ -291,6 +313,7 @@ def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str,
         "job_id": job_id,
         "njobs": njobs,
         "generation_config_sha256": digest,
+        "generation_config_digest_version": GENERATION_DIGEST_VERSION,
         "nsamples": len(pdb_paths),
         "sample_dirs": sample_dirs,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
@@ -355,12 +378,20 @@ def clear_shard_output(root_path: str, marker: dict) -> int:
 
 
 def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enabled: bool) -> bool:
-    """Whether this shard can be skipped, warning loudly when it cannot.
+    """Whether this shard can be skipped. Aborts on a config mismatch.
 
-    A marker whose digest differs describes a *different* request, so its
-    samples must not be counted towards this one. Re-running generate over such
-    a directory duplicates designs under fresh beam-suffixed names rather than
-    overwriting them, so the mismatch is reported either way.
+    A marker whose digest differs describes a *different* request, so its samples
+    must not be counted towards this one. This used to warn and continue, on the
+    reasoning that fresh designs land under beam-suffixed directory names rather
+    than overwriting. That holds only when a metadata tag exists: without one
+    ``meta`` is empty, names are ``job_{job}_n_{n}_id_{counter}`` with the counter
+    restarting from zero each run, and PDBs are written with ``overwrite=True``.
+    So for any pipeline that does not carry a beam tag, continuing silently
+    overwrote structures while leaving the previous run's evaluation files beside
+    them -- results describing designs that no longer existed.
+
+    Aborting instead. The recovery is one command either way (new ``run_name``, or
+    clear the directory), and it is the caller who knows which they meant.
     """
     marker_path = shard_marker_path(root_path, job_id)
     if not os.path.exists(marker_path):
@@ -372,16 +403,32 @@ def shard_already_complete(root_path: str, job_id: int, digest: str, skip_enable
         logger.warning(f"Ignoring unreadable shard marker {marker_path}: {exc}")
         return False
 
-    same_request = marker.get("generation_config_sha256") == digest
-    if not same_request:
+    marker_version = marker.get("generation_config_digest_version")
+    if marker_version != GENERATION_DIGEST_VERSION:
+        # Written by a different digest formula, so a mismatch here says nothing
+        # about the config. Report and regenerate alongside -- the old behaviour --
+        # rather than aborting a resume over our own change.
         logger.warning(
-            f"Shard {job_id} already has output in {root_path} from a DIFFERENT generation "
-            f"config (marker {marker.get('generation_config_sha256', '?')[:12]} != current "
-            f"{digest[:12]}). Those {marker.get('nsamples', '?')} samples will not be "
-            "overwritten -- their directory names encode a stochastic beam path -- so this run "
-            "will add designs alongside them. Clear the directory or use a new run_name."
+            f"Shard {job_id} marker in {root_path} was written by digest formula "
+            f"v{marker_version} (current v{GENERATION_DIGEST_VERSION}); cannot tell whether the "
+            f"generation config changed. Treating the shard as incomplete. Clear the directory or "
+            f"use a new run_name if these samples came from a different config."
         )
         return False
+
+    same_request = marker.get("generation_config_sha256") == digest
+    if not same_request:
+        raise SystemExit(
+            f"Refusing to generate into {root_path}: shard {job_id} already holds "
+            f"{marker.get('nsamples', '?')} samples from a DIFFERENT generation config "
+            f"(marker {marker.get('generation_config_sha256', '?')[:12]} != current "
+            f"{digest[:12]}).\n"
+            f"Continuing would overwrite those structures wherever the directory names "
+            f"coincide -- they are job_{{job}}_n_{{length}}_id_{{counter}} with the counter "
+            f"restarting each run -- and leave the previous run's evaluation files beside the "
+            f"new designs.\n"
+            f"Use a new generation.run_name, or clear {root_path} first."
+        )
 
     # A marker records that the shard finished, not that its output survived.
     # Check the recorded directories individually: a count cannot distinguish

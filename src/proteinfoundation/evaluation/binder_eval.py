@@ -861,10 +861,18 @@ def compute_binder_metrics(
                         reuse_cache=reuse_cached_consensus,
                         keep_structures=cfg_metric.get("keep_folding_outputs", True),
                     )
+                    # Which entry of `advisory` is the headline. In best-only mode
+                    # exactly one sequence was folded, so it is index 0; otherwise
+                    # `advisory` is parallel to `seqs` and the headline must be the
+                    # same sequence the primary columns describe. Using 0 here made
+                    # {seq}_esmfold2_i_pAE and {seq}_complex_i_pAE describe
+                    # different redesigns whenever the best was not the first --
+                    # the exact pairing failure sequences_for_type exists to stop.
+                    adv_idx = 0 if consensus_best_only else seq_best_idx
                     new_cols = []
                     for suffix in CONSENSUS_METRIC_SUFFIXES:
                         col = advisory_column(seq_type, backend_name, suffix)
-                        row_dict[col] = advisory[0].get(suffix, np.nan) if advisory else np.nan
+                        row_dict[col] = advisory[adv_idx].get(suffix, np.nan) if adv_idx < len(advisory) else np.nan
                         new_cols.append(col)
                         if not consensus_best_only:
                             col_all = f"{col}_all"
@@ -875,7 +883,7 @@ def compute_binder_metrics(
                     # named *_complex_* -- that prefix is reserved for gated columns
                     # and assert_columns_are_advisory refuses it.
                     path_col = advisory_column(seq_type, backend_name, "pdb_path")
-                    row_dict[path_col] = advisory[0].get("pdb_path") if advisory else None
+                    row_dict[path_col] = advisory[adv_idx].get("pdb_path") if adv_idx < len(advisory) else None
                     new_cols.append(path_col)
                     if not consensus_best_only:
                         row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
