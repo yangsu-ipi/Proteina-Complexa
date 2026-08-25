@@ -469,3 +469,55 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
         metric_values[metric_name] = row_dict[col]
 
     return redesign_pass_vector(metric_values, parsed)
+
+
+# =============================================================================
+# Apo Refolding
+# =============================================================================
+
+
+def apo_fold_fingerprint(
+    binder_pdb_path: str,
+    sequences: list[str],
+    folding_models: list[str],
+    model_identities: dict[str, str],
+) -> str:
+    """Everything that determines an apo refold of one design's sequences.
+
+    Unlike the designability cache, the sequences here are an *input* -- they come
+    from the complex track -- so they belong in the key rather than being stood in
+    for by whatever produced them. Hashed rather than stored inline: a redesign
+    set is a few hundred residues per design and the key is compared, never read.
+
+    rmsd_modes is deliberately absent, matching monomer_fold_fingerprint: modes
+    are recorded per entry, so asking for a new one is a partial miss rather than
+    a full invalidation.
+    """
+    import hashlib
+    import json
+
+    canonical = json.dumps(
+        {
+            "binder_pdb_path": binder_pdb_path,
+            "sequences": hashlib.sha256("\x00".join(sequences).encode("utf-8")).hexdigest(),
+            "n_sequences": len(sequences),
+            "folding_models": sorted(folding_models),
+            "model_identities": {k: model_identities[k] for k in sorted(model_identities)},
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def apo_column(seq_type: str, mode: str, model: str) -> str:
+    """Column for the apo scRMSD of one sequence type, mode and folding model.
+
+    Chosen so that a threshold spec with ``column_prefix: "apo"`` and metric
+    ``scRMSD_{mode}_{model}`` builds exactly this name via ``build_column_name``.
+    Turning the apo criterion into a gate is then a threshold-dictionary entry
+    rather than a code change -- which is the point of naming the condition
+    rather than extending a name that means something else. See
+    ``docs/design-notes/apo-holo-redesign-sharing.md``.
+    """
+    return f"{seq_type}_apo_scRMSD_{mode}_{model}"

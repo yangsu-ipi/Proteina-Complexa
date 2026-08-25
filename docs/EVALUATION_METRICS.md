@@ -772,6 +772,8 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_redesign_score` | Inverse folder's own quality score for the best sequence; absent for `self`, which was never inverse-folded |
 | `{seq}_redesign_score_all` | Per-sequence inverse-folder scores (list) |
 | `redesign_score_kind` | Which convention those scores follow — see below |
+| `{seq}_apo_scRMSD_{mode}_{model}` | scRMSD of the best sequence folded **without** the target (`metric.compute_apo_metrics`) |
+| `{seq}_apo_scRMSD_{mode}_{model}_all` | Per-sequence apo scRMSD (list) |
 | `{seq}_pass` | 1/0: does the best sequence meet every success criterion |
 | `{seq}_pass_all` | Per-sequence 1/0 verdicts (list) |
 | `{seq}_aa_counts` | Amino acid composition (dict) |
@@ -815,6 +817,31 @@ identically *up to direction*. That is what makes assuming a convention
 dangerous: a sort hardcoded to one of them is correct for one model and selects
 the worst sequences for the other, with nothing in the values to say which
 happened.
+
+**Apo refolding** (`compute_apo_metrics`, off by default) folds each sequence
+alone and measures it against the designed binder backbone, next to
+`{seq}_binder_scRMSD_*` which measures the same sequence folded *with* the
+target. Both are per sequence and share the `_all` ordering, so index `i` is one
+sequence judged in both conditions — which is what a joint apo-and-holo criterion
+needs, and what the design-level designability metrics cannot express.
+
+It **gates nothing today**. The threshold should be chosen after seeing the
+distribution on a real run; picking one first makes "the gate works" and "the
+gate is mis-calibrated" indistinguishable. When it is chosen, the column name is
+built so a threshold entry finds it with no code change:
+
+```yaml
+aggregation:
+  success_thresholds:
+    i_pAE:   {threshold: 7.0, op: "<=", scale: 31.0, column_prefix: complex}
+    pLDDT:   {threshold: 0.9, op: ">=", scale: 1.0,  column_prefix: complex}
+    scRMSD_ca: {threshold: 1.5, op: "<", scale: 1.0, column_prefix: binder}
+    scRMSD_ca_esmfold: {threshold: 2.0, op: "<", scale: 1.0, column_prefix: apo}
+```
+
+Costs one monomer fold per sequence per design on top of complex folding, cached
+per design in `monomer_fold_cache_apo_{seq_type}.json`. Skipped for ligand
+targets, whose folders take a single protein chain.
 
 `{seq}_pass*` is absent -- rather than zero -- when a criterion's column was
 never computed, because "not judged" is not "failed". The criteria applied are
