@@ -28,6 +28,17 @@ per-design success CSV.
 
 ## What this skill enables
 
+**Evaluation gained a fourth success criterion.** A protein-binder design must now
+fold as designed *without* its target as well as with it: `apo scRMSD_ca < 2.0`
+alongside the three AlphaProteo criteria. On by default
+(`metric.compute_apo_metrics`), folded by plain ESMFold. Pass rates from before
+this change are not comparable — they were measured against three criteria.
+
+ESMC perplexity, ESMFold2 advisory complex refolding (optionally with a target
+MSA) and ESMFold2 apo folding are all reachable from the same `metric.*` keys;
+`complexa-evaluate-pdbs/reference/esm_esmfold2.md` is the authoritative reference
+for those, including three failure modes that are silent.
+
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
 with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only

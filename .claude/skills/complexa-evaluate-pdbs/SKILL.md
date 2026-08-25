@@ -241,7 +241,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
 Summarize to the user:
 
 - Per-PDB row count and number of successful designs vs total.
-- Default-threshold pass rate by `result_type` (e.g. for `protein_binder`: `i_pAE*31 <= 7.0 AND pLDDT >= 0.9 AND scRMSD_ca < 1.5`).
+- Default-threshold pass rate by `result_type` (e.g. for `protein_binder`: `i_pAE*31 <= 7.0 AND pLDDT >= 0.9 AND scRMSD_ca < 1.5 AND apo scRMSD_ca < 2.0`).
 - Top 5 designs by primary metric (`i_pAE` for protein, `min_ipAE` for ligand, `motif_rmsd_pred_all` for motif binders).
 
 ## Step 6: Emit manifest

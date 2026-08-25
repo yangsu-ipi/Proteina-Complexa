@@ -792,7 +792,7 @@ The analysis step loads evaluation CSVs, computes aggregate metrics (success rat
 
 ### Protein Binder Analysis
 
-Uses default AlphaProteo-style success thresholds: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `binder_scRMSD < 1.5`.
+Uses default AlphaProteo-style success thresholds plus an apo criterion: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `binder_scRMSD < 1.5`, `apo scRMSD_ca < 2.0` (the binder must fold as designed without its target too).
 
 ```yaml
 defaults:

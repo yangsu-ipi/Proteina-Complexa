@@ -225,7 +225,7 @@ replaces the whole dict, and `parse_threshold_spec`
 sample passes and the reported success rate becomes 100%.
 
 Always write the full dict, and note the key is `scRMSD_ca`
-(`binder_analysis_utils.py:88`), not `scRMSD`:
+(`binder_analysis_utils.py:89`), not `scRMSD`:
 
 ```yaml
 aggregation:
