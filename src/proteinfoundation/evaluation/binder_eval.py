@@ -50,6 +50,7 @@ from proteinfoundation.metrics.consensus_folding import (
     available_backends,
     score_binders,
 )
+from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.rewards.base_reward import REWARD_KEY
 
@@ -345,6 +346,13 @@ def compute_binder_metrics(
         "target_pdb_path": target_pdb_path,
         "target_pdb_chain": target_pdb_chain,
         "target_task_name": target_task_name,
+        # Redesigns are now drawn from a derived seed rather than whatever
+        # ProteinMPNN picked at run time. Caches written before that hold
+        # unseeded draws: still valid sequences, but not the ones a fresh run
+        # would produce, and not the ones the designability track draws from the
+        # same design. Reusing them would quietly reintroduce the un-joinable
+        # state this work exists to remove, so a derivation change invalidates.
+        "mpnn_seed_derivation": SEED_DERIVATION_VERSION,
     }
     n_reused = 0
 
