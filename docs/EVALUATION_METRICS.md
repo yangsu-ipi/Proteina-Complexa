@@ -855,7 +855,26 @@ The criterion names the mode and folding model, so changing `apo_rmsd_modes` or
 `apo_folding_models` changes the column and the threshold key must follow.
 
 Costs one monomer fold per sequence per design on top of complex folding, cached
-per design in `monomer_fold_cache_apo_{seq_type}.json`.
+per design in `monomer_fold_cache_apo_{seq_type}.json`. Except for `self`:
+`self_apo_scRMSD_{mode}_{model}` **is** `_res_co_scRMSD_{mode}_{model}` — the same
+sequence, folder and reference — so it is delegated to the codesignability
+computation and the fold happens once. `_res_co_scRMSD_*` remains the canonical
+upstream name.
+
+> **Caveat: apo and holo scRMSD may come from different predictors.**
+> Both measure the same quantity — binder-only atoms, Kabsch-superposed on
+> themselves, against the designed binder backbone — but the holo value comes from
+> `binder_folding_method` (AF2 via ColabDesign, or RF3) while the apo value comes
+> from `apo_folding_models` (ESMFold by default). So the apo−holo difference mixes
+> *target dependence* with *predictor disagreement*: a design at 1.2 Å holo and
+> 3.0 Å apo may genuinely need its target, or may just be a sequence ESMFold
+> handles poorly.
+>
+> The gate is still meaningful — it rejects binders that do not fold alone under a
+> competent monomer predictor — but it is not a clean measurement of target
+> dependence, and the two thresholds (1.5 Å and 2.0 Å) are not calibrated against
+> each other. Using one folder for both conditions would remove the confound; see
+> the design note for what stands in the way.
 
 `{seq}_pass*` is absent -- rather than zero -- when a criterion's column was
 never computed, because "not judged" is not "failed". The criteria applied are
@@ -863,6 +882,18 @@ resolved from `aggregation.success_thresholds` and written beside the results as
 `success_criteria_binder_eval_{job_id}.json`; the analysis step compares its own
 thresholds against that file and reports loudly if they differ, since the pass
 columns would then contradict the pass rates beside them.
+
+**What each RMSD superimposes on**, since the choice decides what is being
+measured:
+
+| Column | Aligned on | Measured over | Measures |
+|---|---|---|---|
+| `{seq}_binder_scRMSD_*` | the binder | the binder | binder fold accuracy — the target is present during prediction but in neither the fit nor the RMSD |
+| `{seq}_complex_scRMSD_ca` | the whole complex | the whole complex | fold and placement together, diluted by whichever chain has more residues |
+| *(not implemented)* | the target | the binder | placement — the clean docking measure |
+
+`{seq}_apo_scRMSD_*` matches the first row's construction, with no target present
+at all.
 
 **Optional force field metrics** (if `compute_pre_refolding_metrics` or `compute_refolded_structure_metrics` enabled):
 
