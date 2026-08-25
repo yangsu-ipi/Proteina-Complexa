@@ -17,7 +17,7 @@ from atomworks.io.utils.io_utils import load_any
 from biotite.structure import filter_amino_acids
 from biotite.structure.io.pdb import PDBFile
 from loguru import logger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 # =============================================================================
 # Ranking Criteria for Best Sample Selection
@@ -399,3 +399,73 @@ def get_target_template_path(target_task_name: str, is_target_ligand: bool) -> s
     if not os.path.exists(target_template_path) or is_target_ligand:
         target_template_path = None
     return target_template_path
+
+
+# =============================================================================
+# Success Criteria at Evaluation Time
+# =============================================================================
+
+
+def resolve_success_thresholds(eval_config: DictConfig, is_target_ligand: bool) -> dict:
+    """Resolve the success criteria a run will be judged by.
+
+    Reads ``aggregation.success_thresholds`` -- the same key the analysis stage
+    reads -- so the per-sequence verdicts emitted during evaluation and the pass
+    rates computed during analysis are answers to the same question. A ``null``
+    or absent value falls back to the result-type default, as analysis does.
+
+    The two stages can still be run from different configs, which is why the
+    resolved set is written out beside the results CSV rather than left implicit.
+
+    Args:
+        eval_config: Top-level evaluation config.
+        is_target_ligand: Whether the target is a ligand (selects the default set).
+
+    Returns:
+        Normalised threshold dictionary in the standard spec format.
+    """
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        get_thresholds_for_result_type,
+        normalize_threshold_dict,
+    )
+
+    thresholds = None
+    if "aggregation" in eval_config:
+        thresholds = eval_config.aggregation.get("success_thresholds", None)
+    if thresholds is not None:
+        thresholds = OmegaConf.to_container(thresholds, resolve=True)
+    return normalize_threshold_dict(get_thresholds_for_result_type(thresholds, is_target_ligand))
+
+
+def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[int] | None:
+    """Per-sequence pass/fail for one design, from the ``*_all`` columns just built.
+
+    Returns ``None`` when the row is missing any column the criteria need. That
+    is deliberately distinct from a vector of zeros: "could not be judged" is not
+    "judged and failed", and collapsing the two would report a backend that never
+    produced a metric as a design that failed the gate.
+
+    Args:
+        row_dict: The row under construction, holding ``{seq_type}_*_all`` lists.
+        seq_type: Sequence type ("self", "mpnn", "mpnn_fixed").
+        thresholds: Normalised threshold dictionary.
+
+    Returns:
+        List of 1/0, one per sequence, in ``*_all`` order -- or ``None``.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        build_column_name,
+        redesign_pass_vector,
+    )
+
+    parsed = {name: parse_threshold_spec(spec) for name, spec in thresholds.items()}
+
+    metric_values = {}
+    for metric_name, spec in parsed.items():
+        col = build_column_name(seq_type, spec["column_prefix"], metric_name)
+        if col not in row_dict:
+            return None
+        metric_values[metric_name] = row_dict[col]
+
+    return redesign_pass_vector(metric_values, parsed)

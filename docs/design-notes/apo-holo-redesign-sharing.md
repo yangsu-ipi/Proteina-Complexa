@@ -166,15 +166,49 @@ and new numbers would then share a column name -- the same trap as a citation
 that still points somewhere valid after the claim it supported stopped being
 true.
 
-Recommendation: emit a provenance column, `_res_mpnn_conditioning` with value
-`complex` or `binder_only`, so any CSV states which meaning its designability
-numbers carry. One column, written once per design, and it makes the two eras
-distinguishable without renaming a gated metric.
+Recommendation, now implemented: emit a provenance column so any CSV states
+which meaning its designability numbers carry. One column, written once per
+design, and it makes the two eras distinguishable without renaming a gated
+metric.
+
+**It is called `redesign_conditioning`, not `_res_mpnn_conditioning`.** The
+proposed name was the one name that could not do the job it was invented for.
+`get_groupby_columns` excludes any column containing `_res_` -- and any column
+starting with `mpnn_` -- from grouping, so `_res_mpnn_conditioning` would have
+been carried along as a passive string. Concatenating a pre-change and a
+post-change run would then have averaged two different metrics into one row,
+which is precisely the failure the column exists to prevent. The name that
+survives the exclusion list is groupby-eligible, so the two eras split into
+separate rows instead of merging.
+
+The value is derived rather than asserted: `designability_mpnn_chains()` is the
+single definition of what ProteinMPNN sees, the redesigns are generated from it,
+and the column is computed from it. Widening it to the target's context changes
+both in the same edit. The complex track has the matching
+`complex_mpnn_chains()`, and reports its conditioning into
+`success_criteria_binder_eval_{job_id}.json` rather than a column, since there it
+is constant across every row.
+
+## Also implemented ahead of the apo work
+
+Neither is required by Option D, but both are prerequisites for expressing a
+joint apo/holo criterion per sequence, and both stand on their own.
+
+- **`{seq_type}_pass` / `{seq_type}_pass_all`.** Analysis reports a design as
+  passing when *any* of its sequences does, so the verdict on an individual
+  sequence existed nowhere on disk -- every consumer re-derived it by
+  `ast.literal_eval`-ing the `_all` columns and re-applying thresholds by hand,
+  and any two could disagree. The vector is now emitted during evaluation from
+  `redesign_pass_vector()`, the same primitive `check_sample_has_passing_redesign`
+  and `count_passing_redesigns` are now reductions of. When the apo gate lands it
+  becomes a third condition in one place rather than in every consumer.
+- **`success_criteria_binder_eval_{job_id}.json`.** Because those verdicts are
+  baked into the rows at evaluation time, a CSV re-analysed under different
+  thresholds would carry pass columns contradicting the pass rates beside them.
+  Analysis now compares its thresholds against this file and says so.
 
 ## Still open
 
-- Whether `_res_mpnn_conditioning` is worth its column, or the conditioning
-  change is better recorded only here.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
