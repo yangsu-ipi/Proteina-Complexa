@@ -50,7 +50,7 @@ from proteinfoundation.metrics.consensus_folding import (
     available_backends,
     score_binders,
 )
-from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND
+from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.rewards.base_reward import REWARD_KEY
@@ -335,10 +335,13 @@ def compute_binder_metrics(
         "num_redesign_seqs",
         (DEFAULT_NUM_REDESIGN_SEQS_LIGAND if is_target_ligand else DEFAULT_NUM_REDESIGN_SEQS_PROTEIN),
     )
-    inverse_folding_model = cfg_metric.get("inverse_folding_model", "protein_mpnn")
-
-    if inverse_folding_model not in ["protein_mpnn", "ligand_mpnn", "soluble_mpnn"]:
-        raise ValueError(f"Inverse folding model '{inverse_folding_model}' not supported")
+    # Resolved here, not just read: a ligand target overrides the configured
+    # model, and the columns below record which model ran and which score
+    # convention to read them by. Recording the configured value would name the
+    # wrong model and, worse, the wrong sort direction.
+    inverse_folding_model = resolve_inverse_folding_model(
+        cfg_metric.get("inverse_folding_model", "protein_mpnn"), is_target_ligand
+    )
 
     # Get ranking criteria from config or use defaults
     ranking_criteria = cfg_metric.get("ranking_criteria", None)
