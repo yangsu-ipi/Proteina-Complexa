@@ -474,7 +474,19 @@ def score_binders(
     if cache_dir and reuse_cache:
         scores = read_consensus_cache(cache_dir, backend, fingerprint)
 
-    pending = [s for s in dict.fromkeys(binder_seqs) if s and s not in scores]
+    # A cached score does not imply the structure this run asked for. An earlier
+    # run with keep_folding_outputs=false cached metrics and wrote no PDB, so
+    # enabling retention later returned the scores and produced nothing -- the
+    # request was for a file, and the cache answered about a number. Refold when
+    # the structure is wanted and absent, which also repairs an entry whose PDB
+    # was deleted since.
+    def _needs_structure(seq: str) -> bool:
+        if not (cache_dir and keep_structures):
+            return False
+        path = advisory_structure_path(cache_dir, backend, seq)
+        return not (path and os.path.exists(path))
+
+    pending = [s for s in dict.fromkeys(binder_seqs) if s and (s not in scores or _needs_structure(s))]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
         fresh: dict[str, dict[str, float | str]] = {}

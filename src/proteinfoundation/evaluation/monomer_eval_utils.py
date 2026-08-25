@@ -22,6 +22,7 @@ Note: Thresholds for filtering/analysis are in monomer_analysis_utils.py
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -197,7 +198,15 @@ def write_monomer_fold_cache(
     asking for an RMSD mode this entry lacks can recompute it from them instead of
     refolding.
     """
-    finite = any(v for by_model in result.rmsd_values.values() for v in by_model.values())
+    # any() over a dict of {model: [values]} iterates the *lists*, so a non-empty
+    # list of infinities was truthy and a wholly failed refold got cached
+    # permanently -- under a variable named `finite`. Test the values.
+    finite = any(
+        math.isfinite(value)
+        for by_model in result.rmsd_values.values()
+        for values in by_model.values()
+        for value in values
+    )
     if not finite:
         # Nothing usable was produced. Caching that would make one bad run
         # permanent for every later resume.
