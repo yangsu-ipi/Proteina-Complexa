@@ -570,7 +570,6 @@ def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: 
 
         # If not forcing offline, download to cache_dir (not ESM_DIR)
         logger.info(f"Downloading ESM model from HuggingFace to {cache_dir}...")
-        os.environ.pop("HF_HUB_OFFLINE", None)
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         model = AutoModelForMaskedLM.from_pretrained(model_name, cache_dir=cache_dir)
 
@@ -680,7 +679,7 @@ def get_esm_backend(
         model_name: HF model name for ESM2, or a registry name for ESMC.
         backend: ``auto``, ``esm2``, or ``esmc``.
         device: Device to load on (default: auto-detect cuda/cpu).
-        force_offline: If True, set HF_HUB_OFFLINE=1 and load locally only.
+        force_offline: If True, load from local caches only and never download.
 
     Returns:
         A loaded :class:`EsmBackend` in eval mode.
@@ -689,15 +688,18 @@ def get_esm_backend(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # force_offline is expressed per call, via local_files_only= on each
+    # from_pretrained below, and never by setting HF_HUB_OFFLINE. That env var is
+    # process-global: this function used to set it and never restore it, so a run
+    # that scored with ESM left every later download disabled -- including
+    # ESMFold2's, which loads through an ordinary from_pretrained in the same
+    # process, a few lines later in the same evaluation loop. A valid token and a
+    # cold cache then failed for a reason nothing in the traceback pointed at.
     key = (kind, model_name, device)
     cached = _ESM_BACKEND_CACHE.get(key)
     if cached is not None:
         logger.debug(f"Using cached ESM backend: {kind}:{model_name} on {device}")
         return cached
-
-    if force_offline:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        logger.debug("Set HF_HUB_OFFLINE=1 to force offline mode")
 
     while len(_ESM_BACKEND_CACHE) >= _ESM_CACHE_MAXSIZE:
         evicted, _ = _ESM_BACKEND_CACHE.popitem()
