@@ -207,8 +207,64 @@ joint apo/holo criterion per sequence, and both stand on their own.
   thresholds would carry pass columns contradicting the pass rates beside them.
   Analysis now compares its thresholds against this file and says so.
 
+## Implementation, step 1: seeded redesigns from the complex
+
+Landed. What changed:
+
+- **Both ProteinMPNN call sites are seeded**, from `mpnn_seed()` in
+  `metrics/seeding.py`. The seed is derived from the design's own name, the
+  chains conditioning it, the chains being redesigned, the alphabet and the
+  temperature -- deliberately *not* from how many sequences are requested, since
+  the two tracks want different counts of what is meant to be one draw. The
+  design name is the design's stem, not the stem of whichever intermediate file
+  a caller reads: `_updated.pdb` and `_binder.pdb` are views of one design and
+  must not seed differently. `mpnn_fixed` passes `variant="fixed"` so holding
+  positions fixed is a different draw rather than a constrained version of the
+  same one.
+- **Designability redesigns now condition on the complex.** ProteinMPNN reads
+  the complex and redesigns the binder chain only; everything downstream --
+  folding, RMSD -- stays on the binder alone. That asymmetry is the point: the
+  redesign is judged apo, but it was made knowing what it has to bind.
+- **One alphabet.** The monomer track omitted `X`, a letter ProteinMPNN does not
+  emit, which is to say it omitted nothing. Both tracks now omit `C`, matching
+  what the complex track always did.
+- **Sequence recovery follows.** `_res_co_seq_rec` reuses the designability
+  redesigns when they exist and generated its own when they did not; the
+  fallback now uses the same conditioning, so the number does not depend on
+  whether designability happened to be enabled.
+
+The cache work this forced is the part worth recording. `monomer_fold_cache`
+stores its sequences rather than keying on them -- they are an output, so keying
+on them would mean running ProteinMPNN to find out whether the ProteinMPNN run
+could be skipped. Its fingerprint therefore has to cover everything that
+*produces* them, and did not: a cache written when designability redesigned the
+binder alone would have been served for a request that redesigns it in the
+target's context. Same design, same folding model, entirely different sequences,
+and the served numbers would have been the old metric under the new name. The
+conditioning and the seed are now in the key.
+
+The conditioning fields are added only when ProteinMPNN is involved, which keeps
+the codesignability key byte-identical to what it was. Codesignability reads its
+sequence off the PDB and is untouched by any of this; invalidating its folds --
+potentially a diffusion sampler over every design -- to record a fact that does
+not apply to it would cost real compute for no information. `binder_eval_cache`
+does invalidate, on purpose: entries written before seeding hold unseeded draws,
+which are valid sequences but not the ones a fresh run produces, and reusing
+them would quietly reintroduce the un-joinable state this work exists to remove.
+
+**Numbers move.** Designability and sequence recovery both change -- new
+conditioning, new alphabet, new seeds. `redesign_conditioning` now reports
+`complex` for binder runs, which is what makes the two eras distinguishable
+rather than merely different.
+
 ## Still open
 
+- **Does ProteinMPNN with a fixed seed return the same first N sequences when
+  asked for more than N?** Step 1 does not depend on it -- each track still runs
+  its own sampling -- but the sharing step does, and it must be measured rather
+  than assumed. If the prefix property does not hold, the shared subset has to be
+  taken from one run of `designability_num_seq` rather than reproduced by a
+  shorter run.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 

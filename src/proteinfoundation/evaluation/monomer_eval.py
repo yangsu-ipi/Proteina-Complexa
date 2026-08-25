@@ -22,6 +22,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import torch
+from atomworks.io.utils.io_utils import load_any
 from loguru import logger
 from omegaconf import DictConfig
 
@@ -38,6 +39,7 @@ from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, 
 from proteinfoundation.metrics.inverse_folding_models import run_proteinmpnn
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
+from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb, pdb_name_from_path
 
 # =============================================================================
@@ -45,21 +47,38 @@ from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb, pd
 # =============================================================================
 
 
-def designability_mpnn_chains(binder_chain: str | None) -> list[str]:
+def _chain_ids(pdb_path: str) -> list[str]:
+    """Chain IDs present in a PDB, or [] if it cannot be read.
+
+    Empty on failure rather than raising: this backs a provenance check, and a
+    check that cannot run must not take the evaluation down with it.
+    """
+    try:
+        return sorted(set(load_any(pdb_path)[0].chain_id.tolist()))
+    except Exception as exc:
+        logger.warning(f"Could not read chains from {pdb_path} to verify redesign context: {exc}")
+        return []
+
+
+def designability_mpnn_chains(binder_chain: str | None, target_chains: list[str] | None = None) -> list[str]:
     """The chains ProteinMPNN *sees* when redesigning a binder for designability.
 
-    Its context, not the set it redesigns -- those coincide today and stop
-    coinciding once the target is added.
+    Its context, not the set it redesigns: only the binder is ever redesigned,
+    while the target is present so the redesign is interface-aware.
 
     A single definition so the redesigns and the ``redesign_conditioning`` column
-    that describes them cannot disagree: the column is derived from this list,
-    not asserted alongside it. Today the binder alone, because designability runs
-    on the extracted binder and the target is not in the file at all. Extending
-    it to the target's context is the change tracked in
-    ``docs/design-notes/apo-holo-redesign-sharing.md``; doing that here updates
-    the reported provenance in the same edit.
+    that describes them cannot disagree -- the column is derived from this list
+    rather than asserted alongside it. For a plain monomer, or a binder whose
+    target chains could not be determined, there is no context to add and this
+    is the binder alone.
+
+    The question a binder backbone has to answer is not "is this redesignable in
+    general" but "is this redesignable *for binding this target*", which is why
+    the target is here at all. It does change what designability measures; see
+    ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
-    return [binder_chain if binder_chain is not None else "A"]
+    chain_to_design = binder_chain if binder_chain is not None else "A"
+    return list(target_chains or []) + [chain_to_design]
 
 
 def get_sequences_for_evaluation(
@@ -69,6 +88,8 @@ def get_sequences_for_evaluation(
     pmpnn_sampling_temp: float = 0.1,
     tmp_path: str | None = None,
     binder_chain: str | None = None,
+    mpnn_pdb_path: str | None = None,
+    target_chains: list[str] | None = None,
 ) -> list[str]:
     """
     Get sequences for structure prediction evaluation.
@@ -80,6 +101,11 @@ def get_sequences_for_evaluation(
         pmpnn_sampling_temp: ProteinMPNN sampling temperature
         tmp_path: Temporary directory for ProteinMPNN output
         binder_chain: Chain ID of the binder (for ProteinMPNN). Defaults to "A" if None.
+        mpnn_pdb_path: Structure ProteinMPNN reads. Defaults to *pdb_path*. For a
+            binder these differ: the redesign is conditioned on the complex while
+            everything downstream -- folding, RMSD -- is about the binder alone.
+        target_chains: Target chain IDs present in *mpnn_pdb_path*, giving the
+            redesign its context. None for a plain monomer.
 
     Returns:
         List of sequences to evaluate
@@ -92,19 +118,48 @@ def get_sequences_for_evaluation(
         if tmp_path is None:
             tmp_path = os.path.dirname(pdb_path)
 
-        # Determine which chain to design (default "A" for monomers), and which
-        # chains ProteinMPNN gets to see while designing it. The same list today;
-        # kept separate because the conditioning change widens the second without
-        # widening the first -- the binder is still the only chain redesigned.
+        # Which chain to design (default "A" for monomers), and which chains
+        # ProteinMPNN gets to see while designing it. Only the binder is ever
+        # redesigned; the target is context.
         chain_to_design = binder_chain if binder_chain is not None else "A"
+        context_chains = designability_mpnn_chains(binder_chain, target_chains)
+        design_pdb = mpnn_pdb_path or pdb_path
+
+        # What ProteinMPNN actually conditions on is the *file* -- every chain in
+        # it is context, and --pdb_path_chains only says which to redesign.
+        # all_chains is bookkeeping for fixed positions. So the reported
+        # conditioning is a claim about design_pdb, and checking it against the
+        # file costs one load against a subprocess launch. Without the check,
+        # passing the complex while describing it as the binder alone would label
+        # the metric wrongly and nothing would notice.
+        # Reported, never repaired. The cache fingerprint and the provenance
+        # column both derive from the declared chains, so silently substituting
+        # the observed ones here would desync the seed from the key that is
+        # supposed to describe it. A mismatch means the caller is wrong; say so
+        # and let it be fixed there.
+        actual = set(_chain_ids(design_pdb))
+        if actual and actual != set(context_chains):
+            logger.error(
+                f"Redesign context mismatch for {design_pdb}: ProteinMPNN sees chains {sorted(actual)} "
+                f"but this run is described as conditioned on {sorted(context_chains)}. "
+                f"The redesigns are conditioned on the file; redesign_conditioning and the fold "
+                f"cache key are not describing them correctly."
+            )
+
+        # Seeded so a resumed run reproduces the redesigns rather than drawing
+        # new ones, and so the numbers computed from them are a property of the
+        # design rather than of when the job happened to run.
+        seed = mpnn_seed(pdb_name_from_path(design_pdb), context_chains, [chain_to_design])
 
         gen_seqs = run_proteinmpnn(
-            pdb_path,
+            design_pdb,
             tmp_path,
-            all_chains=designability_mpnn_chains(binder_chain),
+            all_chains=context_chains,
             pdb_path_chains=[chain_to_design],
             num_seq_per_target=num_seq_per_target,
+            omit_AAs="".join(MPNN_OMIT_AAS),
             sampling_temp=pmpnn_sampling_temp,
+            seed=seed,
         )
         return [v["seq"] for v in gen_seqs]
 
@@ -379,6 +434,8 @@ def evaluate_self_consistency(
     keep_outputs: bool = False,
     binder_chain: str | None = None,
     reuse_cache: bool = True,
+    mpnn_pdb_path: str | None = None,
+    target_chains: list[str] | None = None,
 ) -> DesignabilityResult:
     """
     Unified function to evaluate designability/codesignability.
@@ -403,6 +460,11 @@ def evaluate_self_consistency(
             Values are always cached; folded structures only when keep_outputs is
             set, in which case a newly requested RMSD mode can be computed from
             them instead of refolding.
+        mpnn_pdb_path: Structure ProteinMPNN reads, if not *pdb_path*. For a
+            binder this is the complex, so the redesign is interface-aware, while
+            *pdb_path* stays the binder alone -- what gets folded and what the
+            RMSD is measured against. Ignored when use_pdb_seq is True.
+        target_chains: Target chain IDs in *mpnn_pdb_path*.
 
     Returns:
         DesignabilityResult with all RMSD values
@@ -413,10 +475,23 @@ def evaluate_self_consistency(
     suffix = "pdb" if use_pdb_seq else "mpnn"
 
     # Reuse a previous refold of this design when nothing that determines it has
-    # changed. Sequences are stored rather than keyed on: ProteinMPNN samples at
-    # pmpnn_sampling_temp with no seed, so a resumed run generates different
-    # sequences and there would be nothing to match.
+    # changed. Sequences are stored rather than keyed on -- they are an output of
+    # the request -- so the fingerprint has to cover everything that produces
+    # them, the redesign context and seed included.
     from proteinfoundation.metrics.folding_models import folding_model_identity
+
+    # Codesignability reads the sequence off the PDB, so no ProteinMPNN runs and
+    # there is no conditioning or seed to key on.
+    if use_pdb_seq:
+        context_chains = None
+        seed_value = None
+    else:
+        context_chains = designability_mpnn_chains(binder_chain, target_chains)
+        seed_value = mpnn_seed(
+            pdb_name_from_path(mpnn_pdb_path or pdb_path),
+            context_chains,
+            [binder_chain if binder_chain is not None else "A"],
+        )
 
     fingerprint = monomer_fold_fingerprint(
         reference_pdb_path=pdb_path,
@@ -426,6 +501,8 @@ def evaluate_self_consistency(
         num_seq_per_target=num_seq_per_target,
         pmpnn_sampling_temp=pmpnn_sampling_temp,
         binder_chain=binder_chain,
+        mpnn_context_chains=context_chains,
+        mpnn_seed_value=seed_value,
     )
     cached = read_monomer_fold_cache(output_dir, suffix, fingerprint) if reuse_cache else None
     if cached is not None:
@@ -441,6 +518,8 @@ def evaluate_self_consistency(
         pmpnn_sampling_temp=pmpnn_sampling_temp,
         tmp_path=output_dir,
         binder_chain=binder_chain,
+        mpnn_pdb_path=mpnn_pdb_path,
+        target_chains=target_chains,
     )
 
     # Step 2: Fold sequences
@@ -655,12 +734,19 @@ def compute_monomer_metrics(
 
     results = []
 
-    # Determine binder chain once if protein_type is binder
+    # Determine binder and target chains once if protein_type is binder. The
+    # target chains are what gives the designability redesigns their context; a
+    # plain monomer has none and keeps redesigning in isolation.
     binder_chain = None
+    target_chains: list[str] | None = None
     if _is_complex(protein_type) and len(samples_paths) > 0:
         first_sample = samples_paths[0]
-        binder_chain, _ = get_binder_chain_from_complex(first_sample)
-        logger.info(f"Detected binder chain: {binder_chain}")
+        binder_chain, target_chains = get_binder_chain_from_complex(first_sample)
+        logger.info(
+            f"Detected binder chain: {binder_chain}, target chain(s): {target_chains or 'none'}; "
+            f"designability redesigns conditioned on "
+            f"{redesign_conditioning(designability_mpnn_chains(binder_chain, target_chains))}"
+        )
 
     for i, pdb_path in enumerate(maybe_tqdm(samples_paths, "Monomer evaluation", show_progress)):
         # Validate PDB file exists
@@ -702,7 +788,9 @@ def compute_monomer_metrics(
             # Groupby-eligible on purpose: concatenating results from before and
             # after the conditioning change then splits into separate rows
             # instead of averaging two different metrics into one.
-            row_dict["redesign_conditioning"] = redesign_conditioning(designability_mpnn_chains(binder_chain))
+            row_dict["redesign_conditioning"] = redesign_conditioning(
+                designability_mpnn_chains(binder_chain, target_chains)
+            )
         results.append(row_dict)
 
         # Create tmp_dir for this sample
@@ -723,6 +811,12 @@ def compute_monomer_metrics(
                     keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                     binder_chain=binder_chain,
                     reuse_cache=cfg_metric.get("reuse_cached_monomer_folds", True),
+                    # ProteinMPNN reads the complex; everything downstream --
+                    # folding, RMSD -- stays on the binder alone. That asymmetry
+                    # is the point: the redesign is judged apo, but it was made
+                    # knowing what it has to bind.
+                    mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
+                    target_chains=target_chains,
                 )
 
                 for model in designability_folding_models:
@@ -773,12 +867,18 @@ def compute_monomer_metrics(
             if do_seq_rec:
                 mpnn_seqs = getattr(des_result, "sequences", None) if do_des else None
                 if mpnn_seqs is None:
+                    # Same conditioning as designability: this branch only runs
+                    # when designability is off, and recovery computed against a
+                    # differently-conditioned redesign set would not be
+                    # comparable with recovery from a run where it was on.
                     mpnn_seqs = get_sequences_for_evaluation(
                         pdb_path=eval_pdb_path,
                         use_pdb_seq=False,
                         num_seq_per_target=cfg_metric.get("designability_num_seq", 8),
                         tmp_path=tmp_dir,
                         binder_chain=binder_chain,
+                        mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
+                        target_chains=target_chains,
                     )
                 rec_rates = [sum(a == b for a, b in zip(seq, s, strict=False)) / len(seq) for s in mpnn_seqs]
                 metrics["_res_co_seq_rec"].append(max(rec_rates) if rec_rates else 0.0)

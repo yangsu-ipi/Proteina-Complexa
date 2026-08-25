@@ -858,6 +858,13 @@ Written to `monomer_results_*.csv` by monomer evaluation.
 | `_res_ss_coil` | Coil fraction |
 | `redesign_conditioning` | `complex` or `binder_only`: what ProteinMPNN saw when it produced the designability redesigns |
 
+For a binder run this now reads `complex`: ProteinMPNN reads the complex and
+redesigns the binder chain only, while folding and RMSD stay on the binder
+alone. A plain monomer, or a binder whose target chains could not be determined,
+reads `binder_only`. Designability and `_res_co_seq_rec` values are **not
+comparable with those from before this change** -- different conditioning,
+different alphabet (`C` is now omitted on both tracks), different seeds.
+
 `redesign_conditioning` is provenance, not a metric. Designability keeps its
 column names while the conditioning behind it changes (see
 `docs/design-notes/apo-holo-redesign-sharing.md`), so numbers from before and

@@ -20,6 +20,7 @@ from proteinfoundation.metrics.metric_utils import (
     replace_seq_in_generated_pdb,
     rmsd_metric,
 )
+from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, MPNN_SAMPLING_TEMP, mpnn_seed
 from proteinfoundation.utils.align_utils import kabsch_align_ind, kabsch_align_ligand
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, pdb_name_from_path, sort_AtomArray_by_chain_id
 
@@ -200,8 +201,13 @@ def run_binder_eval(
             pdb_path_chains=[binder_chain],
             fix_pos=None,
             num_seq_per_target=num_redesign_seqs,
-            omit_AAs=["C"],
-            sampling_temp=0.1,
+            omit_AAs=MPNN_OMIT_AAS,
+            sampling_temp=MPNN_SAMPLING_TEMP,
+            # Seeded on the design rather than on mpnn_input_pdb: for ProteinMPNN
+            # that file is the _updated view of the same design, and designability
+            # reads the design itself. Both must derive the same seed for the two
+            # tracks to be able to share one redesign set.
+            seed=mpnn_seed(name, complex_mpnn_chains(gen_target_chain, binder_chain), [binder_chain]),
             verbose=False,
         )
         sequences_dict["mpnn"].extend(mpnn_sequences)
@@ -246,8 +252,9 @@ def run_binder_eval(
             pdb_path_chains=[binder_chain],
             fix_pos=fix_pos,
             num_seq_per_target=num_redesign_seqs,
-            omit_AAs=["C"],
-            sampling_temp=0.1,
+            omit_AAs=MPNN_OMIT_AAS,
+            sampling_temp=MPNN_SAMPLING_TEMP,
+            seed=mpnn_seed(name, complex_mpnn_chains(gen_target_chain, binder_chain), [binder_chain], variant="fixed"),
             verbose=False,
         )
         sequences_dict["mpnn_fixed"].extend(mpnn_fixed_sequences)
