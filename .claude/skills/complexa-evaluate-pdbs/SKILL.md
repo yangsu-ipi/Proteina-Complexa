@@ -14,7 +14,7 @@ description: >
   reports pass-rates against the right `result_type` thresholds, and emits a
   replayable `eval_manifest.json`. Reach for this skill before hand-rolling
   refolding scripts.
-compatibility: "complexa CLI installed (pip install -e .); CUDA GPU; AF2_DIR (colabdesign) or RF3_CKPT_PATH+RF3_EXEC_PATH (rf3_latest); ESMFold weights for monomer paths"
+compatibility: "complexa CLI installed (pip install -e .); CUDA GPU; AF2_DIR (colabdesign) or RF3_CKPT_PATH+RF3_EXEC_PATH (rf3_latest); ESMFold weights for monomer and apo paths; for ESMC/ESMFold2 also Biohub's transformers fork + the source-only esm package + HF_TOKEN for the gated biohub/* weights"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -27,6 +27,8 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 - Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
+- **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and the **fourth** protein-binder success criterion: `apo scRMSD_ca < 2.0`. A design must now fold as designed both with and without its target.
+- **ESMC** for pseudo-perplexity / log-likelihood, and **ESMFold2** for advisory complex refolding (optionally with a target MSA) or for apo folding. All three need Biohub's transformers fork plus the source-only `esm` package — see `reference/esm_esmfold2.md` for the exact keys and the three traps that silently disable gating or select the worst sequences.
 - For motif inputs: motif RMSD (CA + all-atom), motif-region designability/codesignability, sequence recovery.
 - Aggregate into per-PDB CSVs plus pass-rate summaries using the default thresholds for the `result_type`.
 
@@ -143,7 +145,7 @@ complexa analysis configs/evaluate_ame_from_pdb_dir.yaml \
     ++run_name=eval_ame_chm
 ```
 
-See `reference/eval_configs.md` for the full matrix (every `result_type`, every threshold default, every supported folding backend, motif-protein-binder variant).
+See `reference/eval_configs.md` for the full matrix (every `result_type`, every threshold default, every supported folding backend, motif-protein-binder variant), and `reference/esm_esmfold2.md` for ESMC scoring and the two ESMFold2 paths.
 
 ## Step 3: Gather inputs (AskUserQuestion)
 
@@ -297,3 +299,11 @@ Two caveats:
 ## Reference
 
 Full evaluate/analyze config matrix, every supported `result_type`, per-threshold defaults, and three worked examples (protein binder / ligand binder / AME): see `reference/eval_configs.md`.
+
+ESMC pseudo-perplexity, ESMFold2 advisory complex folding with a target MSA, and ESMFold2 apo folding — with the four columns you need to read results correctly (`{seq}_pass_all`, `redesign_score_kind`, `redesign_model`, `redesign_conditioning`): see `reference/esm_esmfold2.md`.
+
+### Three things that silently produce wrong or missing results
+
+1. **A success criterion whose column is absent removes gating** rather than weakening it — no pass verdicts, no pass rates, for any sequence type. Reported as an error at startup and again during analysis; never ignore it. Most likely cause: `compute_apo_metrics=false`, or `apo_folding_models` changed without renaming the `scRMSD_ca_<model>` threshold key.
+2. **`redesign_score_kind` decides the sort direction.** `protein_mpnn` reports an NLL (lower better); `soluble_mpnn` / `ligand_mpnn` report a confidence (higher better). Both land in `{seq}_redesign_score`. Sorting without reading the kind selects the worst sequences and looks like it worked.
+3. **`consensus_best_only: true` defeats the purpose of advisory folding.** Leave it false unless the backend is already characterised.

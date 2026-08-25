@@ -437,7 +437,12 @@ def resolve_success_thresholds(eval_config: DictConfig, is_target_ligand: bool) 
     return normalize_threshold_dict(get_thresholds_for_result_type(thresholds, is_target_ligand))
 
 
-def check_thresholds_are_computable(thresholds: dict, compute_apo: bool) -> None:
+def check_thresholds_are_computable(
+    thresholds: dict,
+    compute_apo: bool,
+    apo_rmsd_modes: list[str] | None = None,
+    apo_folding_models: list[str] | None = None,
+) -> None:
     """Warn if the success criteria name metrics this run will not produce.
 
     A criterion whose column never appears does not weaken the gate -- it removes
@@ -445,26 +450,45 @@ def check_thresholds_are_computable(thresholds: dict, compute_apo: bool) -> None
     returns early, so the run emits no verdicts and no pass rates at all, which
     reads downstream as "nothing passed" rather than as "nothing was judged".
 
-    The apo criterion is in the protein-binder defaults, so switching
-    ``compute_apo_metrics`` off is enough to trigger this. Said at startup, where
-    it costs a second to fix, rather than after a campaign.
+    Two ways to trip it, both easy. Switching ``compute_apo_metrics`` off, since
+    the apo criterion is in the protein-binder defaults. And switching
+    ``apo_folding_models`` -- the criterion is ``scRMSD_{mode}_{model}``, naming
+    the folding model, so asking for ``[esmfold2]`` while the default threshold
+    still says ``scRMSD_ca_esmfold`` produces the apo column under a name no
+    criterion is looking for. That second one is the quieter of the two: apo
+    numbers appear in the CSV, and the gate silently is not applied.
 
+    Said at startup, where it costs a second to fix, rather than after a campaign.
     Not fatal: a run that deliberately wants the holo criteria alone is
-    legitimate, and it only has to override ``success_thresholds`` to say so.
+    legitimate, and only has to override ``success_thresholds`` to say so.
     """
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
 
-    if compute_apo:
-        return
     apo_criteria = [
         name for name, spec in thresholds.items() if parse_threshold_spec(spec).get("column_prefix") == "apo"
     ]
-    if apo_criteria:
+    if not apo_criteria:
+        return
+
+    if not compute_apo:
         logger.error(
             f"Success criteria include apo metric(s) {apo_criteria} but metric.compute_apo_metrics is "
             f"false, so those columns will not exist. No pass verdicts or pass rates will be produced "
             f"for any sequence type. Either set metric.compute_apo_metrics=true, or override "
             f"aggregation.success_thresholds to the criteria this run can actually evaluate."
+        )
+        return
+
+    produced = {f"scRMSD_{mode}_{model}" for mode in (apo_rmsd_modes or []) for model in (apo_folding_models or [])}
+    if not produced:
+        return
+    unmatched = [name for name in apo_criteria if name not in produced]
+    if unmatched:
+        logger.error(
+            f"Success criteria name apo metric(s) {unmatched}, but this run produces {sorted(produced)} "
+            f"(apo_rmsd_modes={apo_rmsd_modes}, apo_folding_models={apo_folding_models}). The apo "
+            f"columns will be written under a name no criterion looks for, so no pass verdicts or pass "
+            f"rates will be produced. Rename the threshold key to match, or align the model/mode lists."
         )
 
 

@@ -473,7 +473,12 @@ def compute_binder_metrics(
     # Emitting the vector here settles it once, from the same
     # aggregation.success_thresholds analysis reads.
     success_thresholds = resolve_success_thresholds(eval_config, is_target_ligand)
-    check_thresholds_are_computable(success_thresholds, cfg_metric.get("compute_apo_metrics", False))
+    check_thresholds_are_computable(
+        success_thresholds,
+        cfg_metric.get("compute_apo_metrics", False),
+        apo_rmsd_modes=list(cfg_metric.get("apo_rmsd_modes", ["ca"]) or []),
+        apo_folding_models=list(cfg_metric.get("apo_folding_models", ["esmfold"]) or []),
+    )
     logger.info(
         "Per-sequence pass criteria: " + ", ".join(f"{name}{spec}" for name, spec in success_thresholds.items())
     )
