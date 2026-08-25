@@ -50,6 +50,7 @@ from proteinfoundation.metrics.consensus_folding import (
     available_backends,
     score_binders,
 )
+from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.rewards.base_reward import REWARD_KEY
@@ -566,18 +567,27 @@ def compute_binder_metrics(
                     if idx == 0:
                         all_columns.extend([f"{seq_type}_sequence", f"{seq_type}_sequence_all"])
 
-                    # ProteinMPNN's negative log-likelihood for each redesign.
+                    # The inverse folder's own per-sequence quality number.
                     # Computed on every run and discarded until now. Recorded
                     # because it is the leading candidate for ranking which
                     # redesigns become candidate binders, and that choice needs
-                    # evidence that it predicts the gate -- which needs the
-                    # scores sitting beside the verdicts. See
-                    # docs/design-notes/apo-holo-redesign-sharing.md.
+                    # evidence -- which needs the scores sitting beside the
+                    # verdicts. See docs/design-notes/apo-holo-redesign-sharing.md.
+                    #
+                    # Which way it points depends on the model, so
+                    # redesign_score_kind travels with it. Reading the column
+                    # without that is how a ranking comes to select the worst
+                    # sequences while looking like it works.
                     scores = redesign_scores_for_type(seq_type, seqs, sequences_dict)
                     if not all(np.isnan(v) for v in scores):
                         row_dict[f"{seq_type}_mpnn_score"] = scores[seq_best_idx]
                         row_dict[f"{seq_type}_mpnn_score_all"] = scores
-                        for col in (f"{seq_type}_mpnn_score", f"{seq_type}_mpnn_score_all"):
+                        row_dict["redesign_score_kind"] = REDESIGN_SCORE_KIND.get(inverse_folding_model, "unknown")
+                        for col in (
+                            f"{seq_type}_mpnn_score",
+                            f"{seq_type}_mpnn_score_all",
+                            "redesign_score_kind",
+                        ):
                             if col not in all_columns:
                                 all_columns.append(col)
 
