@@ -489,19 +489,36 @@ target, `{seq_type}_apo_scRMSD_*_all[i]` says how it folded without one. One
 sequence, both verdicts -- which is the whole point, and what designability's
 `min()` cannot express.
 
-**The gate is a config entry.** `build_column_name(seq_type, "apo", "scRMSD_ca_esmfold")`
-produces exactly this column, so adding
+**It gates, at 2.0 A.** On by default, and the fourth entry in
+`DEFAULT_PROTEIN_BINDER_THRESHOLDS`:
 
 ```yaml
 scRMSD_ca_esmfold: {threshold: 2.0, op: "<", scale: 1.0, column_prefix: apo}
 ```
 
-to `aggregation.success_thresholds` makes it a gate, and `redesign_pass_vector`
-picks it up as a third condition with no code change. That is the payoff for
-naming the *condition* rather than extending `_res_co_scRMSD_*`: the threshold
-machinery already knew how to find a column named this way. It also means the
-harm check and the gate share one mechanism -- the unranked, ungated run is just
-the same config without that line.
+`build_column_name(seq_type, "apo", "scRMSD_ca_esmfold")` produces exactly the
+emitted column, so this needed no code change: `redesign_pass_vector` picks it up
+as a fourth condition, and the per-sequence verdicts, the pass rates and the
+filtered outputs follow because they are already reductions of that one function.
+That is the payoff for naming the *condition* rather than extending
+`_res_co_scRMSD_*` -- the threshold machinery already knew how to find a column
+named this way.
+
+The threshold is a convention transferred from monomer scRMSD, not a measured
+one, which was the argument for emitting ungated first. That argument lost to a
+stronger one: these are real designs, and shipping a binder that only folds in
+its target's presence is the failure the criterion exists to catch. The columns
+are emitted whether or not they gate, so the distribution is still readable and
+the number still revisable -- what changed is which way the default errs while
+nobody has looked.
+
+**One consequence worth stating plainly.** Because the criterion lives in the
+defaults, switching `compute_apo_metrics` off does not fall back to the three holo
+criteria -- it removes gating altogether, since `per_sequence_pass` returns None
+and `add_success_rate_columns` returns early when a criterion's column is absent.
+Both were silent about that; both now log an error, and evaluation warns at
+startup where it costs a second to fix rather than a campaign. Gating on the holo
+criteria alone means overriding `success_thresholds`, which says so explicitly.
 
 Cached per design in `monomer_fold_cache_apo_{seq_type}.json` through the same
 helpers designability uses, with its own fingerprint: the sequences here are an
@@ -544,9 +561,9 @@ describe.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
-- **Calibrating the apo gate.** The columns are emitted; no threshold is set.
-  2.0 A is the starting point from the monomer convention, to be confirmed
-  against the distribution rather than assumed.
+- **Confirming 2.0 A.** The gate is live at the monomer convention's value. The
+  apo distribution from a real binder run has still not been looked at, and the
+  threshold should be revisited against it.
 - **Ranking the redesigns.** MPNN score is the provisional first criterion; the
   implementation is not written, and it pulls in the duplicate-run deletion,
   since picking the best N requires generating all of them in the track that

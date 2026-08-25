@@ -86,7 +86,7 @@ metric:
   # Apo refolding: fold each sequence WITHOUT the target and measure scRMSD
   # against the designed binder backbone. Ungated -- emitted for calibration.
   # Costs one monomer fold per sequence per design on top of complex folding.
-  compute_apo_metrics: false
+  compute_apo_metrics: true
   apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true

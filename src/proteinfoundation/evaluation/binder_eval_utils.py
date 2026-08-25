@@ -437,6 +437,37 @@ def resolve_success_thresholds(eval_config: DictConfig, is_target_ligand: bool) 
     return normalize_threshold_dict(get_thresholds_for_result_type(thresholds, is_target_ligand))
 
 
+def check_thresholds_are_computable(thresholds: dict, compute_apo: bool) -> None:
+    """Warn if the success criteria name metrics this run will not produce.
+
+    A criterion whose column never appears does not weaken the gate -- it removes
+    it. ``per_sequence_pass`` returns None and ``add_success_rate_columns``
+    returns early, so the run emits no verdicts and no pass rates at all, which
+    reads downstream as "nothing passed" rather than as "nothing was judged".
+
+    The apo criterion is in the protein-binder defaults, so switching
+    ``compute_apo_metrics`` off is enough to trigger this. Said at startup, where
+    it costs a second to fix, rather than after a campaign.
+
+    Not fatal: a run that deliberately wants the holo criteria alone is
+    legitimate, and it only has to override ``success_thresholds`` to say so.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    if compute_apo:
+        return
+    apo_criteria = [
+        name for name, spec in thresholds.items() if parse_threshold_spec(spec).get("column_prefix") == "apo"
+    ]
+    if apo_criteria:
+        logger.error(
+            f"Success criteria include apo metric(s) {apo_criteria} but metric.compute_apo_metrics is "
+            f"false, so those columns will not exist. No pass verdicts or pass rates will be produced "
+            f"for any sequence type. Either set metric.compute_apo_metrics=true, or override "
+            f"aggregation.success_thresholds to the criteria this run can actually evaluate."
+        )
+
+
 def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[int] | None:
     """Per-sequence pass/fail for one design, from the ``*_all`` columns just built.
 
@@ -465,6 +496,7 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
     for metric_name, spec in parsed.items():
         col = build_column_name(seq_type, spec["column_prefix"], metric_name)
         if col not in row_dict:
+            logger.debug(f"No pass verdict for '{seq_type}': criterion '{metric_name}' needs missing column {col}")
             return None
         metric_values[metric_name] = row_dict[col]
 
