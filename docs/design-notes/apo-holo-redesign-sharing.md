@@ -328,8 +328,10 @@ conditions it on the true target, with the true target sequence.
   input, and the section above says why. If it is, sharing needs no plumbing at
   all: the seeds already agree, the prefix property already holds, and the second
   ProteinMPNN run is pure duplicated compute to be deleted. Checked by
-  `verify_mpnn_prefix.py`, which auto-detects `{stem}_updated.pdb` beside the
-  design and runs both under one seed.
+  `verify_mpnn_prefix.py --target-pdb <reference target>`, which builds the
+  `_updated` view with the production function and runs both inputs under one
+  seed. Building rather than looking for the file matters: evaluation cleans it
+  up, so a smoke-test tree that has finished has none left.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 

@@ -37,6 +37,11 @@ rather than a malfunction:
 Run from the repo root; ProteinMPNN is invoked at ./community_models/ProteinMPNN.
 
   python script_utils/bioinformatic/verify_mpnn_prefix.py --pdb path/to/design.pdb
+
+Add --target-pdb to also check that the two tracks' ProteinMPNN inputs are
+equivalent -- the complex track reads the design's _updated view, designability
+reads the design itself. The view is built here rather than looked for, so the
+check does not depend on a binder evaluation having left one behind.
 """
 
 import argparse
@@ -118,6 +123,34 @@ def sample(pdb_path, workdir, tag, context_chains, design_chain, n, seed):
     )
     fasta_path = os.path.join(out_dir, "seqs", design_name(pdb_path) + ".fa")
     return [r["seq"] for r in results], seed_from_fasta(fasta_path)
+
+
+def build_updated_view(pdb_path, target_pdb, target_chains_in_ref, gen_target_chains, workdir):
+    """Build the design's ``_updated.pdb`` the way the complex track does.
+
+    Calls the production function rather than reimplementing it, so what gets
+    compared is the file evaluation actually feeds ProteinMPNN and not a
+    lookalike. Written into the working directory so a smoke-test output tree is
+    left untouched -- the seed is passed in explicitly, so the file's own stem
+    never reaches the derivation.
+
+    Returns the path, or None if it could not be built.
+    """
+    from proteinfoundation.metrics.metric_utils import replace_seq_in_generated_pdb
+
+    out = os.path.join(workdir, design_name(pdb_path) + "_updated.pdb")
+    try:
+        replace_seq_in_generated_pdb(
+            target_pdb_path=target_pdb,
+            target_pdb_chain=target_chains_in_ref,
+            gen_pdb_path=pdb_path,
+            gen_pdb_target_chain=gen_target_chains,
+            output_path=out,
+        )
+    except Exception as exc:
+        print(f"\ninput equivalence: could not build the _updated view: {exc}")
+        return None
+    return out
 
 
 def input_equivalence(pdb_path, other_pdb, workdir, context_chains, design_chain, n, seed):
@@ -242,6 +275,18 @@ def main() -> int:
         help="The design's _updated.pdb, to check the two tracks' inputs are equivalent. "
         "Auto-detected beside the design PDB when present; 'none' disables.",
     )
+    ap.add_argument(
+        "--target-pdb",
+        default=None,
+        help="Reference target PDB. With this the _updated view is built rather than looked for, "
+        "so the check does not depend on a prior binder evaluation having left one behind.",
+    )
+    ap.add_argument(
+        "--target-chain",
+        action="append",
+        default=None,
+        help="Chain(s) of the reference target PDB (repeatable). Default: every chain in it.",
+    )
     ap.add_argument("--keep", action="store_true", help="Keep the working directory for inspection")
     args = ap.parse_args()
 
@@ -289,13 +334,19 @@ def main() -> int:
         # files for one design, and equal seeds only give equal redesigns if
         # those files are equivalent input.
         updated = args.updated_pdb
-        if updated is None:
+        if updated is not None and updated.lower() == "none":
+            updated = None
+        elif updated is None and args.target_pdb and targets:
+            ref_chains = args.target_chain or chain_ids(args.target_pdb)
+            updated = build_updated_view(args.pdb, args.target_pdb, ref_chains, targets, workdir)
+        elif updated is None:
             guess = os.path.join(os.path.dirname(args.pdb), design_name(args.pdb) + "_updated.pdb")
             updated = guess if os.path.exists(guess) else None
             if updated is None:
-                print(f"\ninput equivalence: skipped -- no {os.path.basename(guess)} beside the design")
-        elif updated.lower() == "none":
-            updated = None
+                print(
+                    f"\ninput equivalence: skipped -- no {os.path.basename(guess)} beside the "
+                    f"design. Pass --target-pdb to build one instead of waiting for a binder run."
+                )
         if updated and targets:
             verdicts["input_equivalence"] = input_equivalence(
                 args.pdb,
