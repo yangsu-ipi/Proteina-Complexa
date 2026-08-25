@@ -578,14 +578,21 @@ def compute_binder_metrics(
                     # redesign_score_kind travels with it. Reading the column
                     # without that is how a ranking comes to select the worst
                     # sequences while looking like it works.
+                    #
+                    # Named for the thing scored, not the scorer: the scorer is
+                    # whatever inverse_folding_model selects, and under the
+                    # shipped binder config that is SolubleMPNN reporting a
+                    # confidence -- so "mpnn_score" would name the wrong model
+                    # and imply the wrong convention. It also spared the CSV a
+                    # column called mpnn_mpnn_score.
                     scores = redesign_scores_for_type(seq_type, seqs, sequences_dict)
                     if not all(np.isnan(v) for v in scores):
-                        row_dict[f"{seq_type}_mpnn_score"] = scores[seq_best_idx]
-                        row_dict[f"{seq_type}_mpnn_score_all"] = scores
+                        row_dict[f"{seq_type}_redesign_score"] = scores[seq_best_idx]
+                        row_dict[f"{seq_type}_redesign_score_all"] = scores
                         row_dict["redesign_score_kind"] = REDESIGN_SCORE_KIND.get(inverse_folding_model, "unknown")
                         for col in (
-                            f"{seq_type}_mpnn_score",
-                            f"{seq_type}_mpnn_score_all",
+                            f"{seq_type}_redesign_score",
+                            f"{seq_type}_redesign_score_all",
                             "redesign_score_kind",
                         ):
                             if col not in all_columns:
