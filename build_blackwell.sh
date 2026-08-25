@@ -9,6 +9,8 @@
 # EVERY VERSION HERE IS PINNED ON PURPOSE. Unpinned installs of flax/chex/dm-haiku silently upgrade
 #   jax past 0.10.2 and break the source patches this branch carries -- see [6b].
 #   usage: bash build_blackwell.sh [ENV_DIR]     (default: ./.venv-blackwell)
+#   optional: WITH_ESMFOLD2=1 [ESM_SRC=...] adds ESMC/ESMFold2 -- see [6e]. Off by default because
+#   it replaces PyPI transformers with Biohub's fork for the whole env.
 set -eo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 ENV_DIR="${1:-$REPO/.venv-blackwell}"
@@ -107,6 +109,122 @@ command -v mamba >/dev/null 2>&1 && "$CONDA" install -y -p "$ENV_DIR" -c conda-f
   || echo "  (install foldseek + mmseqs2 into the env for diversity metrics)"
 echo "  set in .env: UV_FOLDSEEK_EXEC=$ENV_DIR/bin/foldseek  UV_MMSEQS_EXEC=$ENV_DIR/bin/mmseqs"
 
+# [6e] OPTIONAL: ESMC + ESMFold2. OFF unless WITH_ESMFOLD2=1, because it swaps PyPI transformers
+#   for Biohub's fork -- a non-PyPI dependency for the whole env, and not upstreamable. Nothing in
+#   the default configs needs it: apo/monomer folding defaults to `esmfold`, complex folding to
+#   colabdesign, consensus_backends is empty, and ESM perplexity defaults to facebook/esm2.
+#   Enable it for advisory complex refolding (metric.consensus_backends=[esmfold2]),
+#   apo_folding_models=[esmfold2], or an ESMC perplexity model.
+#
+#   Two packages, from two places. The fork carries ESMFold2Model and ESMCForMaskedLM (they exist
+#   nowhere else); the `esm` source tree carries ESMFold2InputBuilder, pae_interaction and MSA,
+#   which the fork does not. Both are required -- installing only one leaves import errors that
+#   surface at first fold, not at build.
+#
+#   usage: WITH_ESMFOLD2=1 [ESM_SRC=/path/to/esmfold2] bash build_blackwell.sh
+if [ -n "${WITH_ESMFOLD2:-}" ]; then
+  ESM_SRC="${ESM_SRC:-$HOME/projects/esmfold2}"
+  [ -f "$ESM_SRC/pyproject.toml" ] || { echo "  [6e] no pyproject.toml under ESM_SRC=$ESM_SRC"; exit 1; }
+  # Freeze what [1]/[6]/[6b] fought for, and install everything below under it. These deps reach
+  # numpy through rdkit and scipy through scikit-learn, and torch through esm's own torch>=2.2.0 --
+  # which on PyPI is a cu126 wheel that would silently replace the cu128 build sm_120 needs.
+  # A constraint file makes pip refuse rather than resolve. transformers is excluded on purpose:
+  # it is the one thing meant to move.
+  CONS="$ENV_DIR/esmfold2-constraints.txt"
+  "$PY" - > "$CONS" <<'PYEOF'
+import importlib.metadata as md
+for pkg in ["torch", "numpy", "scipy", "numba", "einops", "biotite", "jax", "jaxlib"]:
+    try:
+        print(f"{pkg}=={md.version(pkg)}")
+    except md.PackageNotFoundError:
+        pass
+PYEOF
+  # An empty or truncated constraint file would constrain nothing while looking like it did,
+  # which is worse than not having one -- pip reports no error for a file with no matching lines.
+  grep -q "^torch==" "$CONS" && grep -q "^numpy==" "$CONS" || {
+    echo "  [6e] constraint file $CONS is missing torch/numpy -- refusing to install unconstrained"; exit 1; }
+  echo "  [6e] holding: $(tr '\n' ' ' < "$CONS")"
+  # The fork, at the commit their pixi.lock resolves -- their pyproject says @main, which floats,
+  # and pip does not read pixi.lock. Downgrades transformers 5.x -> 4.57.6; pyproject's
+  # >=4.57,<6 admits it, and the fork keeps models/esm/ so ESM2 + ESMFold still work.
+  "$PIP" install -c "$CONS" \
+    "transformers @ git+https://github.com/Biohub/transformers.git@f9a5a374be135f63b3019c1cefb91ea9e2d27e10"
+  # `esm` itself: a COPY install, not editable -- the standalone ESMFold2 checkout stays
+  # independent of this env. --no-deps because its transformers pin is @main (would undo the line
+  # above) and its torch>=2.2.0 would re-resolve torch off cu128.
+  "$PIP" install --no-deps "$ESM_SRC"
+  # ...which means every runtime dep of `esm` is now ours to install. This is the set its pyproject
+  # declares minus what the env already has (einops/biotite/biopython/scikit-learn/pandas) and minus
+  # cuequivariance: cuequivariance_ops_torch is imported inside esm/models/esmfold2/fast.py, reached
+  # only via enable_fast_inference(), which this repo never calls. Add it later for the ~4.8x trunk
+  # speedup at L~=768 (Linux-only wheels).
+  "$PIP" install -c "$CONS" accelerate freesasa rdkit msgpack-numpy brotli attrs cloudpathlib \
+    httpx tenacity zstd ipywidgets ipython py3dmol pydssp boto3 pygtrie dna_features_viewer
+  # Prove the exact symbols this repo imports, not just that the packages exist. esm_eval,
+  # folding_models and consensus_folding each reach a different one of these, and a missing
+  # re-export would otherwise surface mid-campaign.
+  CONS="$CONS" "$PY" - <<'PYEOF'
+import os
+import sys
+import importlib.metadata as md
+bad = []
+try:
+    import transformers
+    if not transformers.__version__.startswith("4.57"):
+        bad.append(f"transformers {transformers.__version__} is not the 4.57.6 fork")
+    from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model  # noqa: F401
+    # ESM2 + ESMFold must survive the downgrade -- the fork keeps models/esm/, but check it.
+    from transformers import AutoModelForMaskedLM, AutoTokenizer, EsmForProteinFolding  # noqa: F401
+    from transformers.models.esm.openfold_utils.feats import atom14_to_atom37  # noqa: F401
+    from transformers.models.esm.openfold_utils.protein import to_pdb  # noqa: F401
+except Exception as e:
+    bad.append(f"transformers fork: {type(e).__name__}: {e}")
+try:
+    from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput  # noqa: F401
+    from esm.models.esmfold2.interface_metrics import pae_interaction  # noqa: F401
+    from esm.utils.msa import MSA  # noqa: F401
+except Exception as e:
+    bad.append(f"esm package: {type(e).__name__}: {e}")
+# The constraint file should have held. Checked against the file itself rather than against
+# versions repeated here: those would drift the moment a pin above changes, and then this would
+# fail for the wrong reason. "nothing moved since we froze it" is the actual claim.
+for line in open(os.environ["CONS"]):
+    line = line.strip()
+    if not line or "==" not in line:
+        continue
+    pkg, want = line.split("==", 1)
+    try:
+        got = md.version(pkg)
+    except md.PackageNotFoundError:
+        bad.append(f"{pkg} disappeared (was {want})")
+        continue
+    if got != want:
+        bad.append(f"{pkg} moved {want} -> {got} despite the constraint")
+if bad:
+    print("  [6e] FAILED:", *bad, sep="\n    "); sys.exit(1)
+print(f"  [6e] ESMFold2 imports OK (transformers {transformers.__version__}, esm {md.version('esm')})")
+
+# ESMC is reported, not required. The repo loads it through AutoModelForMaskedLM
+# (esm_eval.py:542) rather than a fixed class path, esm_model defaults to
+# facebook/esm2, and the esm package's own ESMC builders leave parameters on the
+# meta device -- so esmc_pkg is not a fallback. Failing the build over a scorer
+# nothing is configured to use would be the wrong trade.
+try:
+    import importlib
+    importlib.import_module("transformers.models.esmc")
+    print("  [6e] ESMC available via AutoModelForMaskedLM (set metric.esm_model to a transformers-format ESMC repo)")
+except Exception as e:
+    print(f"  [6e] note: ESMC not importable ({type(e).__name__}) -- ESM2 perplexity unaffected")
+PYEOF
+  cat <<'EOF'
+  [6e] Weights are GATED HF repos -- set HF_TOKEN and accept the licences for
+       biohub/ESMFold2-Experimental-Fast-Cutoff2025 (monomer/apo) and
+       biohub/ESMFold2-Experimental-Cutoff2025 (complex, MSA-capable).
+       Point HF_HOME at the hub cache root, NOT a snapshot directory.
+       No ESMFold2 path in this repo has been run against real weights yet.
+EOF
+fi
+
 # [7] Model checkpoints — PUBLIC on NGC (no key). Protein-binder pair (~7 GB); validated loadable.
 CK="$REPO/ckpts"; mkdir -p "$CK"
 MOD="https://api.ngc.nvidia.com/v2/models/org/nvidia/team/clara/proteina_complexa/1.0/files?redirect=true&path="
@@ -121,4 +239,6 @@ cat <<EOF
   needs: a target spec, the community reward/refolding models (ESM2 via a free HF token, AF2/RF3/Boltz2),
   and external tools (foldseek/mmseqs/dssp). See docs/INFERENCE.md. Generation-only uses just the
   checkpoints above.
+  ESMC/ESMFold2 are NOT installed unless you pass WITH_ESMFOLD2=1 -- see [6e]. The default configs
+  do not need them: apo refolding uses plain ESMFold, complex refolding uses colabdesign.
 EOF
