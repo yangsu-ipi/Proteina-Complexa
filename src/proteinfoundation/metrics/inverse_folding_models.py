@@ -285,16 +285,20 @@ def run_ligandmpnn(
         --ligand_mpnn_use_side_chain_context 0 \
         --verbose {0 if verbose else 1} \
     """
+    # Order matters: everything that belongs in the command must be appended
+    # before `command` is bound. Appending to base_command afterwards mutates a
+    # string nothing reads, which is how --seed came to be silently dropped here
+    # while the identical code in run_proteinmpnn applied it.
+    if seed is not None:
+        base_command += f" --seed {seed}"
     if fix_pos:
         fixed_residues = " ".join(fix_pos)
         logger.info(f"LigandMPNN fixing positions: {fixed_residues}")
         command = base_command + f' --fixed_residues "{fixed_residues}"'
     else:
         command = base_command
-    if seed is not None:
-        base_command += f" --seed {seed}"
     if not verbose:
-        base_command += " > /dev/null 2>&1"
+        command += " > /dev/null 2>&1"
 
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
@@ -389,16 +393,20 @@ def run_solublempnn(
         --checkpoint_soluble_mpnn "./community_models/LigandMPNN/model_params/solublempnn_v_48_020.pt" \
         --verbose {0 if verbose else 1} \
     """
+    # Order matters: everything that belongs in the command must be appended
+    # before `command` is bound. Appending to base_command afterwards mutates a
+    # string nothing reads, which is how --seed came to be silently dropped here
+    # while the identical code in run_proteinmpnn applied it.
+    if seed is not None:
+        base_command += f" --seed {seed}"
     if fix_pos:
         fixed_residues = " ".join(fix_pos)
         logger.info(f"SolubleMPNN fixing positions: {fixed_residues}")
         command = base_command + f' --fixed_residues "{fixed_residues}"'
     else:
         command = base_command
-    if seed is not None:
-        base_command += f" --seed {seed}"
     if not verbose:
-        base_command += " > /dev/null 2>&1"
+        command += " > /dev/null 2>&1"
 
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
