@@ -333,9 +333,11 @@ done on sequence and structure alone.
 What survives that, roughly in order of how cheaply it is already available:
 
 - **ProteinMPNN's own score**, its negative log-likelihood for the sequence it
-  drew. Already parsed by `extract_gen_seqs_proteinmpnn` into `sequences_dict`,
-  already persisted in `binder_eval_cache.json`, and currently read by nothing.
-  Free. Whether it predicts anything about binding is the open part.
+  drew, averaged over designed positions -- lower is better
+  (`protein_mpnn_utils._scores`, an NLL). Already parsed by
+  `extract_gen_seqs_proteinmpnn` into `sequences_dict`, already persisted in
+  `binder_eval_cache.json`, and until now read by nothing. Free. **The intended
+  starting criterion**, for the reason below.
 - **`seqid`**, recovery against the input sequence, parsed and unused likewise.
   For a co-designed binder this measures agreement with the model's own sequence,
   which is a different thing from quality.
@@ -345,13 +347,28 @@ What survives that, roughly in order of how cheaply it is already available:
 - Composition heuristics -- hydrophobic surface fraction and the like, some of
   which the interface metrics already compute for the generated structure.
 
-**Choosing the criterion needs data, not deliberation.** Any of these is a
-plausible ranking and none is obviously right; what settles it is whether a
-candidate correlates with passing the holo gate on real designs. That is
-measurable from a smoke test, provided the candidate scores are recorded beside
-the per-sequence verdicts. The MPNN score now is -- see
-`{seq_type}_mpnn_score_all` -- specifically so the question can be answered
-rather than argued.
+**What the MPNN score is for, and what it is not.** It is not a binding proxy
+and should not be expected to behave as one. Empirically it tracks
+*expressibility* -- whether the protein can actually be made -- which is a
+separate attribute of a good binder from whether it binds, and one that nothing
+else in this pipeline measures at all. The holo gate selects for binding; ranking
+by MPNN score adds a second axis rather than sharpening the first.
+
+That changes what there is to measure, and an earlier version of this note got it
+backwards. The question is **not** "does the MPNN score predict the holo gate" --
+if the score is orthogonal to binding then a null result there is the expected
+outcome, not a disqualification, and treating it as one would throw away a
+criterion that was working as intended. The question is the harm check: **does
+ranking by MPNN score cost gate pass rate** relative to the arbitrary first-N
+subset? Neutral is a pass. Only a real reduction argues against it.
+
+The benefit itself is not measurable here. Expressibility is a wet-lab outcome;
+no arrangement of this pipeline will confirm it. It is carried on domain
+knowledge, deliberately, and that is recorded here so a later in-silico null
+result is read as consistent rather than as evidence against.
+
+`{seq_type}_mpnn_score_all` is emitted beside `{seq_type}_pass_all` so the harm
+check can be run on an existing smoke test rather than argued.
 
 **One coupling to keep in view.** Selection and the prefix-property shortcut are
 mutually exclusive. Picking the best 2 of 8 requires generating 8, so the complex
@@ -391,9 +408,11 @@ must pass through one named function rather than a slice written at each use.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
-- **What criterion ranks the redesigns**, per the section above. Emitting the
-  candidate scores is done; correlating them against the holo verdicts on a real
-  run is not.
+- **Ranking the redesigns by MPNN score.** The criterion is chosen; the
+  implementation is not written, and it pulls in the duplicate-run deletion,
+  since picking the best N requires generating all of them in the track that
+  does the picking. The harm check -- that ranking does not cost gate pass rate
+  -- has not been run.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
