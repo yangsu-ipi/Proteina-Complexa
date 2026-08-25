@@ -13,11 +13,13 @@ import os
 from typing import Any
 
 import numpy as np
-from atomworks.io.utils.io_utils import load_any
-from biotite.structure import filter_amino_acids
-from biotite.structure.io.pdb import PDBFile
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+
+# atomworks/biotite are imported inside the two functions that read structures.
+# Everything else here -- ranking, success criteria, target resolution -- is pure
+# logic, and a module-level structure-stack import made all of it unimportable
+# (and untestable) without the full environment.
 
 # =============================================================================
 # Ranking Criteria for Best Sample Selection
@@ -294,6 +296,10 @@ def extract_binder_chain_to_pdb(
     Returns:
         Path to the output PDB file.
     """
+    from atomworks.io.utils.io_utils import load_any
+    from biotite.structure import filter_amino_acids
+    from biotite.structure.io.pdb import PDBFile
+
     structure = load_any(complex_pdb_path)[0]
     unique_chains = sorted(set(structure.chain_id.tolist()))
 
@@ -330,6 +336,8 @@ def get_binder_chain_from_complex(
         If return_multi_target=True:
             Tuple of (binder_chain_id, list_of_target_chain_ids, is_multi_target)
     """
+    from atomworks.io.utils.io_utils import load_any
+
     structure = load_any(complex_pdb_path)[0]
     unique_chains = sorted(set(structure.chain_id.tolist()))
 
