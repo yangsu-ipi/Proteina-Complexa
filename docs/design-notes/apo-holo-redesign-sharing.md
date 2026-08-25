@@ -269,19 +269,24 @@ rather than merely different.
   taken from one run of `designability_num_seq`; exit 1 means the question was
   not answered.
 
-  **Answered: it holds.** Measured on a CBLN1/5KC5 smoke-test design, 2 shared
-  of 8, under both conditionings. Determinism, non-degeneracy and seed plumbing
-  all passed -- ProteinMPNN reported back the seed it was handed, so `--seed` is
-  reaching it rather than being ignored. The sharing step can therefore
-  reproduce the shared subset with a shorter seeded run, and does not have to
-  thread one longer run's output between the two tracks.
+  **Answered: it holds.** Measured on a CBLN1/5KC5 smoke-test design under both
+  conditionings, at 2-of-8 (the `num_redesign_seqs` that
+  `configs/pipeline/binder/binder_evaluate.yaml` actually uses) and again at
+  6-of-8. Determinism, non-degeneracy and seed plumbing all passed --
+  ProteinMPNN reported back the seed it was handed, so `--seed` is reaching it
+  rather than being ignored, and the long run was 8/8 distinct, so the agreement
+  is not an artifact of a draw that repeats itself. Six sequences matching
+  exactly out of eight distinct ones is not something a coincidence produces.
 
-  Two limits on that evidence, worth knowing before leaning on it. It compared
-  two sequences, which is what `configs/pipeline/binder/binder_evaluate.yaml`
-  actually uses for `num_redesign_seqs`, but agreement over two is thinner than
-  agreement over six. And it is one design on one target; nothing here would
-  catch a length- or chain-count-dependent failure. The script now reports how
-  many of the long run are distinct and says so when the comparison was thin.
+  So the sharing step can reproduce the shared subset with a shorter seeded run.
+  It does not have to thread one longer run's output between the two tracks, and
+  designability does not have to wait on the complex track: each asks for the
+  count it wants and they agree by construction.
+
+  The remaining limit is not fixable by re-running: this is one design, one
+  target, one binder length. Nothing here would catch a failure that depends on
+  chain count or length. Established for this shape; re-check if a multi-chain
+  target ever behaves oddly.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
