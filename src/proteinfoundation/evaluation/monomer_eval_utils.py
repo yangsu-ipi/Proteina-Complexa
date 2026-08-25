@@ -83,10 +83,13 @@ class DesignabilityResult:
 # esmfold2 -- a diffusion sampler -- can be selected, with num_seq_per_target
 # sequences to fold per design.
 #
-# The sequences are *stored*, not part of the key. ProteinMPNN is sampled at
-# pmpnn_sampling_temp with no seed, so a resumed run would generate different
-# sequences and a sequence-keyed cache would never hit for designability. This
-# mirrors binder_eval_cache, which stores its sequences_dict for the same reason.
+# The sequences are *stored*, not part of the key. They are an output of the
+# request, so keying on them would mean running ProteinMPNN to find out whether
+# the ProteinMPNN run could be skipped. What stands in for them is everything
+# that determines them -- the design, the chains conditioning it, the seed, the
+# count and the temperature -- so a hit implies the same sequences without
+# generating them. This mirrors binder_eval_cache, which stores its
+# sequences_dict for the same reason.
 
 MONOMER_FOLD_CACHE_TEMPLATE = "monomer_fold_cache_{suffix}.json"
 
@@ -103,6 +106,8 @@ def monomer_fold_fingerprint(
     num_seq_per_target: int,
     pmpnn_sampling_temp: float,
     binder_chain: str | None,
+    mpnn_context_chains: list[str] | None = None,
+    mpnn_seed_value: int | None = None,
 ) -> str:
     """Everything that determines the refolds, excluding the sequences themselves.
 
@@ -111,27 +116,42 @@ def monomer_fold_fingerprint(
     structures from the other model. rmsd_modes is deliberately absent: modes are
     recorded per entry so a newly requested mode is a partial miss rather than a
     full invalidation.
-    """
-    from proteinfoundation.metrics.esmfold2_loader import SEED_DERIVATION_VERSION
 
-    canonical = json.dumps(
-        {
-            "reference_pdb_path": reference_pdb_path,
-            "suffix": suffix,
-            "folding_models": sorted(folding_models),
-            "model_identities": {k: model_identities[k] for k in sorted(model_identities)},
-            "num_seq_per_target": num_seq_per_target,
-            "pmpnn_sampling_temp": pmpnn_sampling_temp,
-            "binder_chain": binder_chain,
-            # The seed derives from the stored sequences, which are an output
-            # rather than a key, so what needs covering here is the derivation
-            # itself: change it and a cached entry would disagree with a fresh
-            # computation while the fingerprint stayed put.
-            "seed_derivation": SEED_DERIVATION_VERSION,
-        },
-        sort_keys=True,
-        default=str,
-    )
+    ``mpnn_context_chains`` and ``mpnn_seed_value`` cover the redesigns, which are
+    stored in the cache but are not otherwise keyed on anything. Without them a
+    cache written when designability redesigned the binder alone would be served
+    for a request that now redesigns it in the target's context -- same design,
+    same folding model, entirely different sequences, and the served numbers
+    would silently be the old metric under the new name.
+    """
+    from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
+
+    key = {
+        "reference_pdb_path": reference_pdb_path,
+        "suffix": suffix,
+        "folding_models": sorted(folding_models),
+        "model_identities": {k: model_identities[k] for k in sorted(model_identities)},
+        "num_seq_per_target": num_seq_per_target,
+        "pmpnn_sampling_temp": pmpnn_sampling_temp,
+        "binder_chain": binder_chain,
+        # The folding seed derives from the stored sequences, which are an output
+        # rather than a key, so what needs covering here is the derivation
+        # itself: change it and a cached entry would disagree with a fresh
+        # computation while the fingerprint stayed put.
+        "seed_derivation": SEED_DERIVATION_VERSION,
+    }
+    # Added only when ProteinMPNN is involved, which keeps the codesignability
+    # key byte-identical to what it was before redesign conditioning existed.
+    # Codesignability reads the sequence off the PDB, so nothing about it
+    # changed, and invalidating its folds -- potentially a diffusion sampler over
+    # every design -- to record a fact that does not apply to it would be a real
+    # cost for no information.
+    if mpnn_context_chains is not None:
+        key["mpnn_context_chains"] = sorted(mpnn_context_chains)
+    if mpnn_seed_value is not None:
+        key["mpnn_seed"] = mpnn_seed_value
+
+    canonical = json.dumps(key, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

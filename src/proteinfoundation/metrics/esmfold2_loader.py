@@ -18,10 +18,17 @@ cache pays that per design. That is the mistake ``run_esmfold`` still makes with
 ``facebook/esmfold_v1``.
 """
 
-import hashlib
 import os
 
 from loguru import logger
+
+# Re-exported: this module was their original home, and callers import them from
+# here. They are shared with ProteinMPNN seeding now, so they live in a module
+# that does not drag an ESMFold2 checkpoint loader in with them.
+from proteinfoundation.metrics.seeding import (  # noqa: F401
+    SEED_DERIVATION_VERSION,
+    deterministic_seed,
+)
 
 # Checkpoint defaults, overridable per call or by environment.
 #
@@ -73,32 +80,3 @@ def clear_esmfold2_cache() -> None:
     _MODELS.clear()
     if n:
         logger.info(f"Released {n} cached ESMFold2 checkpoint(s)")
-
-
-# Bump whenever deterministic_seed changes -- adding a component, reordering the
-# parts, changing the hash. Every seed changes when it does, and therefore every
-# structure and every number, while nothing else in a cache fingerprint moves. It
-# goes into both cache fingerprints so that a derivation change invalidates
-# instead of silently serving structures drawn from the old seeds beside freshly
-# drawn ones.
-SEED_DERIVATION_VERSION = 1
-
-
-def deterministic_seed(*parts: str) -> int:
-    """A stable seed derived from the inputs a fold depends on.
-
-    ESMFold2 is a diffusion sampler: unseeded, folding the same sequence twice
-    gives different structures and therefore different scRMSD and confidence.
-    That makes results depend on whether a run was resumed -- a cache hit returns
-    the first run's numbers while a fresh run draws new samples -- and it makes
-    the advisory per-sequence distributions incomparable between runs.
-
-    Deriving the seed from the fold's own inputs makes the fold a pure function
-    of them, so a cached value and a recomputed one agree. ``_seed_context`` in
-    the fork saves and restores python/numpy/torch RNG state around the call, so
-    seeding here perturbs nothing upstream.
-
-    Returns a value in the numpy seed range, which is narrower than torch's.
-    """
-    digest = hashlib.sha256("\x00".join(parts).encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], "big") % (2**32 - 1)
