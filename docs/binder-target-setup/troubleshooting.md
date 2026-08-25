@@ -222,7 +222,7 @@ only affect the `bioinformatics` interface metrics, which are off by default.
 `complexa download --esm2` writes (`download_startup.sh:371`) — so this is a missing asset,
 not a path mismatch. Unlike the checkpoints above, it is **not** gate-only: the binder
 evaluate config sets `compute_esm_metrics: true`
-(`configs/pipeline/binder/binder_evaluate.yaml:35`).
+(`configs/pipeline/binder/binder_evaluate.yaml:47`).
 
 **Do not just `mkdir` the directory.** `_resolve_esm_dir` tests only `os.path.isdir`
 (`evaluation/esm_eval.py:469-474`), so an empty directory resolves, becomes the *first*

@@ -182,7 +182,7 @@ by a smoke test that had otherwise produced correct science:
 
 **1. `timing_*.csv` catches the analyze stage's own summary.** The evaluate stage writes one
 `timing_{job_id}.csv` per worker with `job_id,evaluation_time_s,nsamples,evals_run`
-(`evaluate.py:971-974`). The analyze stage then writes `timing_summary.csv` **into the same
+(`evaluate.py:989-992`). The analyze stage then writes `timing_summary.csv` **into the same
 directory** with a completely different schema — `eval_config,num_jobs,…,total_samples,…`,
 no `nsamples` column (`result_analysis/analysis.py:1765`). A `timing_*.csv` glob picks up
 both and `row["nsamples"]` raises `KeyError` on the summary row. Match the digits:
@@ -201,7 +201,7 @@ exists rather than inventing a glob against it.
 GPUs did work. It is not: the number of evaluate workers is a scheduling detail, and one
 worker plus one summary file happens to equal two — which is how defect 1 stayed hidden
 until the count was fixed. Assert on *what ran* instead, which a file count can never
-capture, using the same `compute_*_metrics` flags the gate reads (`evaluate.py:108-111`,
+capture, using the same `compute_*_metrics` flags the gate reads (`evaluate.py:109-112`,
 `960-968`):
 
 ```python
@@ -248,7 +248,7 @@ the filter did what it was asked, and it doubles as the detector for the stale-d
 in the next section.
 
 **Know which of your numbers are independent.** The timing CSV's `nsamples` is
-`max(len(df))` over the result frames (`evaluate.py:944-946`) — the same frames the combined
+`max(len(df))` over the result frames (`evaluate.py:962-964`) — the same frames the combined
 CSV is written from. So `evaluated == combined` is a schema guard, not a cross-check; keep it,
 but do not mistake it for evidence that evaluation covered the run. The genuinely independent
 numbers are the generation reward rows, the on-disk directory count, and the result rows.
@@ -289,7 +289,7 @@ actively dangerous:
 
 This used to be unguarded. `generate.py` had an early-exit keyed on
 `results_{config_name}_{job_id}.csv`, a filename nothing in the codebase writes — evaluate
-writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:853-930`) — so
+writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:871-948`) — so
 the guard was dead and generate always restarted from scratch.
 
 It now keys on a **completion marker** instead. A finished shard writes
@@ -416,7 +416,7 @@ model loading repeatedly, hour-plus shards give resume little to save.
 `job_{job_id}_` (`evaluation/utils.py:279-287`). So evaluate shard *N* processes exactly what
 generate shard *N* produced. Shard generation 32 ways and evaluate 4 ways and the designs from
 shards 4–31 are never evaluated; the only signal is one `No files assigned to job N/M` line per
-idle worker before it exits 0 (`evaluate.py:789-790`). The repo says the same thing in one line
+idle worker before it exits 0 (`evaluate.py:807-808`). The repo says the same thing in one line
 (`docs/INFERENCE.md:312`), and it becomes load-bearing the moment generation is sharded for
 resume rather than for throughput.
 

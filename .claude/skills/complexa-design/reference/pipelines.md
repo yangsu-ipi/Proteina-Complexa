@@ -39,7 +39,11 @@ inverse folding so the redesigned binder is soluble.
   `avg_ipsae`, `max_ipsae`, `min_ipsae_10`, `max_ipsae_10`, `avg_ipsae_10`)
   default to 0.0 and can be enabled by override.
 - Default success thresholds: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca <
-  1.5` Å (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:75-94`).
+  1.5` Å, and `apo scRMSD_ca < 2.0` Å — **four** criteria
+  (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:76-115`). The apo
+  one asks whether the binder folds as designed *without* its target; it needs
+  `metric.compute_apo_metrics` (on by default) and a criterion whose column is
+  absent removes gating entirely rather than weakening it.
   The key is `scRMSD_ca`, not `scRMSD`, and these thresholds can only be
   overridden as a complete dict — see
   [overrides.md](overrides.md) "Threshold overrides must be complete dicts".
@@ -96,7 +100,7 @@ ligand and let the model build the rest of the protein around them.
 - Pre- and post-refolding interface metrics are **disabled**:
   `compute_pre_refolding_metrics` and `compute_refolded_structure_metrics` are
   both `false` (`ame_evaluate.yaml:73, :81`), as are all four sub-toggles
-  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:401-403`
+  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:405-407`
   reads only `bioinformatics` and `tmol`.
 - Quick command:
   ```bash
@@ -189,5 +193,5 @@ Pass-rate columns land in `filter_results/res_filter_*_pass_*.csv` (AME's
 `res_filter_motif_binder_pass_*.csv` goes to `motif_binder_metrics/` instead);
 diversity columns in `diversity/res_div_foldseek_*.csv` and
 `diversity/res_div_mmseqs_*.csv`; per-design metrics in the combined CSV. The
-subdirectories are created by `organize_results()` (`analyze.py:2812-2855`),
+subdirectories are created by `organize_results()` (`analyze.py:2813-2856`),
 which moves these files out of the results-dir root.

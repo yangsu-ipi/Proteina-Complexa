@@ -115,7 +115,7 @@ Once the dry-run looks right, drop `--dryrun` to materialize `inf_{idx}_{run_nam
 > **`evaluate.py` never reads `root_path`**: with `sample_storage_path` absent it builds
 > `./inference/{config_name}_{target_task_name}` and appends `_{run_name}` (`:732, :752-768`),
 > e.g. `./inference/inf_0_my_sweep_22_DerF21_search_binder_local` — not where generate wrote.
-> `analyze.py:2921, :2946-2958` does the same for `results_dir`. A sweep driven by
+> `analyze.py:2922, :2947-2953` does the same for `results_dir`. A sweep driven by
 > `complexa design` therefore yields structures and **no usable evaluation results**.
 
 Split the stages instead. All four subcommands take a config-path positional plus Hydra overrides (`add_common_args`, `cli_runner.py:904-921`, wired into `generate`, `filter`, `evaluate`, `analyze` at `:979-1017`), so the pair can be threaded explicitly:
@@ -186,23 +186,23 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 
 | File | Written by | Notes |
 |---|---|---|
-| `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:881`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:853`), `motif_results_*` (`:904`), `motif_binder_results_*` (`:930`) |
-| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3036`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
-| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:548`, relocated by `organize_results`, `analyze.py:2802-2880`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
+| `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:899`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:871`), `motif_results_*` (`:922`), `motif_binder_results_*` (`:948`) |
+| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3047`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
+| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:637`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
-The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:377, :383`), with one column *prefix* per requested `metric.sequence_types` value:
+The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:575, :592`), with one column *prefix* per requested `metric.sequence_types` value:
 
 | Column | Meaning |
 |---|---|
 | `{seq}_complex_i_pAE` | interface PAE of the best refold — stored **0–1 scaled** |
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
-| `{seq}_sequence` | the binder sequence (`binder_eval.py:511`) |
-| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:160-171`) |
+| `{seq}_sequence` | the binder sequence (`binder_eval.py:703`) |
+| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:181-192`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.
 
-Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:75-94`): `i_pAE` with `scale: 31.0`, `threshold: 7.0`, `op: "<="`, `column_prefix: complex`; `pLDDT >= 0.9` on `complex`; `scRMSD_ca < 1.5` on `binder`. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:317-318`), so if you retune, supply all three entries complete with `scale` and `column_prefix`.
+Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:75-94`): `i_pAE` with `scale: 31.0`, `threshold: 7.0`, `op: "<="`, `column_prefix: complex`; `pLDDT >= 0.9` on `complex`; `scRMSD_ca < 1.5` on `binder`. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:406-407`), so if you retune, supply all three entries complete with `scale` and `column_prefix`.
 
 **Preferred path: read `success_rate` per config out of `filter_results/res_filter_binder_pass_*.csv`** rather than recomputing it from the raw CSV. Fall back to the raw columns above only if that file is absent (e.g. `aggregation.analysis_modes` excluded `binder`).
 

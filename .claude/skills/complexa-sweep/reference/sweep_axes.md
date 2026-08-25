@@ -78,14 +78,14 @@ These live at top level (the binder_evaluate config is loaded with `@_global_`),
 
 | Key | Default | Typical sweep | Cost multiplier | Effect |
 |---|---|---|---|---|
-| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:108-128` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` (and `esmfold2`) belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`). |
+| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:120-140` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` (and `esmfold2`) belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`). |
 | `metric.num_redesign_seqs` | 2 | 1, 2, 4, 8, 16 | linear | Number of MPNN redesigns to refold per binder. Higher = more reliable designability signal. |
 | `metric.sequence_types` | `[self]` | `[self]`, `[self, mpnn]`, `[self, mpnn_fixed]` | linear per type | Which sequences to evaluate: generated, MPNN-redesigned, or MPNN with fixed interface. |
 | `metric.interface_cutoff` | 8.0 | 6.0, 8.0, 10.0 | none | Angstrom cutoff defining interface residues for MPNN_fixed and interface metrics. |
 | `metric.inverse_folding_model` | `soluble_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` | none | MPNN variant used for redesign. |
 | `metric.compute_pre_refolding_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the generated structure (no fold) — fast. |
 | `metric.compute_refolded_structure_metrics` | `false` | `true`, `false` | minor | Compute interface metrics on the refolded structure — slower. |
-| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:88-90`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
+| `metric.pre_refolding.{bioinformatics,tmol}` | both `false` (`binder_evaluate.yaml:100-102`) | `true`/`false` | minor | Toggle individual pre-refold interface metric modules. Only these two exist — `evaluate.py:405-407` reads `bioinformatics` and `tmol` and nothing else, and there is no `hbplus` module anywhere in `src/proteinfoundation/rewards/`. `metric.refolded.{bioinformatics,tmol}` are the post-refold twins and are also both `false` (`:51-53`). |
 
 ## Reading the sweeper YAML format
 
@@ -150,32 +150,32 @@ For an irregular set of `(key1, key2)` pairs (not a full cartesian product), the
 Step 6 of the skill from two real per-config outputs:
 
 - `./evaluation_results/eval_{idx}_{run_name}_{pipeline_run_name}/RAW_{result_type}_results_{config_name}_combined.csv`
-  (`analyze.py:3036`) — one row per generated sample.
-- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:548`, moved there by
-  `organize_results`, `analyze.py:2802-2880`) — the pre-computed pass rates.
+  (`analyze.py:3047`) — one row per generated sample.
+- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:637`, moved there by
+  `organize_results`, `analyze.py:2803-2881`) — the pre-computed pass rates.
 
 No emitted file is named `results_*.csv`; the per-job files are
 `{monomer,binder,motif,motif_binder}_results_{config_name}_{job_id}.csv`
-(`evaluate.py:853, :881, :904, :930`).
+(`evaluate.py:871, :899, :922, :948`).
 
 | Column | Source | Notes |
 |---|---|---|
 | `config_id` | The index in `inf_{idx}_{run_name}.yaml` | 0-based, sequential, set by `apply_sweeper_and_save_configs`. |
 | `<axis_name>` (one per axis) | Read from the per-config `inf_*.yaml` at the swept Hydra path | Strip the dot-path to a short column header (e.g. `beam_width`). |
 | `n_samples` | `len(RAW_..._combined.csv)` | One row per sample (`id_gen`), not per sequence type — sequence types are column prefixes. |
-| `success_rate` | **Read it from `filter_results/res_filter_binder_pass_*.csv`.** | Recompute only if that file is absent, and then use the real defaults from `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:75-94`): `{seq}_complex_i_pAE_all * 31 <= 7.0` AND `{seq}_complex_pLDDT_all >= 0.9` AND `{seq}_binder_scRMSD_ca_all < 1.5`. There is **no** `passes_filter` column — repo-wide grep matches only this skill's files. |
+| `success_rate` | **Read it from `filter_results/res_filter_binder_pass_*.csv`.** | Recompute only if that file is absent, and then use the real defaults from `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:76-115`): `{seq}_complex_i_pAE_all * 31 <= 7.0` AND `{seq}_complex_pLDDT_all >= 0.9` AND `{seq}_binder_scRMSD_ca_all < 1.5`. There is **no** `passes_filter` column — repo-wide grep matches only this skill's files. |
 | `mean_i_pae` | `{seq}_complex_i_pAE.mean()` | Lower = better. AF2 interface PAE, stored **0–1 scaled** — multiply by 31 to report in threshold units. A naive `i_pae < 10` test passes every sample. |
 | `mean_plddt` | `{seq}_complex_pLDDT.mean()` | Higher = better. **Complex** pLDDT, 0–1. There is no interface-pLDDT column in the raw CSV — `i_plddt` does not exist. |
 | `mean_binder_scRMSD_ca` | `{seq}_binder_scRMSD_ca.mean()` | Lower = better. Binder CA scRMSD in Å. `sc_rmsd` does not exist. |
-| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:511`). |
+| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:703`). |
 | `wall_clock_min` | Timestamp delta from the per-stage logs under `./logs/` | Approximate (process wall-clock, not GPU time). With the split-stage loop from Step 4 there is one log per stage, not one per pipeline. |
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column
 **prefix**; pick the one the sweep actually requested. The `_all` suffix marks the per-redesign
-list columns that the threshold filter reads (`binder_analysis_utils.py:160-171`).
+list columns that the threshold filter reads (`binder_analysis_utils.py:181-192`).
 
 Ranking:
 
 - **Best by success** = argmax `success_rate`; tie-break on `mean_i_pae` ascending.
 - **Pareto frontier** on (`wall_clock_min`, `success_rate`): a config is on the frontier iff no other config has both lower wall-clock AND higher success rate. Implement with a sort + linear sweep.
-- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:317-318`) and left an unscaled `i_pAE` comparison that everything passes.
+- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:406-407`) and left an unscaled `i_pAE` comparison that everything passes.

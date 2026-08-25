@@ -28,10 +28,21 @@ per-design success CSV.
 
 ## What this skill enables
 
+**Evaluation gained a fourth success criterion.** A protein-binder design must now
+fold as designed *without* its target as well as with it: `apo scRMSD_ca < 2.0`
+alongside the three AlphaProteo criteria. On by default
+(`metric.compute_apo_metrics`), folded by plain ESMFold. Pass rates from before
+this change are not comparable — they were measured against three criteria.
+
+ESMC perplexity, ESMFold2 advisory complex refolding (optionally with a target
+MSA) and ESMFold2 apo folding are all reachable from the same `metric.*` keys;
+`complexa-evaluate-pdbs/reference/esm_esmfold2.md` is the authoritative reference
+for those, including three failure modes that are silent.
+
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
 with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
-`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:108-128`);
+`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:120-140`);
 pass-rate and diversity analysis per `result_type`.
 
 ## Step 1: Pre-flight
@@ -200,8 +211,8 @@ ls ./evaluation_results/${CONFIG_STEM}_${TASK}_${RUN_NAME}/    # per-design CSV 
 ```
 
 The results dir is `./evaluation_results/{config_name}_{task_name}`
-(`evaluate.py:756`) with `_{run_name}` appended when `run_name` is set
-(`:766-767`) — it is never just `./evaluation_results/{run_name}`.
+(`evaluate.py:774`) with `_{run_name}` appended when `run_name` is set
+(`:784-785`) — it is never just `./evaluation_results/{run_name}`.
 
 Read the combined results CSV and summarize:
 ```bash
@@ -213,16 +224,16 @@ ls ./evaluation_results/*/diversity/res_div_foldseek_*.csv                # Fold
 ```
 
 The only combined CSV is `RAW_{result_type}_results_{config_name}_combined.csv`
-(`analyze.py:3036`); `binder_results_*_{job_id}.csv` (`evaluate.py:881`) is
+(`analyze.py:3047`); `binder_results_*_{job_id}.csv` (`evaluate.py:899`) is
 per-job and never `_combined`. By the time you look, `organize_results()`
-(`analyze.py:2812-2855`) has moved `res_filter_*` into `filter_results/`,
+(`analyze.py:2813-2856`) has moved `res_filter_*` into `filter_results/`,
 `res_div_*` into `diversity/`, `clusters_*` into `clusters/` (AME's
 `res_filter_motif_binder_*` into `motif_binder_metrics/`) — top-level globs
 match nothing.
 
 Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
 — ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
-`binder_analysis.py:548`), the per-design
+`binder_analysis.py:637`), the per-design
 metrics (interface pAE, pLDDT, scRMSD) from the combined CSV, and FoldSeek
 TM-score diversity from `res_div_foldseek_*.csv`. Report top-N designs by
 i_pAE (protein binder) or min_ipAE (ligand binder).
