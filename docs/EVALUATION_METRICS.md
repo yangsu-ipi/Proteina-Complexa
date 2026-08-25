@@ -762,6 +762,7 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_binder_scRMSD_bb3` | Binder BB3 (N, CA, C) RMSD after refolding |
 | `{seq}_binder_scRMSD_bb3o` | Binder BB3O (N, CA, C, O) RMSD after refolding |
 | `{seq}_binder_scRMSD_allatom` | Binder all-atom RMSD after refolding |
+| `{seq}_binder_scRMSD_target_aligned_ca` | Binder CA RMSD after superimposing on the **target** — sees placement |
 | `{seq}_complex_scRMSD` | Best full-complex RMSD after refolding |
 | `{seq}_complex_scRMSD_ca` | Complex CA-only RMSD after refolding |
 | `{seq}_binder_pLDDT` | Binder-only pLDDT |
@@ -890,10 +891,18 @@ measured:
 |---|---|---|---|
 | `{seq}_binder_scRMSD_*` | the binder | the binder | binder fold accuracy — the target is present during prediction but in neither the fit nor the RMSD |
 | `{seq}_complex_scRMSD_ca` | the whole complex | the whole complex | fold and placement together, diluted by whichever chain has more residues |
-| *(not implemented)* | the target | the binder | placement — the clean docking measure |
+| `{seq}_binder_scRMSD_target_aligned_ca` | the target | the binder | fold **and** placement; the only one that sees where the binder sits |
 
 `{seq}_apo_scRMSD_*` matches the first row's construction, with no target present
 at all.
+
+The target-aligned column is **emitted, not gated** — there is no distribution to
+pick a threshold from yet. Read it *against* `{seq}_binder_scRMSD_ca` rather than
+alone: it measures fold and placement together, so 1.0 Å binder-aligned against
+1.1 Å target-aligned is well placed, while 1.0 Å against 4.0 Å folded correctly
+and docked somewhere else. `NaN` when the complex has no target chains, or when
+the generated and refolded complexes disagree on residue counts (logged).
+Protein targets only — ligand targets have their own aligned variants.
 
 **Optional force field metrics** (if `compute_pre_refolding_metrics` or `compute_refolded_structure_metrics` enabled):
 
