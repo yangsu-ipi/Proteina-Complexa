@@ -1,13 +1,18 @@
+"""ProteinMPNN / LigandMPNN / SolubleMPNN wrappers, and the rules for choosing between them.
+
+biotite and pdb_utils are imported inside the functions that need them. The
+module's constants and resolve_inverse_folding_model are pure logic, and a
+module-level structure-stack import made them unimportable -- and so
+untestable -- without the full environment.
+"""
+
 import json
 import os
 import re
 import subprocess
 from typing import Literal
 
-from biotite.sequence.io import fasta
 from loguru import logger
-
-from proteinfoundation.utils.pdb_utils import pdb_name_from_path
 
 
 # ProteinMPNN
@@ -24,6 +29,8 @@ def extract_gen_seqs_proteinmpnn(path_to_file: str) -> list[dict[str, float]]:
             - 'score': The score value
             - 'seqid': The sequence recovery value
     """
+    from biotite.sequence.io import fasta
+
     seqs = []
     fasta_file = fasta.FastaFile.read(path_to_file)
 
@@ -128,6 +135,8 @@ def extract_gen_seqs_ligandmpnn(
               is an NLL. See REDESIGN_SCORE_KIND.
             - 'seqid': The sequence recovery value
     """
+    from biotite.sequence.io import fasta
+
     seqs = []
     fasta_file = fasta.FastaFile.read(path_to_file)
 
@@ -164,6 +173,8 @@ def write_fix_pos_file(fix_pos: list[str], all_chains: list[str], out_dir_root: 
         out_dir_root: Directory where designed sequences will be saved.
         all_chains: All chains in the PDB file.
     """
+    from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
     name = pdb_name_from_path(pdb_file_path)
     fixed_dict = {name: {chain: [] for chain in all_chains}}
 
@@ -237,6 +248,8 @@ def run_proteinmpnn(
         ValueError: If the fix_pos format is invalid.
         RuntimeError: If ProteinMPNN command fails.
     """
+    from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
     name = pdb_name_from_path(pdb_file_path)
     python_exec = os.environ.get("PYTHON_EXEC", "python")
     # Base command without optional parameters
@@ -327,6 +340,8 @@ def run_ligandmpnn(
         ValueError: If the fix_pos format is invalid.
         RuntimeError: If ProteinMPNN command fails.
     """
+    from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
     name = pdb_name_from_path(pdb_file_path)
     python_exec = os.environ.get("PYTHON_EXEC", "python")
     chain_specificifaction = (
@@ -438,6 +453,8 @@ def run_solublempnn(
         ValueError: If the fix_pos format is invalid.
         RuntimeError: If ProteinMPNN command fails.
     """
+    from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
     name = pdb_name_from_path(pdb_file_path)
     python_exec = os.environ.get("PYTHON_EXEC", "python")
     chain_specificifaction = (

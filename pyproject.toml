@@ -65,6 +65,7 @@ dependencies = [
 dev = [
     "ruff>=0.15.0",
     "ipdb",
+    "pytest>=8",
 ]
 
 [project.scripts]
@@ -104,6 +105,13 @@ packages = [
 "community_models/colabdesign" = "colabdesign"
 "community_models/ProteinMPNN" = "ProteinMPNN"
 "community_models/LigandMPNN" = "LigandMPNN"
+
+[tool.pytest.ini_options]
+# Tests import from src/ without requiring an install, so a checkout can be
+# checked before it is built.
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
 
 [tool.ruff]
 src = ["src"]
