@@ -24,7 +24,7 @@ PY="$ENV_DIR/bin/python"; PIP="$ENV_DIR/bin/pip"
 #   at [6e] so a missing tree costs a second instead of arriving after torch, tmol and jax are in.
 #   Not silently skipped: "on by default" that quietly turns itself off is worse than a clear stop.
 WITH_ESMFOLD2="${WITH_ESMFOLD2:-1}"
-ESM_SRC="${ESM_SRC:-$HOME/projects/esmfold2}"
+ESM_SRC="${ESM_SRC:-/data/shared/esmfold2}"
 if [ "$WITH_ESMFOLD2" != "0" ] && [ ! -f "$ESM_SRC/pyproject.toml" ]; then
   echo "ESMC/ESMFold2 source tree not found: $ESM_SRC/pyproject.toml"
   echo "  It is a source-only release (no PyPI), so this script cannot fetch it. Either point at it:"
