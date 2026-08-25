@@ -10,6 +10,7 @@ This module contains:
 from typing import Any
 
 import numpy as np
+from loguru import logger
 
 from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold
 
@@ -231,6 +232,53 @@ def check_redesign_passes_all_thresholds(
     return True
 
 
+def redesign_pass_vector(
+    sample_metric_values: dict[str, list],
+    parsed_thresholds: dict,
+) -> list[int]:
+    """Per-redesign verdicts for one sample: 1 if that redesign passes ALL criteria.
+
+    The primitive behind every pass/fail statement about a sample. Both the
+    "did any redesign pass" question and the "how many passed" question are
+    reductions of this vector, and the per-sequence column emitted at
+    evaluation time is the vector itself -- so a redesign cannot be a failure
+    in one place and a success in another.
+
+    Args:
+        sample_metric_values: Dictionary mapping metric names to lists of values (one per redesign)
+                             e.g., {"i_pAE": [0.15, 0.18], "pLDDT": [0.92, 0.88]}
+        parsed_thresholds: Dictionary of parsed threshold specs
+
+    Returns:
+        List of 1/0, one per redesign, in the order the redesigns appear.
+        Empty if there is nothing to judge.
+    """
+    if not sample_metric_values:
+        return []
+
+    # The criteria's metric lists are built in append order and are parallel by
+    # construction. Judge only the prefix all of them cover, rather than indexing
+    # off the end of a short one: a misalignment should cost the unjudgeable tail,
+    # not raise from inside a metric computation. It is loud because a silent
+    # truncation here would read downstream as "these redesigns did not exist".
+    lengths = {metric: len(values) for metric, values in sample_metric_values.items()}
+    n_redesigns = min(lengths.values())
+    if len(set(lengths.values())) > 1:
+        logger.error(f"Metric lists disagree on redesign count {lengths}; judging the first {n_redesigns}")
+
+    verdicts = []
+    for i in range(n_redesigns):
+        # Build metric values for this redesign
+        redesign_values = {}
+        for metric_name in parsed_thresholds:
+            if metric_name in sample_metric_values:
+                redesign_values[metric_name] = sample_metric_values[metric_name][i]
+
+        verdicts.append(1 if check_redesign_passes_all_thresholds(redesign_values, parsed_thresholds) else 0)
+
+    return verdicts
+
+
 def check_sample_has_passing_redesign(
     sample_metric_values: dict[str, list],
     parsed_thresholds: dict,
@@ -245,24 +293,7 @@ def check_sample_has_passing_redesign(
     Returns:
         True if at least one redesign passes all criteria
     """
-    if not sample_metric_values:
-        return False
-
-    # Get number of redesigns from first metric
-    first_metric = list(sample_metric_values.keys())[0]
-    n_redesigns = len(sample_metric_values[first_metric])
-
-    for i in range(n_redesigns):
-        # Build metric values for this redesign
-        redesign_values = {}
-        for metric_name in parsed_thresholds:
-            if metric_name in sample_metric_values:
-                redesign_values[metric_name] = sample_metric_values[metric_name][i]
-
-        if check_redesign_passes_all_thresholds(redesign_values, parsed_thresholds):
-            return True
-
-    return False
+    return any(redesign_pass_vector(sample_metric_values, parsed_thresholds))
 
 
 def count_passing_redesigns(
@@ -278,22 +309,4 @@ def count_passing_redesigns(
     Returns:
         Number of redesigns that pass all criteria
     """
-    if not sample_metric_values:
-        return 0
-
-    # Get number of redesigns from first metric
-    first_metric = list(sample_metric_values.keys())[0]
-    n_redesigns = len(sample_metric_values[first_metric])
-
-    count = 0
-    for i in range(n_redesigns):
-        # Build metric values for this redesign
-        redesign_values = {}
-        for metric_name in parsed_thresholds:
-            if metric_name in sample_metric_values:
-                redesign_values[metric_name] = sample_metric_values[metric_name][i]
-
-        if check_redesign_passes_all_thresholds(redesign_values, parsed_thresholds):
-            count += 1
-
-    return count
+    return sum(redesign_pass_vector(sample_metric_values, parsed_thresholds))

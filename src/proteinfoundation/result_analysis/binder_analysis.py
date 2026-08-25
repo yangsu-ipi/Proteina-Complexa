@@ -6,6 +6,7 @@ criteria evaluation, including threshold configuration, filtering, and pass rate
 computation for both protein and ligand binders.
 """
 
+import glob
 import json
 import os
 
@@ -32,6 +33,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     check_redesign_passes_all_thresholds,
     check_sample_has_passing_redesign,
     count_passing_redesigns,
+    get_thresholds_for_result_type,
     normalize_threshold_dict,
 )
 
@@ -90,17 +92,30 @@ def save_combined_success_criteria_json(
     path_store_results: str,
     filter_name: str,
     sequence_types: list[str],
+    stage: str = "analyze",
+    redesign_conditioning: str | None = None,
 ) -> str:
     """Save success criteria for all sequence types to a single JSON file.
 
     Creates a combined JSON file with thresholds shared across all sequence types,
     and lists which sequence types were evaluated.
 
+    Two stages now judge sequences against these criteria -- evaluation, which
+    writes a per-sequence verdict into each row, and analysis, which reports pass
+    rates over designs. They read the same config key, but a run whose evaluate
+    and analyze steps used different configs would produce verdicts and rates
+    that disagree with no way to tell from the outputs. Recording which stage
+    wrote a criteria file, and what the redesigns were conditioned on, makes that
+    detectable instead of silent.
+
     Args:
         success_thresholds: Dictionary specifying success criteria (same for all seq types)
         path_store_results: Directory path to store the JSON file
         filter_name: Name for the filter (e.g., "protein_binder", "ligand_binder")
         sequence_types: List of sequence types evaluated (e.g., ["self", "mpnn"])
+        stage: Which stage applied these criteria ("evaluate" or "analyze").
+        redesign_conditioning: What ProteinMPNN saw when it produced the
+            redesigns ("complex" or "binder_only"). Omitted when unknown.
 
     Returns:
         Path to the saved JSON file
@@ -116,9 +131,12 @@ def save_combined_success_criteria_json(
     # Build the output data structure with all sequence types
     output_data = {
         "filter_name": filter_name,
+        "stage": stage,
         "thresholds": parsed_thresholds,
         "sequence_types": sequence_types,
     }
+    if redesign_conditioning is not None:
+        output_data["redesign_conditioning"] = redesign_conditioning
 
     filename = f"success_criteria_{filter_name}.json"
     output_path = os.path.join(path_store_results, filename)
@@ -129,6 +147,69 @@ def save_combined_success_criteria_json(
 
     logger.debug(f"Saved combined success criteria to {output_path}")
     return output_path
+
+
+def warn_if_pass_columns_are_stale(
+    result_files: list[str],
+    success_thresholds: dict | None,
+    is_ligand: bool = False,
+) -> bool:
+    """Check the ``{seq_type}_pass`` columns against the criteria analysis will use.
+
+    Those columns are written during evaluation and travel with the CSV. If
+    analysis then runs under different thresholds -- a second pass with a
+    tightened gate, or simply a different config file -- the verdicts in the rows
+    no longer mean what the pass rates beside them mean, and nothing in the
+    output says so. Comparing against the criteria file evaluation left beside
+    each CSV turns that into a message instead of a wrong number.
+
+    Silent when no criteria file is found: results produced before evaluation
+    wrote one have no per-sequence columns to be stale.
+
+    Args:
+        result_files: Result CSV paths; criteria files are looked for beside them.
+        success_thresholds: Thresholds analysis resolved (None means defaults).
+        is_ligand: Whether these are ligand-binder results (selects the default set).
+
+    Returns:
+        True if a mismatch was found and reported.
+    """
+    expected = {
+        name: parse_threshold_spec(spec)
+        for name, spec in normalize_threshold_dict(
+            get_thresholds_for_result_type(success_thresholds, is_ligand)
+        ).items()
+    }
+
+    checked: set[str] = set()
+    stale = False
+    for result_file in result_files:
+        directory = os.path.dirname(os.path.abspath(result_file))
+        for criteria_path in sorted(glob.glob(os.path.join(directory, "success_criteria_binder_eval_*.json"))):
+            if criteria_path in checked:
+                continue
+            checked.add(criteria_path)
+            try:
+                with open(criteria_path) as handle:
+                    recorded = json.load(handle).get("thresholds", {})
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(f"Could not read evaluation criteria {criteria_path}: {exc}")
+                continue
+
+            if recorded != expected:
+                stale = True
+                differing = sorted(set(recorded) | set(expected))
+                logger.error(
+                    f"The *_pass columns in results beside {os.path.basename(criteria_path)} were "
+                    f"computed under different criteria than this analysis uses. Pass rates below are "
+                    f"correct; the per-sequence *_pass columns in the CSV are not. Re-run evaluation to "
+                    f"refresh them, or read them as the criteria recorded in that file."
+                )
+                for name in differing:
+                    if recorded.get(name) != expected.get(name):
+                        logger.error(f"  {name}: evaluated {recorded.get(name)} vs analysing {expected.get(name)}")
+
+    return stale
 
 
 def load_success_criteria_json(json_path: str) -> dict:

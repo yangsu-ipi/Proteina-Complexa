@@ -769,8 +769,40 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_sequence` | Best sequence selected by ranking |
 | `{seq}_complex_i_pAE_all` | All i_pAE values (list, one per MPNN sequence) |
 | `{seq}_binder_scRMSD_all` | All scRMSD values (list) |
+| `{seq}_pass` | 1/0: does the best sequence meet every success criterion |
+| `{seq}_pass_all` | Per-sequence 1/0 verdicts (list) |
 | `{seq}_aa_counts` | Amino acid composition (dict) |
 | `{seq}_aa_interface_counts` | Interface residue AA composition (dict) |
+
+Every `*_all` list is in the same order, so index `i` names one sequence
+throughout: `{seq}_sequence_all[i]` was folded into
+`{seq}_complex_pdb_path_all[i]`, scored `{seq}_complex_i_pAE_all[i]`, and judged
+`{seq}_pass_all[i]`. Reading them requires `ast.literal_eval` -- pandas returns
+them as strings.
+
+Sequences that fail a gate are **kept**, in these columns and in the CSV rows
+themselves; only designs whose refold produced nothing at all are dropped, and
+those are logged. The analysis step's filtered outputs
+(`all_successes_{filter_name}_{seq}.csv`, and the `clusters_*` directories) are
+separate artifacts, not a pruning of this CSV. So the failures are examinable
+directly:
+
+```python
+import ast, pandas as pd
+df = pd.read_csv("binder_results_....csv")
+seqs  = df["mpnn_sequence_all"].map(ast.literal_eval)
+passes = df["mpnn_pass_all"].map(ast.literal_eval)
+paths = df["mpnn_complex_pdb_path_all"].map(ast.literal_eval)
+failures = [(s, p) for row_s, row_v, row_p in zip(seqs, passes, paths)
+            for s, v, p in zip(row_s, row_v, row_p) if not v]
+```
+
+`{seq}_pass*` is absent -- rather than zero -- when a criterion's column was
+never computed, because "not judged" is not "failed". The criteria applied are
+resolved from `aggregation.success_thresholds` and written beside the results as
+`success_criteria_binder_eval_{job_id}.json`; the analysis step compares its own
+thresholds against that file and reports loudly if they differ, since the pass
+columns would then contradict the pass rates beside them.
 
 **Optional force field metrics** (if `compute_pre_refolding_metrics` or `compute_refolded_structure_metrics` enabled):
 
@@ -824,6 +856,14 @@ Written to `monomer_results_*.csv` by monomer evaluation.
 | `_res_ss_alpha` | Alpha helix fraction |
 | `_res_ss_beta` | Beta sheet fraction |
 | `_res_ss_coil` | Coil fraction |
+| `redesign_conditioning` | `complex` or `binder_only`: what ProteinMPNN saw when it produced the designability redesigns |
+
+`redesign_conditioning` is provenance, not a metric. Designability keeps its
+column names while the conditioning behind it changes (see
+`docs/design-notes/apo-holo-redesign-sharing.md`), so numbers from before and
+after would otherwise be indistinguishable. It is a groupby column, which means
+concatenating results from both eras splits them into separate rows instead of
+averaging two different quantities together.
 
 **Mode/model substitutions:**
 

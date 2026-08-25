@@ -31,6 +31,8 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     TMOL_METRIC_COLS,
     get_binder_chain_from_complex,
     get_metric_columns,
+    per_sequence_pass,
+    resolve_success_thresholds,
     select_best_sample_idx,
     validate_ranking_criteria,
 )
@@ -39,8 +41,8 @@ from proteinfoundation.evaluation.esm_eval import (
     ESM_AVAILABLE,
     compute_esm_ppl_for_sequences,
 )
-from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table
-from proteinfoundation.metrics.binder_metrics import run_binder_eval
+from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
+from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
@@ -313,6 +315,18 @@ def compute_binder_metrics(
         ranking_criteria = validate_ranking_criteria(ranking_criteria)
     logger.info(f"Using ranking criteria: {ranking_criteria}")
 
+    # Success criteria, applied per sequence rather than left to the analysis
+    # stage. Analysis reports a design as passing when *any* of its sequences
+    # does, so the verdict on an individual sequence exists nowhere on disk: a
+    # consumer wanting the failures has to ast.literal_eval the *_all columns and
+    # re-apply the thresholds by hand, and two consumers doing that can disagree.
+    # Emitting the vector here settles it once, from the same
+    # aggregation.success_thresholds analysis reads.
+    success_thresholds = resolve_success_thresholds(eval_config, is_target_ligand)
+    logger.info(
+        "Per-sequence pass criteria: " + ", ".join(f"{name}{spec}" for name, spec in success_thresholds.items())
+    )
+
     # Progress bar setting
     show_progress = eval_config.get("show_progress", False)
 
@@ -513,6 +527,23 @@ def compute_binder_metrics(
                     if idx == 0:
                         all_columns.extend([f"{seq_type}_sequence", f"{seq_type}_sequence_all"])
 
+                # Per-sequence verdict against the success criteria, positionally
+                # aligned with every other *_all column on this row, so
+                # {seq_type}_sequence_all[i] and its metrics and its refolded
+                # structure path all describe the sequence judged by
+                # {seq_type}_pass_all[i]. None when a criterion's column is
+                # missing -- unjudged, not failed.
+                pass_vector = per_sequence_pass(row_dict, seq_type, success_thresholds)
+                if pass_vector is not None:
+                    row_dict[f"{seq_type}_pass"] = pass_vector[best_idx] if best_idx < len(pass_vector) else None
+                    row_dict[f"{seq_type}_pass_all"] = pass_vector
+                    # Not gated on idx == 0: the criteria columns can be absent
+                    # for the first design and present later, and reindex would
+                    # then drop the column for every design that had it.
+                    for col in (f"{seq_type}_pass", f"{seq_type}_pass_all"):
+                        if col not in all_columns:
+                            all_columns.append(col)
+
                 # ESM pseudo-perplexity metrics (optional).
                 #
                 # Cached separately from the refolding above, in
@@ -612,7 +643,15 @@ def compute_binder_metrics(
     if reuse_cached_folding:
         logger.info(f"Binder evaluation reused cached refolding for {n_reused}/{len(results)} designs")
 
-    return pd.DataFrame(results).reindex(columns=all_columns)
+    df = pd.DataFrame(results).reindex(columns=all_columns)
+    # Carried out-of-band rather than as columns: both are properties of the run,
+    # constant across every row, and the caller writes them to a sidecar beside
+    # the CSV. Attached to the frame instead of recomputed by the caller so the
+    # record cannot describe a different resolution than the one actually applied.
+    df.attrs["success_thresholds"] = success_thresholds
+    if binder_chain is not None and any(t.startswith("mpnn") for t in sequence_types):
+        df.attrs["redesign_conditioning"] = redesign_conditioning(complex_mpnn_chains(gen_target_chain, binder_chain))
+    return df
 
 
 # =============================================================================

@@ -85,6 +85,7 @@ from proteinfoundation.evaluation.utils import (
 
 # Import shared column filtering from analysis utilities
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES, filter_columns_for_csv
+from proteinfoundation.result_analysis.binder_analysis import save_combined_success_criteria_json
 from proteinfoundation.utils.refolded_structure_utils import extract_best_refolded_structure_paths_from_df
 
 # =============================================================================
@@ -514,6 +515,20 @@ def run_binder_evaluation(
         target_pdb_path=target_pdb_path,
         target_pdb_chain=target_pdb_chain,
         is_target_ligand=is_target_ligand,
+    )
+
+    # What the per-sequence {seq_type}_pass columns in this CSV were judged
+    # against. Written here rather than left to the analysis stage because the
+    # verdicts are baked into the rows by the time analysis runs: without this
+    # file, a CSV re-analysed under different thresholds carries pass columns that
+    # silently contradict the pass rates beside them.
+    save_combined_success_criteria_json(
+        success_thresholds=df.attrs.get("success_thresholds", {}),
+        path_store_results=output_dir,
+        filter_name=f"binder_eval_{job_id}",
+        sequence_types=list(cfg.metric.get("sequence_types", ["self"])),
+        stage="evaluate",
+        redesign_conditioning=df.attrs.get("redesign_conditioning"),
     )
 
     df = _add_pre_refolding_metrics(cfg, df, sample_paths)

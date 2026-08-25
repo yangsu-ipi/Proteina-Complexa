@@ -26,6 +26,19 @@ from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, pdb_name_fro
 hf_logging.set_verbosity_error()
 
 
+def complex_mpnn_chains(gen_target_chain: list[str], binder_chain: str) -> list[str]:
+    """The chains ProteinMPNN conditions on when redesigning a binder for refolding.
+
+    The target is visible, so these redesigns are interface-aware -- which is the
+    point, and the reason the holo gate judges them. Named so the
+    ``redesign_conditioning`` provenance reported for a run is derived from the
+    same list the redesigns were actually generated from, rather than asserted
+    separately and left to drift. See
+    ``docs/design-notes/apo-holo-redesign-sharing.md``.
+    """
+    return gen_target_chain + [binder_chain]
+
+
 def run_binder_eval(
     pdb_file_path: str | Path,
     target_pdb_path: str | Path,
@@ -183,7 +196,7 @@ def run_binder_eval(
             model_type=inverse_folding_model,
             pdb_file_path=mpnn_input_pdb,
             out_dir_root=mpnn_tmp_path,
-            all_chains=gen_target_chain + [binder_chain],
+            all_chains=complex_mpnn_chains(gen_target_chain, binder_chain),
             pdb_path_chains=[binder_chain],
             fix_pos=None,
             num_seq_per_target=num_redesign_seqs,
@@ -229,7 +242,7 @@ def run_binder_eval(
             model_type=inverse_folding_model,
             pdb_file_path=mpnn_input_pdb,
             out_dir_root=mpnn_fixed_tmp_path,
-            all_chains=gen_target_chain + [binder_chain],
+            all_chains=complex_mpnn_chains(gen_target_chain, binder_chain),
             pdb_path_chains=[binder_chain],
             fix_pos=fix_pos,
             num_seq_per_target=num_redesign_seqs,
