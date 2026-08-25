@@ -233,7 +233,7 @@ match nothing.
 
 Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
 — ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
-`binder_analysis.py:637`), the per-design
+`binder_analysis.py:648`), the per-design
 metrics (interface pAE, pLDDT, scRMSD) from the combined CSV, and FoldSeek
 TM-score diversity from `res_div_foldseek_*.csv`. Report top-N designs by
 i_pAE (protein binder) or min_ipAE (ligand binder).

@@ -223,7 +223,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
   enumerate index over the file walk (`binder_eval.py:575, :592`). `sequence_types` are column
   **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
   `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
-  lists (`binder_eval.py:668-704`; `binder_analysis_utils.py:181-192` builds
+  lists (`binder_eval.py:668-704`; `binder_analysis_utils.py:182-193` builds
   `{seq}_{prefix}_{metric}_all`).
 - **Pass-rate summaries and everything else are moved into subdirectories** by
   `organize_results` (`analyze.py:2803-2881`), so do not glob the top level:
@@ -233,7 +233,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
   `res_motif_binder_*` / `res_filter_motif_binder_*` → `motif_binder_metrics/`, and the
   `clusters_*` directories → `clusters/`. The binder pass-rate file is
   `filter_results/res_filter_binder_pass_*.csv` for `protein_binder` and
-  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:637`);
+  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:648`);
   motif runs write `res_filter_motif_binder_pass_*.csv` (`motif_binder_analysis.py:252`).
 - Diversity output — FoldSeek/MMseqs2 cluster files under `diversity/` and `clusters/` when
   `aggregation.compute_diversity=true` (default).

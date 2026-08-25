@@ -151,7 +151,7 @@ Step 6 of the skill from two real per-config outputs:
 
 - `./evaluation_results/eval_{idx}_{run_name}_{pipeline_run_name}/RAW_{result_type}_results_{config_name}_combined.csv`
   (`analyze.py:3047`) — one row per generated sample.
-- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:637`, moved there by
+- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:648`, moved there by
   `organize_results`, `analyze.py:2803-2881`) — the pre-computed pass rates.
 
 No emitted file is named `results_*.csv`; the per-job files are
@@ -163,7 +163,7 @@ No emitted file is named `results_*.csv`; the per-job files are
 | `config_id` | The index in `inf_{idx}_{run_name}.yaml` | 0-based, sequential, set by `apply_sweeper_and_save_configs`. |
 | `<axis_name>` (one per axis) | Read from the per-config `inf_*.yaml` at the swept Hydra path | Strip the dot-path to a short column header (e.g. `beam_width`). |
 | `n_samples` | `len(RAW_..._combined.csv)` | One row per sample (`id_gen`), not per sequence type — sequence types are column prefixes. |
-| `success_rate` | **Read it from `filter_results/res_filter_binder_pass_*.csv`.** | Recompute only if that file is absent, and then use the real defaults from `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:76-115`): `{seq}_complex_i_pAE_all * 31 <= 7.0` AND `{seq}_complex_pLDDT_all >= 0.9` AND `{seq}_binder_scRMSD_ca_all < 1.5`. There is **no** `passes_filter` column — repo-wide grep matches only this skill's files. |
+| `success_rate` | **Read it from `filter_results/res_filter_binder_pass_*.csv`.** | Recompute only if that file is absent, and then use the real defaults from `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:76-116`): `{seq}_complex_i_pAE_all * 31 <= 7.0` AND `{seq}_complex_pLDDT_all >= 0.9` AND `{seq}_binder_scRMSD_ca_all < 1.5`. There is **no** `passes_filter` column — repo-wide grep matches only this skill's files. |
 | `mean_i_pae` | `{seq}_complex_i_pAE.mean()` | Lower = better. AF2 interface PAE, stored **0–1 scaled** — multiply by 31 to report in threshold units. A naive `i_pae < 10` test passes every sample. |
 | `mean_plddt` | `{seq}_complex_pLDDT.mean()` | Higher = better. **Complex** pLDDT, 0–1. There is no interface-pLDDT column in the raw CSV — `i_plddt` does not exist. |
 | `mean_binder_scRMSD_ca` | `{seq}_binder_scRMSD_ca.mean()` | Lower = better. Binder CA scRMSD in Å. `sc_rmsd` does not exist. |
@@ -172,10 +172,10 @@ No emitted file is named `results_*.csv`; the per-job files are
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column
 **prefix**; pick the one the sweep actually requested. The `_all` suffix marks the per-redesign
-list columns that the threshold filter reads (`binder_analysis_utils.py:181-192`).
+list columns that the threshold filter reads (`binder_analysis_utils.py:182-193`).
 
 Ranking:
 
 - **Best by success** = argmax `success_rate`; tie-break on `mean_i_pae` ascending.
 - **Pareto frontier** on (`wall_clock_min`, `success_rate`): a config is on the frontier iff no other config has both lower wall-clock AND higher success rate. Implement with a sort + linear sweep.
-- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:406-407`) and left an unscaled `i_pAE` comparison that everything passes.
+- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:411-412`) and left an unscaled `i_pAE` comparison that everything passes.
