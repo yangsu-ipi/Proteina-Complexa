@@ -477,6 +477,43 @@ optimisation and becomes the implementation: one run of `designability_num_seq`,
 ranked, sliced. Which is why, when the subset is first materialised in code, it
 must pass through one named function rather than a slice written at each use.
 
+## Apo refolding, as implemented
+
+`{seq_type}_apo_scRMSD_{mode}_{model}` and its `_all` list, behind
+`metric.compute_apo_metrics` (off by default -- a monomer fold per sequence per
+design is real cost, and nothing gates on it yet).
+
+Per sequence, not a design-level `min()`, and positionally aligned with the holo
+columns: `{seq_type}_pass_all[i]` says whether sequence *i* passed with its
+target, `{seq_type}_apo_scRMSD_*_all[i]` says how it folded without one. One
+sequence, both verdicts -- which is the whole point, and what designability's
+`min()` cannot express.
+
+**The gate is a config entry.** `build_column_name(seq_type, "apo", "scRMSD_ca_esmfold")`
+produces exactly this column, so adding
+
+```yaml
+scRMSD_ca_esmfold: {threshold: 2.0, op: "<", scale: 1.0, column_prefix: apo}
+```
+
+to `aggregation.success_thresholds` makes it a gate, and `redesign_pass_vector`
+picks it up as a third condition with no code change. That is the payoff for
+naming the *condition* rather than extending `_res_co_scRMSD_*`: the threshold
+machinery already knew how to find a column named this way. It also means the
+harm check and the gate share one mechanism -- the unranked, ungated run is just
+the same config without that line.
+
+Cached per design in `monomer_fold_cache_apo_{seq_type}.json` through the same
+helpers designability uses, with its own fingerprint: the sequences here are an
+*input* from the complex track rather than something this step generates, so they
+are hashed into the key instead of being stood in for by whatever produced them.
+Reordering them invalidates, because index *i* is a specific sequence.
+
+Failures are contained: a fold that raises logs and leaves the columns off that
+row rather than failing the run, and a fold that fails for one sequence is `inf`
+rather than a missing entry, so the lists stay aligned with the sequences they
+describe.
+
 ## Still open
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
@@ -507,6 +544,9 @@ must pass through one named function rather than a slice written at each use.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
+- **Calibrating the apo gate.** The columns are emitted; no threshold is set.
+  2.0 A is the starting point from the monomer convention, to be confirmed
+  against the distribution rather than assumed.
 - **Ranking the redesigns.** MPNN score is the provisional first criterion; the
   implementation is not written, and it pulls in the duplicate-run deletion,
   since picking the best N requires generating all of them in the track that

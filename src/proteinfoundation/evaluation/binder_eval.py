@@ -29,6 +29,9 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     DEFAULT_NUM_REDESIGN_SEQS_PROTEIN,
     DEFAULT_PROTEIN_RANKING_CRITERIA,
     TMOL_METRIC_COLS,
+    apo_column,
+    apo_fold_fingerprint,
+    extract_binder_chain_to_pdb,
     get_binder_chain_from_complex,
     get_metric_columns,
     per_sequence_pass,
@@ -40,6 +43,10 @@ from proteinfoundation.evaluation.esm_eval import (
     DEFAULT_ESM_BATCH_TOKENS,
     ESM_AVAILABLE,
     compute_esm_ppl_for_sequences,
+)
+from proteinfoundation.evaluation.monomer_eval_utils import (
+    read_monomer_fold_cache,
+    write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
@@ -284,6 +291,70 @@ def redesign_scores_for_type(
     return [np.nan if s in ambiguous else by_seq.get(s, np.nan) for s in sequences]
 
 
+def apo_refold(
+    seq_type: str,
+    sequences: list[str],
+    binder_pdb_path: str,
+    sample_root_path: str,
+    folding_models: list[str],
+    rmsd_modes: list[str],
+    keep_outputs: bool,
+    reuse_cache: bool,
+) -> dict[tuple[str, str], list[float]]:
+    """Fold each sequence alone and measure it against the designed backbone.
+
+    The holo track asks whether a sequence folds as designed *with* its target.
+    This asks whether the same sequence folds as designed *without* it. BoltzGen
+    reports that requiring both improves experimental success, and expressing
+    that needs one sequence carrying both verdicts -- which is why this is
+    per-sequence and positionally aligned with the holo columns, rather than the
+    design-level ``min()`` the designability track reports.
+
+    Returns ``{(mode, model): [rmsd per sequence]}``. Empty when nothing could be
+    folded; a failed fold is ``inf`` for that sequence, not a missing row, so the
+    lists stay aligned with the sequences they describe.
+    """
+    from proteinfoundation.evaluation.monomer_eval import compute_scrmsd_from_folded, fold_sequences
+    from proteinfoundation.metrics.folding_models import folding_model_identity
+    from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
+    suffix = f"apo_{seq_type}"
+    fingerprint = apo_fold_fingerprint(
+        binder_pdb_path=binder_pdb_path,
+        sequences=sequences,
+        folding_models=list(folding_models),
+        model_identities={m: folding_model_identity(m) for m in folding_models},
+    )
+    cached = read_monomer_fold_cache(sample_root_path, suffix, fingerprint) if reuse_cache else None
+    if cached is not None:
+        values = cached.get("rmsd_values", {})
+        if all(mode in values and all(m in values[mode] for m in folding_models) for mode in rmsd_modes):
+            return {(mode, m): values[mode][m] for mode in rmsd_modes for m in folding_models}
+
+    folded = fold_sequences(
+        sequences=sequences,
+        output_dir=sample_root_path,
+        name=f"{pdb_name_from_path(binder_pdb_path)}_{suffix}",
+        folding_models=folding_models,
+        suffix=suffix,
+        cache_dir=None,
+        keep_outputs=keep_outputs,
+    )
+    result = compute_scrmsd_from_folded(
+        reference_pdb_path=binder_pdb_path,
+        folding_results=folded,
+        rmsd_modes=rmsd_modes,
+    )
+    result.sequences = sequences
+    write_monomer_fold_cache(sample_root_path, suffix, fingerprint, result, keep_outputs)
+
+    return {
+        (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
+        for mode in rmsd_modes
+        for m in folding_models
+    }
+
+
 def compute_binder_metrics(
     eval_config: DictConfig,
     sample_root_paths: list[str],
@@ -362,6 +433,21 @@ def compute_binder_metrics(
     logger.info(
         "Per-sequence pass criteria: " + ", ".join(f"{name}{spec}" for name, spec in success_thresholds.items())
     )
+
+    # Apo refolding: does each sequence fold as designed *without* its target?
+    # Off by default -- it is a monomer fold per sequence per design on top of the
+    # complex fold, and nothing gates on it yet. Emitted ungated on purpose: the
+    # threshold should be set after seeing the distribution, not before, or
+    # "the gate works" and "the gate is mis-calibrated" look the same.
+    compute_apo = cfg_metric.get("compute_apo_metrics", False)
+    apo_folding_models = list(cfg_metric.get("apo_folding_models", ["esmfold"]) or [])
+    apo_rmsd_modes = list(cfg_metric.get("apo_rmsd_modes", ["ca"]) or [])
+    reuse_cached_apo = cfg_metric.get("reuse_cached_apo_folds", True)
+    if compute_apo and is_target_ligand:
+        logger.info("Apo refolding skipped: these folders fold a single protein chain, target is a ligand")
+        compute_apo = False
+    if compute_apo:
+        logger.info(f"Apo refolding enabled: models={apo_folding_models}, modes={apo_rmsd_modes}")
 
     # Progress bar setting
     show_progress = eval_config.get("show_progress", False)
@@ -622,6 +708,41 @@ def compute_binder_metrics(
                     for col in (f"{seq_type}_pass", f"{seq_type}_pass_all"):
                         if col not in all_columns:
                             all_columns.append(col)
+
+                # Apo refolding (optional, gates nothing yet).
+                #
+                # Placed after the holo verdict so the two sit together on the
+                # row: {seq_type}_pass_all[i] says whether sequence i passed with
+                # its target, and these say how well it folded without one. The
+                # column name is built so that a threshold spec with
+                # column_prefix "apo" finds it -- turning this into a joint
+                # criterion is a config entry, not a code change.
+                if compute_apo and seqs:
+                    binder_pdb_path = os.path.join(sample_root_path, f"{os.path.basename(sample_root_path)}_binder.pdb")
+                    try:
+                        if not os.path.exists(binder_pdb_path):
+                            extract_binder_chain_to_pdb(pdb_path, binder_pdb_path, binder_chain)
+                        apo_values = apo_refold(
+                            seq_type=seq_type,
+                            sequences=seqs,
+                            binder_pdb_path=binder_pdb_path,
+                            sample_root_path=sample_root_path,
+                            folding_models=apo_folding_models,
+                            rmsd_modes=apo_rmsd_modes,
+                            keep_outputs=cfg_metric.get("keep_folding_outputs", True),
+                            reuse_cache=reuse_cached_apo,
+                        )
+                    except Exception as exc:
+                        logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")
+                        apo_values = {}
+
+                    for (mode, model), values in apo_values.items():
+                        col = apo_column(seq_type, mode, model)
+                        row_dict[col] = values[best_idx] if best_idx < len(values) else np.nan
+                        row_dict[f"{col}_all"] = values
+                        for name in (col, f"{col}_all"):
+                            if name not in all_columns:
+                                all_columns.append(name)
 
                 # ESM pseudo-perplexity metrics (optional).
                 #
