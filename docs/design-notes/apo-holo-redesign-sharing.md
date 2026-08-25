@@ -531,6 +531,49 @@ row rather than failing the run, and a fold that fails for one sequence is `inf`
 rather than a missing entry, so the lists stay aligned with the sequences they
 describe.
 
+## Two folders, one comparison
+
+Apo and holo scRMSD are the same quantity -- binder-only atoms, Kabsch-superposed
+on themselves, measured against the designed binder backbone -- computed by
+*different predictors*. Holo comes from `binder_folding_method` (AF2 or RF3),
+apo from `apo_folding_models` (ESMFold). So their difference mixes target
+dependence with predictor disagreement, and the 1.5 A and 2.0 A thresholds are
+not calibrated against one another.
+
+The principled fix is one folder for both conditions. Partly reachable already:
+ESMFold2 folds complexes (`consensus_folding`) and single chains
+(`folding_models.run_esmfold2`), so it *can* serve both -- it is advisory on the
+complex side only because no threshold has been calibrated for it, not because of
+a structural limitation. What is missing is a single backend registry rather than
+two parallel lists (`binder_folding_method` and `consensus_backends` on one side,
+`VALID_FOLDING_MODELS` on the other) and a calibrated complex-side threshold.
+
+Not trivial, and not blocked either. The honest ordering is: calibrate ESMFold2
+against AF2 on the complex side first, since that is what makes it promotable
+from advisory; unifying the registries before that would be plumbing for a
+capability nothing yet uses.
+
+## The three ways to superimpose a refolded complex
+
+The choice of what to align on decides what is measured, and the complex track
+implements two of the three:
+
+| align on | measure | column | measures |
+|---|---|---|---|
+| binder | binder | `{seq_type}_binder_scRMSD_*` | binder fold accuracy; the target is in neither the fit nor the RMSD |
+| complex | complex | `{seq_type}_complex_scRMSD_ca` | fold and placement together, diluted by residue count |
+| target | binder | -- not implemented | placement -- the clean docking measure |
+
+The third is the one that isolates docking, and the machinery for it exists:
+`kabsch_align_ligand` already does the mirror image for ligand targets (align on
+the binder, measure the ligand). Reversed, it gives target-aligned binder RMSD.
+Note it would measure fold *and* placement together; subtracting the first row
+isolates placement.
+
+Worth adding, and deliberately not added yet: a new docking metric invites the
+same question the apo columns just went through -- emitted or gated, and at what
+threshold -- and answering it needs a distribution nobody has.
+
 ## Still open
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
@@ -561,6 +604,8 @@ describe.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
+- **Target-aligned binder RMSD**, the missing docking measure. Machinery exists;
+  the threshold question does not have an answer yet.
 - **Confirming 2.0 A.** The gate is live at the monomer convention's value. The
   apo distribution from a real binder run has still not been looked at, and the
   threshold should be revisited against it.
