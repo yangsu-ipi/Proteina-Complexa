@@ -85,7 +85,7 @@ def mpnn_seed(
     Returns:
         A seed in the numpy range.
     """
-    return deterministic_seed(
+    seed = deterministic_seed(
         "proteinmpnn",
         str(SEED_DERIVATION_VERSION),
         design_name,
@@ -95,3 +95,10 @@ def mpnn_seed(
         f"{MPNN_SAMPLING_TEMP:g}",
         variant,
     )
+    # protein_mpnn_run.py reads its seed as `if args.seed:` and draws a random one
+    # when that is falsy, so a derived 0 would silently make exactly one design in
+    # 2**32 unreproducible -- and unreproducible in the way that is hardest to
+    # notice, since every other design in the run would be fine. Not a derivation
+    # change worth a version bump: every seed that was not 0 is unchanged, and the
+    # one that was had a random seed anyway.
+    return seed or 1
