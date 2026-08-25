@@ -311,13 +311,55 @@ def apo_refold(
     per-sequence and positionally aligned with the holo columns, rather than the
     design-level ``min()`` the designability track reports.
 
+    ``self`` is special: its apo fold is exactly what codesignability already
+    computes, so it is delegated rather than repeated, and
+    ``self_apo_scRMSD_{mode}_{model}`` is an alias of
+    ``_res_co_scRMSD_{mode}_{model}`` sharing one fold.
+
     Returns ``{(mode, model): [rmsd per sequence]}``. Empty when nothing could be
     folded; a failed fold is ``inf`` for that sequence, not a missing row, so the
     lists stay aligned with the sequences they describe.
     """
-    from proteinfoundation.evaluation.monomer_eval import compute_scrmsd_from_folded, fold_sequences
+    from proteinfoundation.evaluation.monomer_eval import (
+        compute_scrmsd_from_folded,
+        evaluate_self_consistency,
+        fold_sequences,
+    )
     from proteinfoundation.metrics.folding_models import folding_model_identity
     from proteinfoundation.utils.pdb_utils import pdb_name_from_path
+
+    # The apo fold of the co-designed sequence *is* codesignability: same sequence
+    # read off the same binder PDB, same folder, same reference. Delegating to the
+    # function that owns that computation shares the fold through its cache rather
+    # than doing it twice -- and shares it by construction, instead of by
+    # replicating a fingerprint that depends on defaults unrelated to this call.
+    # It also keeps _res_co_scRMSD_* as the canonical upstream name, with
+    # self_apo_scRMSD_* an alias for it.
+    if seq_type == "self":
+        result = evaluate_self_consistency(
+            pdb_path=binder_pdb_path,
+            output_dir=os.path.splitext(binder_pdb_path)[0],
+            use_pdb_seq=True,
+            rmsd_modes=rmsd_modes,
+            folding_models=folding_models,
+            keep_outputs=keep_outputs,
+            reuse_cache=reuse_cache,
+        )
+        # The sequence read off the PDB should be the one whose holo metrics sit on
+        # this row. If it is not, the apo and holo columns would describe different
+        # sequences, which is the one failure this alias must not introduce.
+        if list(result.sequences) != list(sequences):
+            logger.error(
+                f"Apo/holo sequence mismatch for 'self': the binder PDB reads "
+                f"{result.sequences} but the row reports {sequences}. Dropping the apo columns for "
+                f"this design rather than pairing a fold with another sequence's metrics."
+            )
+            return {}
+        return {
+            (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
+            for mode in rmsd_modes
+            for m in folding_models
+        }
 
     suffix = f"apo_{seq_type}"
     fingerprint = apo_fold_fingerprint(
