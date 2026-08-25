@@ -1206,7 +1206,7 @@ print(summary)
 
 | Result Type | Key Thresholds (defaults) |
 |-------------|--------------------------|
-| `protein_binder` | i_pAE*31 <= 7.0, pLDDT >= 0.9, scRMSD_ca < 1.5 A |
+| `protein_binder` | i_pAE*31 <= 7.0, pLDDT >= 0.9, scRMSD_ca < 1.5 A, apo scRMSD_ca < 2.0 A |
 | `ligand_binder` | min_ipAE*31 < 2.0, scRMSD_ca < 2.0 A, ligand scRMSD < 5.0 A |
 | `monomer` | designability scRMSD < 2.0 A |
 | `monomer_motif` | motif RMSD + codesignability (see below) |

@@ -18,6 +18,16 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 # Complexa Setup Skill
 
+> **On the `blackwell` branch, `build_blackwell.sh` installs ESMC + ESMFold2 by
+> default.** That puts the environment on Biohub's transformers fork rather than
+> PyPI's, and requires the source-only `esm` tree (`ESM_SRC`, default
+> `~/projects/esmfold2`) — a missing tree stops the build at step [0] with both
+> fixes named. `WITH_ESMFOLD2=0` opts out and yields a working but narrower
+> pipeline. Their **weights are gated**: `HF_TOKEN` plus accepted licences for
+> `biohub/ESMFold2-Experimental-Fast-Cutoff2025` and
+> `biohub/ESMFold2-Experimental-Cutoff2025`, with `HF_HOME` pointed at the hub
+> cache root rather than a snapshot directory.
+
 Drive the three steps a fresh Proteina-Complexa checkout needs before any
 design run: create `.env`, fetch model weights, and sanity-check the env.
 Probe the host for GPU / disk / tool binaries first so the user does not

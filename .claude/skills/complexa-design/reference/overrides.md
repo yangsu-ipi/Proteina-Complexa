@@ -170,7 +170,7 @@ From `binder_evaluate.yaml`, `ligand_binder_evaluate.yaml`, `ame_evaluate.yaml`.
 | `input_mode` | enum | `generated` | `++input_mode=pdb_dir` | `generated` for design pipeline; `pdb_dir` for external PDBs |
 | `metric.compute_binder_metrics` | bool | `true` (binder/ligand) | `++metric.compute_binder_metrics=true` | Run binder refolding |
 | `metric.compute_motif_binder_metrics` | bool | (AME only) `true` | `++metric.compute_motif_binder_metrics=false` | Run joint motif + binder metrics |
-| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=rf3_latest` | Refold backend. Only `colabdesign` or a name containing `rf3` (e.g. `rf3_latest`) is accepted; anything else raises `ValueError` (`binder_eval.py:108-128`). `colabdesign` is the only AF2 path, and it rejects ligand targets. `esmfold` belongs to the *different* key `metric.monomer_folding_models`. |
+| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=rf3_latest` | Refold backend. Only `colabdesign` or a name containing `rf3` (e.g. `rf3_latest`) is accepted; anything else raises `ValueError` (`binder_eval.py:120-140`). `colabdesign` is the only AF2 path, and it rejects ligand targets. `esmfold` belongs to the *different* key `metric.monomer_folding_models`. |
 | `metric.sequence_types` | list | `[self]` (binder default), `[self, mpnn]` (ligand), `[self, mpnn_fixed]` (AME) | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which inverse-folding outputs to evaluate |
 | `metric.num_redesign_seqs` | int | `8` (protein target) / `1` (ligand target) — code defaults `DEFAULT_NUM_REDESIGN_SEQS_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:50-51`); `ame_evaluate.yaml` does not set the key at all | `++metric.num_redesign_seqs=8` | Sequences generated per design by the inverse folder |
 | `metric.inverse_folding_model` | enum | `soluble_mpnn` (binder), `ligand_mpnn` (ligand, AME) | `++metric.inverse_folding_model=protein_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` |
@@ -202,7 +202,7 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 | Key | Type | Default | Example override | What it controls |
 |-----|------|---------|------------------|------------------|
-| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `monomer_motif`, `motif_protein_binder`, `motif_ligand_binder` (`analyze.py:137-144`) |
+| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `monomer_motif`, `motif_protein_binder`, `motif_ligand_binder` (`analyze.py:138-145`) |
 | `aggregation.limit` | int\|null | `null` | `++aggregation.limit=200` | Limit number of result files merged (null = all) |
 | `aggregation.analysis_modes` | list | `[binder, monomer]` (binder, ligand), `[motif_binder, monomer]` (AME) | `++aggregation.analysis_modes=[binder]` | Which analysis functions to run |
 | `aggregation.success_thresholds` | dict\|null | `null` -> `DEFAULT_PROTEIN_BINDER_THRESHOLDS`: `i_pAE` (7.0, `<=`, scale 31.0, prefix `complex`), `pLDDT` (0.9, `>=`, scale 1.0, prefix `complex`), `scRMSD_ca` (1.5, `<`, scale 1.0, prefix `binder`) | supply the **whole dict** — see the warning below | Per-metric binder success criteria |
@@ -216,7 +216,7 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 ### Threshold overrides must be complete dicts
 
-`binder_analysis.py:317-318` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+`binder_analysis.py:406-407` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
 only when `success_thresholds` is *entirely absent*. Supplying a single metric
 replaces the whole dict, and `parse_threshold_spec`
 (`analysis_utils.py:124-129`) then fills the missing `scale` with `1.0`. So
@@ -225,7 +225,7 @@ replaces the whole dict, and `parse_threshold_spec`
 sample passes and the reported success rate becomes 100%.
 
 Always write the full dict, and note the key is `scRMSD_ca`
-(`binder_analysis_utils.py:88`), not `scRMSD`:
+(`binder_analysis_utils.py:89`), not `scRMSD`:
 
 ```yaml
 aggregation:

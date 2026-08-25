@@ -12,9 +12,9 @@ Companion to `SKILL.md`. Every `evaluate_*_from_pdb_dir.yaml` and its paired `an
 | Motif protein binder   | `configs/example/evaluate_motif_binder.yaml` (no `_from_pdb_dir` variant; set `input_mode=pdb_dir`) | `configs/analyze_motif_binder.yaml` | `motif_protein_binder` | `colabdesign`, `rf3_latest` | `protein_mpnn` / `soluble_mpnn` |
 
 Notes:
-- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:108-128` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`).
-- The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:2921`, `validate_config` at `:390-409`).
-- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:192`), `analysis_modes: [binder]` (`:199`).
+- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:120-140` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:37`).
+- The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:2922`, `validate_config` at `:391-410`).
+- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:200`), `analysis_modes: [binder]` (`:207`).
 - There is no shipped `evaluate_motif_protein_binder_from_pdb_dir.yaml`; reuse `configs/example/evaluate_motif_binder.yaml` with `++input_mode=pdb_dir ++sample_storage_path=<dir> ++result_type=motif_protein_binder`. That config composes `- /design_tasks/ame_dict_v2@dataset` (`:24`), so `dataset.task_name` must be a key in `configs/design_tasks/ame_dict_v2.yaml` unless you point it at your own dict — see the `motif_target_dict_cfg` note in §2.
 
 ## 2. Evaluate config schema
@@ -39,7 +39,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
   - `num_redesign_seqs` — MPNN sequence count (default 8 here).
   - `interface_cutoff` — Å cutoff for interface residue detection (default 8.0 protein, 6.0 motif).
   - `inverse_folding_model` — `soluble_mpnn` / `protein_mpnn` (protein) or `ligand_mpnn` (ligand).
-  - `compute_pre_refolding_metrics`, `pre_refolding.{bioinformatics,tmol}` — optional pre-refold interface metrics. Those are the only two sub-toggles: `evaluate.py:401-403` reads `bioinformatics` and `tmol` and nothing else, and `src/proteinfoundation/rewards/` ships only `alphafold2_reward.py`, `base_reward.py`, `bioinformatics_reward.py`, `rf3_reward.py`, `tmol_reward.py`. There is no `hbplus` reward model or config key anywhere in the repo.
+  - `compute_pre_refolding_metrics`, `pre_refolding.{bioinformatics,tmol}` — optional pre-refold interface metrics. Those are the only two sub-toggles: `evaluate.py:405-407` reads `bioinformatics` and `tmol` and nothing else, and `src/proteinfoundation/rewards/` ships only `alphafold2_reward.py`, `base_reward.py`, `bioinformatics_reward.py`, `rf3_reward.py`, `tmol_reward.py`. There is no `hbplus` reward model or config key anywhere in the repo.
   - `compute_refolded_structure_metrics`, `refolded.{bioinformatics,tmol}` — optional post-refold, same two sub-toggles.
   - `compute_monomer_metrics`, `compute_designability`, `compute_codesignability`, `designability_modes`, `codesignability_modes` — monomer-on-binder eval.
   - `compute_co_sequence_recovery`, `compute_ss` — sequence/secondary-structure metrics.
@@ -47,7 +47,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
   - `keep_folding_outputs` — keep refolded PDBs.
 - File walk control:
   - `ignore_generated_pdb_suffix: "_binder.pdb"` (default) — drop intermediate binder-only PDBs from the walk.
-  - `file_limit` — **not a field of this config.** It ships in the AME/motif variants only (`evaluate_ame_from_pdb_dir.yaml:41`, `evaluate_motif_from_pdb_dir.yaml:51`). It is still usable here because `evaluate.py:793` reads it with `cfg.get("file_limit", None)`, so `++file_limit=N` works (`++` creates the key).
+  - `file_limit` — **not a field of this config.** It ships in the AME/motif variants only (`evaluate_ame_from_pdb_dir.yaml:41`, `evaluate_motif_from_pdb_dir.yaml:51`). It is still usable here because `evaluate.py:811` reads it with `cfg.get("file_limit", None)`, so `++file_limit=N` works (`++` creates the key).
 - `result_type` is set inline (`ligand_binder` or `protein_binder`) and propagates to the paired analyze step.
 
 ### `evaluate_ame_from_pdb_dir.yaml`
@@ -79,7 +79,9 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 - `aggregation.analysis_modes` — default `[binder, monomer]` for binder result types.
 - `aggregation.success_thresholds` — `null` (defaults) or a dict of `{metric: {threshold, op, scale, column_prefix}}` entries.
 - Built-in defaults:
-  - `protein_binder`: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca < 1.5`.
+  - `protein_binder`: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`
+    (four criteria — the apo one needs `metric.compute_apo_metrics`, on by default;
+    see `esm_esmfold2.md` for why turning it off removes gating rather than weakening it).
   - `ligand_binder`: `min_ipAE * 31 < 2.0`, `scRMSD_ca < 2.0`, `ligand_scRMSD_aligned_allatom < 5.0`.
 - Monomer-mode thresholds (when `[monomer]` is in `analysis_modes`):
   - `aggregation.designability_thresholds` — `{mode: {model: {threshold, op}}}`; default 2.0 Å.
@@ -90,7 +92,7 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 ### `analyze_motif_binder.yaml`
 
 - `result_type: motif_protein_binder` (default in the YAML) or `motif_ligand_binder` (override on CLI).
-- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3065-3075`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
+- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3076-3086`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
 - `aggregation.motif_binder_success_thresholds`:
   - **`motif_protein_binder` defaults** — binder: `i_pAE*31 <= 7.0`, `pLDDT >= 0.8`, `scRMSD_ca < 2.0`; motif: `motif_rmsd_pred_all < 2.0`, `correct_motif_sequence_all >= 1.0`.
   - **`motif_ligand_binder` defaults** — binder: `scRMSD_bb3 <= 2.0`; motif: `motif_rmsd_pred_all <= 1.5`, `correct_motif_sequence_all >= 1.0`, `has_ligand_clashes_all < 0.5`.
@@ -176,7 +178,7 @@ Pass-rate filter (applied by analyze), evaluated separately for each `sequence_t
 the results. The command above requests `sequence_types=[self,mpnn_fixed]`, so the columns are
 `self_*` and `mpnn_fixed_*` — there are no `mpnn_*` columns to filter on. Thresholding reads the
 `_all` list columns that `build_column_name` constructs
-(`binder_analysis_utils.py:160-171`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
+(`binder_analysis_utils.py:181-192`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
 `mpnn_fixed` the criteria are:
 
 `mpnn_fixed_complex_i_pAE_all * 31 <= 7.0 AND mpnn_fixed_complex_pLDDT_all >= 0.9 AND mpnn_fixed_binder_scRMSD_ca_all < 1.5`
@@ -231,7 +233,7 @@ dicts by task name; `get_target_info` (`binder_eval_utils.py:238-252`) just look
 whatever was composed and raises otherwise. So run the command below against a copy of
 `evaluate_from_pdb_dir.yaml` whose defaults entry reads `- /targets/ligand_targets_dict@dataset`.
 The three `metric.*` / `result_type` overrides shown are already this config's shipped defaults
-(`:72`, `:84`, `:192`) and are listed for explicitness.
+(`:72`, `:84`, `:200`) and are listed for explicitness.
 
 ```bash
 complexa analysis configs/evaluate_from_pdb_dir_ligand.yaml \
