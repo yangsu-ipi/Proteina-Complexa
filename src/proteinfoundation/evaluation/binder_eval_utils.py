@@ -479,10 +479,23 @@ def check_thresholds_are_computable(
         )
         return
 
+    from proteinfoundation.result_analysis.binder_analysis_utils import MODEL_PLACEHOLDER
+
     produced = {f"scRMSD_{mode}_{model}" for mode in (apo_rmsd_modes or []) for model in (apo_folding_models or [])}
     if not produced:
         return
-    unmatched = [name for name in apo_criteria if name not in produced]
+    # A {model}-templated criterion is satisfied by any produced model -- the model
+    # half is filled in later from the columns -- so check its mode, which is the
+    # only half that can make it unsatisfiable.
+    modes = set(apo_rmsd_modes or [])
+    unmatched = []
+    for name in apo_criteria:
+        if MODEL_PLACEHOLDER in name:
+            mode = name.partition(MODEL_PLACEHOLDER)[0].removeprefix("scRMSD_").rstrip("_")
+            if mode not in modes:
+                unmatched.append(name)
+        elif name not in produced:
+            unmatched.append(name)
     if unmatched:
         logger.error(
             f"Success criteria name apo metric(s) {unmatched}, but this run produces {sorted(produced)} "
@@ -511,9 +524,13 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
     from proteinfoundation.result_analysis.binder_analysis_utils import (
         build_column_name,
+        expand_model_criteria,
         redesign_pass_vector,
     )
 
+    # {model}-templated criteria stand for "every apo model this run produced",
+    # so they are expanded against this row's columns before anything is built.
+    thresholds = expand_model_criteria(thresholds, seq_type, row_dict.keys())
     parsed = {name: parse_threshold_spec(spec) for name, spec in thresholds.items()}
 
     metric_values = {}

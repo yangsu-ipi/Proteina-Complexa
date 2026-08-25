@@ -837,6 +837,14 @@ the apo distribution for binders; expect to revisit it once one has. The apo
 columns are emitted whether or not they gate, so the distribution is readable
 from any run.
 
+The criterion is **per model**: it is written `scRMSD_ca_{model}` and expanded
+against the apo columns a run actually produced. So `apo_folding_models:
+[esmfold]`, `[esmfold2]` and `[esmfold, esmfold2]` all work with no config
+change — and with two models listed, a sequence must pass under **both**, which
+composes the same way the three holo criteria do. Expansion reads the columns
+rather than the config, so the evaluate and analyze stages cannot disagree about
+which models are gated.
+
 **Turning `compute_apo_metrics` off removes gating entirely** — it does not fall
 back to the three holo criteria. A criterion whose column never appears makes
 `per_sequence_pass` return `None` and `add_success_rate_columns` return early, so
@@ -852,8 +860,10 @@ aggregation:
     scRMSD_ca: {threshold: 1.5, op: "<", scale: 1.0, column_prefix: binder}
 ```
 
-The criterion names the mode and folding model, so changing `apo_rmsd_modes` or
-`apo_folding_models` changes the column and the threshold key must follow.
+`apo_rmsd_modes` is *not* templated: the gate is defined for `ca` at 2.0 Å, and
+asking for another mode emits it ungated (all-atom RMSD is systematically larger,
+so the same threshold would not transfer). Evaluation warns at startup if the
+configured modes cannot satisfy the criterion.
 
 Costs one monomer fold per sequence per design on top of complex folding, cached
 per design in `monomer_fold_cache_apo_{seq_type}.json`. Except for `self`:

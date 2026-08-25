@@ -33,6 +33,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     check_redesign_passes_all_thresholds,
     check_sample_has_passing_redesign,
     count_passing_redesigns,
+    expand_model_criteria,
     get_thresholds_for_result_type,
     normalize_threshold_dict,
 )
@@ -319,7 +320,9 @@ def add_success_rate_columns(
         max_samples: Maximum number of samples to consider
     """
     # Check if we have the required columns
-    normalized_thresholds = normalize_threshold_dict(success_thresholds)
+    normalized_thresholds = expand_model_criteria(
+        normalize_threshold_dict(success_thresholds), seq_type, df_grouped.columns
+    )
     required_cols = []
     for metric_name, spec in normalized_thresholds.items():
         parsed = parse_threshold_spec(spec)
@@ -341,8 +344,10 @@ def add_success_rate_columns(
     pass_rate_col = f"_res_{seq_type}_pass_rate_{criteria_name}_{metric_suffix}"
     per_sample_col = f"_res_{seq_type}_per_sample_pass_{criteria_name}_{metric_suffix}"
 
+    # The expanded set, not the templated one: compute_grouped_pass_rate sees a
+    # row rather than the frame, so it cannot expand for itself.
     results = df_grouped.apply(
-        lambda row: compute_grouped_pass_rate(row, seq_type, success_thresholds, max_samples),
+        lambda row: compute_grouped_pass_rate(row, seq_type, normalized_thresholds, max_samples),
         axis=1,
     )
 
@@ -406,8 +411,9 @@ def filter_by_success_thresholds(
     if success_thresholds is None:
         success_thresholds = DEFAULT_PROTEIN_BINDER_THRESHOLDS.copy()
 
-    # Normalize metric names (handle lowercase inputs)
-    normalized_thresholds = normalize_threshold_dict(success_thresholds)
+    # Normalize metric names (handle lowercase inputs), then expand any
+    # {model}-templated criterion against the columns this frame carries.
+    normalized_thresholds = expand_model_criteria(normalize_threshold_dict(success_thresholds), seq_type, df.columns)
 
     # Parse all threshold specifications
     parsed_thresholds = {}
@@ -602,9 +608,14 @@ def compute_filter_pass_rate(
     sequence_types = SEQUENCE_TYPES
     logger.debug(f"Analyzing sequence types: {sequence_types}")
 
+    # Expanded per sequence type before selecting columns, not after: this is the
+    # step that decides what survives into the grouped frame, so a templated
+    # criterion left unexpanded here would drop the apo columns and then
+    # add_success_rate_columns -- which expands against the grouped frame -- would
+    # find nothing to gate on.
     all_columns = []
     for seq_type in sequence_types:
-        for metric_name, spec in thresholds.items():
+        for metric_name, spec in expand_model_criteria(thresholds, seq_type, df.columns).items():
             parsed = parse_threshold_spec(spec)
             col_name = build_column_name(seq_type, parsed["column_prefix"], metric_name)
             all_columns.append(col_name)
