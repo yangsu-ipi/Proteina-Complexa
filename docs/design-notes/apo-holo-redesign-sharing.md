@@ -261,10 +261,13 @@ rather than merely different.
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
   asked for more than N?** Step 1 does not depend on it -- each track still runs
-  its own sampling -- but the sharing step does, and it must be measured rather
-  than assumed. If the prefix property does not hold, the shared subset has to be
-  taken from one run of `designability_num_seq` rather than reproduced by a
-  shorter run.
+  its own sampling -- but the sharing step does. Measured by
+  `script_utils/bioinformatic/verify_mpnn_prefix.py`, which checks determinism,
+  non-degeneracy and that ProteinMPNN actually used the seed passed to it before
+  asking the prefix question, under both conditionings. Exit 0 means the shared
+  subset can be reproduced by a shorter seeded run; exit 2 means it has to be
+  taken from one run of `designability_num_seq`; exit 1 means the question was
+  not answered. Not yet run.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
