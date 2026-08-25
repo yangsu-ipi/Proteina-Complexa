@@ -36,7 +36,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
-from proteinfoundation.metrics.inverse_folding_models import run_proteinmpnn
+from proteinfoundation.metrics.inverse_folding_models import inverse_fold
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
 from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
@@ -90,6 +90,7 @@ def get_sequences_for_evaluation(
     binder_chain: str | None = None,
     mpnn_pdb_path: str | None = None,
     target_chains: list[str] | None = None,
+    inverse_folding_model: str = "protein_mpnn",
 ) -> list[str]:
     """
     Get sequences for structure prediction evaluation.
@@ -106,6 +107,10 @@ def get_sequences_for_evaluation(
             everything downstream -- folding, RMSD -- is about the binder alone.
         target_chains: Target chain IDs present in *mpnn_pdb_path*, giving the
             redesign its context. None for a plain monomer.
+        inverse_folding_model: Which inverse folder redesigns the binder. The
+            same ``metric.inverse_folding_model`` the complex track uses, so both
+            tracks judge the same sequences rather than two models' opinions of
+            the same backbone.
 
     Returns:
         List of sequences to evaluate
@@ -151,13 +156,14 @@ def get_sequences_for_evaluation(
         # design rather than of when the job happened to run.
         seed = mpnn_seed(pdb_name_from_path(design_pdb), context_chains, [chain_to_design])
 
-        gen_seqs = run_proteinmpnn(
-            design_pdb,
-            tmp_path,
+        gen_seqs = inverse_fold(
+            model_type=inverse_folding_model,
+            pdb_file_path=design_pdb,
+            out_dir_root=tmp_path,
             all_chains=context_chains,
             pdb_path_chains=[chain_to_design],
             num_seq_per_target=num_seq_per_target,
-            omit_AAs="".join(MPNN_OMIT_AAS),
+            omit_AAs=MPNN_OMIT_AAS,
             sampling_temp=pmpnn_sampling_temp,
             seed=seed,
         )
@@ -436,6 +442,7 @@ def evaluate_self_consistency(
     reuse_cache: bool = True,
     mpnn_pdb_path: str | None = None,
     target_chains: list[str] | None = None,
+    inverse_folding_model: str = "protein_mpnn",
 ) -> DesignabilityResult:
     """
     Unified function to evaluate designability/codesignability.
@@ -465,6 +472,8 @@ def evaluate_self_consistency(
             *pdb_path* stays the binder alone -- what gets folded and what the
             RMSD is measured against. Ignored when use_pdb_seq is True.
         target_chains: Target chain IDs in *mpnn_pdb_path*.
+        inverse_folding_model: Which inverse folder produces the redesigns.
+            Ignored when use_pdb_seq is True.
 
     Returns:
         DesignabilityResult with all RMSD values
@@ -503,6 +512,10 @@ def evaluate_self_consistency(
         binder_chain=binder_chain,
         mpnn_context_chains=context_chains,
         mpnn_seed_value=seed_value,
+        # Without this, flipping inverse_folding_model would serve designability
+        # numbers computed from the previous model's redesigns: same design, same
+        # folding backend, sequences from a different inverse folder entirely.
+        inverse_folding_model=None if use_pdb_seq else inverse_folding_model,
     )
     cached = read_monomer_fold_cache(output_dir, suffix, fingerprint) if reuse_cache else None
     if cached is not None:
@@ -520,6 +533,7 @@ def evaluate_self_consistency(
         binder_chain=binder_chain,
         mpnn_pdb_path=mpnn_pdb_path,
         target_chains=target_chains,
+        inverse_folding_model=inverse_folding_model,
     )
 
     # Step 2: Fold sequences
@@ -679,11 +693,20 @@ def compute_monomer_metrics(
     do_seq_rec = cfg_metric.get("compute_co_sequence_recovery", monomer_on)
     do_ss = cfg_metric.get("compute_ss", True)
 
+    # The same key the complex track reads, so both tracks redesign with one
+    # model. Ligand targets are the one place they can still diverge: the complex
+    # track forces ligand_mpnn for them regardless of config, and nothing here
+    # knows whether the target is a ligand. Both shipped ligand configs already
+    # set ligand_mpnn, so the two agree in practice -- and redesign_model records
+    # what was actually used, so a disagreement shows up in the data rather than
+    # only in a reader's assumptions.
+    inverse_folding_model = cfg_metric.get("inverse_folding_model", "protein_mpnn")
+
     # Provenance for the designability numbers. Declared with the columns because
     # the frame is built with reindex(columns=columns) and anything absent here
     # is dropped from every row.
     if do_des:
-        columns.append("redesign_conditioning")
+        columns.extend(["redesign_conditioning", "redesign_model"])
 
     metrics = {}
 
@@ -744,7 +767,7 @@ def compute_monomer_metrics(
         binder_chain, target_chains = get_binder_chain_from_complex(first_sample)
         logger.info(
             f"Detected binder chain: {binder_chain}, target chain(s): {target_chains or 'none'}; "
-            f"designability redesigns conditioned on "
+            f"designability redesigns by {inverse_folding_model}, conditioned on "
             f"{redesign_conditioning(designability_mpnn_chains(binder_chain, target_chains))}"
         )
 
@@ -791,6 +814,7 @@ def compute_monomer_metrics(
             row_dict["redesign_conditioning"] = redesign_conditioning(
                 designability_mpnn_chains(binder_chain, target_chains)
             )
+            row_dict["redesign_model"] = inverse_folding_model
         results.append(row_dict)
 
         # Create tmp_dir for this sample
@@ -817,6 +841,7 @@ def compute_monomer_metrics(
                     # knowing what it has to bind.
                     mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
                     target_chains=target_chains,
+                    inverse_folding_model=inverse_folding_model,
                 )
 
                 for model in designability_folding_models:
@@ -879,6 +904,7 @@ def compute_monomer_metrics(
                         binder_chain=binder_chain,
                         mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
                         target_chains=target_chains,
+                        inverse_folding_model=inverse_folding_model,
                     )
                 rec_rates = [sum(a == b for a, b in zip(seq, s, strict=False)) / len(seq) for s in mpnn_seqs]
                 metrics["_res_co_seq_rec"].append(max(rec_rates) if rec_rates else 0.0)

@@ -590,10 +590,15 @@ def compute_binder_metrics(
                         row_dict[f"{seq_type}_redesign_score"] = scores[seq_best_idx]
                         row_dict[f"{seq_type}_redesign_score_all"] = scores
                         row_dict["redesign_score_kind"] = REDESIGN_SCORE_KIND.get(inverse_folding_model, "unknown")
+                        # Named the same as the monomer track's column so the two
+                        # CSVs can be compared on it, which is the only way to
+                        # see the ligand-target case where they can diverge.
+                        row_dict["redesign_model"] = inverse_folding_model
                         for col in (
                             f"{seq_type}_redesign_score",
                             f"{seq_type}_redesign_score_all",
                             "redesign_score_kind",
+                            "redesign_model",
                         ):
                             if col not in all_columns:
                                 all_columns.append(col)

@@ -108,6 +108,7 @@ def monomer_fold_fingerprint(
     binder_chain: str | None,
     mpnn_context_chains: list[str] | None = None,
     mpnn_seed_value: int | None = None,
+    inverse_folding_model: str | None = None,
 ) -> str:
     """Everything that determines the refolds, excluding the sequences themselves.
 
@@ -117,7 +118,8 @@ def monomer_fold_fingerprint(
     recorded per entry so a newly requested mode is a partial miss rather than a
     full invalidation.
 
-    ``mpnn_context_chains`` and ``mpnn_seed_value`` cover the redesigns, which are
+    ``mpnn_context_chains``, ``mpnn_seed_value`` and ``inverse_folding_model``
+    cover the redesigns, which are
     stored in the cache but are not otherwise keyed on anything. Without them a
     cache written when designability redesigned the binder alone would be served
     for a request that now redesigns it in the target's context -- same design,
@@ -150,6 +152,8 @@ def monomer_fold_fingerprint(
         key["mpnn_context_chains"] = sorted(mpnn_context_chains)
     if mpnn_seed_value is not None:
         key["mpnn_seed"] = mpnn_seed_value
+    if inverse_folding_model is not None:
+        key["inverse_folding_model"] = inverse_folding_model
 
     canonical = json.dumps(key, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
