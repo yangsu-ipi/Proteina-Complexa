@@ -101,12 +101,13 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
     # but no run has produced the apo distribution for binders. Expect to revisit
     # it once one has.
     #
-    # Requires metric.compute_apo_metrics, and names the mode and folding model:
-    # changing apo_rmsd_modes or apo_folding_models changes the column, and a
-    # criterion naming a column that is not produced cannot be evaluated.
-    # check_thresholds_are_computable says so at startup rather than leaving it to
-    # be inferred from pass rates.
-    "scRMSD_ca_esmfold": {
+    # Requires metric.compute_apo_metrics. The ``{model}`` placeholder is expanded
+    # against the apo columns a run actually produced, so one criterion covers
+    # whatever apo_folding_models asks for: [esmfold] gates the esmfold column,
+    # [esmfold2] the esmfold2 one, and [esmfold, esmfold2] gates BOTH -- the
+    # binder must fold apo under every predictor asked, which composes the same
+    # way the three holo criteria do. See expand_model_criteria.
+    "scRMSD_ca_{model}": {
         "threshold": 2.0,
         "op": "<",
         "scale": 1.0,
@@ -190,6 +191,65 @@ def build_column_name(seq_type: str, column_prefix: str, metric_suffix: str) -> 
         Full column name like "self_complex_i_pAE_all"
     """
     return f"{seq_type}_{column_prefix}_{metric_suffix}_all"
+
+
+MODEL_PLACEHOLDER = "{model}"
+
+
+def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) -> dict:
+    """Expand ``{model}``-templated criteria against the columns a run produced.
+
+    A criterion like ``scRMSD_ca_{model}`` with ``column_prefix: apo`` stands for
+    "every apo folding model this run used". Expanding against the *columns*
+    rather than against config means the evaluation stage and the analysis stage
+    cannot disagree about which models are gated -- they read the same frame --
+    and it works whether the run asked for one model or several.
+
+    Criteria without the placeholder pass through untouched.
+
+    Args:
+        thresholds: Normalised threshold dictionary, possibly templated.
+        seq_type: Sequence type whose columns to match against.
+        available_columns: Column names present (any iterable).
+
+    Returns:
+        A new dictionary with each templated entry replaced by one entry per
+        matching model, in sorted order for a stable gate.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    columns = set(available_columns)
+    out: dict = {}
+    for name, spec in thresholds.items():
+        if MODEL_PLACEHOLDER not in name:
+            out[name] = spec
+            continue
+        parsed = parse_threshold_spec(spec)
+        prefix = parsed.get("column_prefix", "complex")
+        head, _, tail = name.partition(MODEL_PLACEHOLDER)
+        lead = build_column_name(seq_type, prefix, head)[: -len("_all")]
+        models = sorted(
+            col[len(lead) : -len(tail + "_all")] if tail else col[len(lead) : -len("_all")]
+            for col in columns
+            if col.startswith(lead) and col.endswith(tail + "_all")
+        )
+        if not models:
+            # Kept, not dropped. Dropping it would leave the remaining criteria to
+            # be evaluated on their own, and a design passing a three-criterion
+            # gate is indistinguishable from one passing the four it was supposed
+            # to face. Left in place, the template names a column that does not
+            # exist, which the consumers already treat as "cannot judge" rather
+            # than "passed".
+            logger.error(
+                f"Criterion '{name}' matched no {prefix} column for '{seq_type}', so it cannot be "
+                f"applied and no verdict will be produced. Expected columns like "
+                f"'{lead}<model>{tail}_all'. Check that the metric producing them is enabled."
+            )
+            out[name] = spec
+            continue
+        for model in models:
+            out[f"{head}{model}{tail}"] = spec
+    return out
 
 
 def get_thresholds_for_result_type(

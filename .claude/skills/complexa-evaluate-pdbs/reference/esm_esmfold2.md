@@ -113,31 +113,29 @@ metric:
   apo_folding_models: [esmfold2]   # -> biohub/ESMFold2-Experimental-Fast-Cutoff2025
   apo_rmsd_modes: [ca]
   reuse_cached_apo_folds: true
-
-aggregation:
-  success_thresholds:              # REQUIRED when changing the model — see below
-    i_pAE:     {threshold: 7.0, op: "<=", scale: 31.0, column_prefix: complex}
-    pLDDT:     {threshold: 0.9, op: ">=", scale: 1.0,  column_prefix: complex}
-    scRMSD_ca: {threshold: 1.5, op: "<",  scale: 1.0,  column_prefix: binder}
-    scRMSD_ca_esmfold2: {threshold: 2.0, op: "<", scale: 1.0, column_prefix: apo}
 ```
+
+**No threshold override is needed.** The apo criterion is `scRMSD_ca_{model}`,
+expanded against the apo columns the run produced, so `[esmfold]`, `[esmfold2]`
+and `[esmfold, esmfold2]` all gate correctly. With two models listed a sequence
+must pass under **both** — the conservative reading, and the cheapest way to see
+whether two predictors agree before committing to one.
 
 Single-sequence by construction: the monomer path passes no MSA, and the Fast
 checkpoint is the fork's own choice for single-chain single-sequence work. Model
 id override: `ESMFOLD2_MONOMER_MODEL` (complex side: `ESMFOLD2_COMPLEX_MODEL`).
 
-**Trap: the apo criterion names the folding model.** The column is
-`{seq}_apo_scRMSD_{mode}_{model}`, and the fourth protein-binder success
-criterion is `scRMSD_ca_esmfold`. Switching `apo_folding_models` to `[esmfold2]`
-without renaming the threshold key produces the apo column under a name no
-criterion looks for — and because a criterion with no column removes gating
-rather than weakening it, **no pass verdicts or pass rates are produced for any
-sequence type**. Evaluation logs an error at startup naming both sides; do not
-ignore it. The same applies to `apo_rmsd_modes`.
+**`apo_rmsd_modes` is not templated, only the model is.** The gate is defined for
+`ca` at 2.0 Å; asking for `bb3o` or `all_atom` emits those columns ungated,
+because all-atom RMSD is systematically larger and the same threshold would not
+transfer. Evaluation warns at startup if the configured modes cannot satisfy the
+criterion.
 
-Listing both models (`[esmfold, esmfold2]`) satisfies the default criterion and
-gives you the ESMFold2 column alongside for comparison — the cheapest way to see
-whether the two agree before committing to one.
+**If no apo column matches, no verdict is produced** — `{seq}_pass*` is absent
+and pass rates are skipped, with an error naming the expected column shape. It
+does not fall back to the three holo criteria: a design passing a three-criterion
+gate must not be indistinguishable from one passing the four it was meant to
+face.
 
 `self`'s apo fold is delegated to the codesignability computation, so
 `self_apo_scRMSD_{mode}_{model}` and `_res_co_scRMSD_{mode}_{model}` are the same
