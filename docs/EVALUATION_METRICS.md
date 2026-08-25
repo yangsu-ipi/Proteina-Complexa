@@ -875,7 +875,8 @@ Written to `monomer_results_*.csv` by monomer evaluation.
 | `_res_ss_alpha` | Alpha helix fraction |
 | `_res_ss_beta` | Beta sheet fraction |
 | `_res_ss_coil` | Coil fraction |
-| `redesign_conditioning` | `complex` or `binder_only`: what ProteinMPNN saw when it produced the designability redesigns |
+| `redesign_conditioning` | `complex` or `binder_only`: what the inverse folder saw when it produced the designability redesigns |
+| `redesign_model` | Which inverse folder produced them — `metric.inverse_folding_model` |
 
 For a binder run this now reads `complex`: ProteinMPNN reads the complex and
 redesigns the binder chain only, while folding and RMSD stay on the binder
@@ -883,6 +884,12 @@ alone. A plain monomer, or a binder whose target chains could not be determined,
 reads `binder_only`. Designability and `_res_co_seq_rec` values are **not
 comparable with those from before this change** -- different conditioning,
 different alphabet (`C` is now omitted on both tracks), different seeds.
+
+`metric.inverse_folding_model` governs **both** tracks: the same model redesigns
+for complex refolding and for designability, so the two are opinions about the
+same sequences rather than two models' views of one backbone. Designability
+values are therefore not comparable across runs that set it differently, which is
+what `redesign_model` records.
 
 `redesign_conditioning` is provenance, not a metric. Designability keeps its
 column names while the conditioning behind it changes (see
