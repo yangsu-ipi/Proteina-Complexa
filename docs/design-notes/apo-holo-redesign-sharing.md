@@ -267,7 +267,21 @@ rather than merely different.
   asking the prefix question, under both conditionings. Exit 0 means the shared
   subset can be reproduced by a shorter seeded run; exit 2 means it has to be
   taken from one run of `designability_num_seq`; exit 1 means the question was
-  not answered. Not yet run.
+  not answered.
+
+  **Answered: it holds.** Measured on a CBLN1/5KC5 smoke-test design, 2 shared
+  of 8, under both conditionings. Determinism, non-degeneracy and seed plumbing
+  all passed -- ProteinMPNN reported back the seed it was handed, so `--seed` is
+  reaching it rather than being ignored. The sharing step can therefore
+  reproduce the shared subset with a shorter seeded run, and does not have to
+  thread one longer run's output between the two tracks.
+
+  Two limits on that evidence, worth knowing before leaning on it. It compared
+  two sequences, which is what `configs/pipeline/binder/binder_evaluate.yaml`
+  actually uses for `num_redesign_seqs`, but agreement over two is thinner than
+  agreement over six. And it is one design on one target; nothing here would
+  catch a length- or chain-count-dependent failure. The script now reports how
+  many of the long run are distinct and says so when the comparison was thin.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
