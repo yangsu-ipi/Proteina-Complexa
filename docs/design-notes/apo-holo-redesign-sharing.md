@@ -292,11 +292,31 @@ make the design PDB an unsafe ProteinMPNN input and the file choice
 load-bearing. It is neither. Conditioning designability on the design PDB
 conditions it on the true target, with the true target sequence.
 
-## The tracks do not use the same inverse folder
+## The tracks now use the same inverse folder
 
-`metric.inverse_folding_model` selects the model for the **complex track only**.
-`monomer_eval` imports `run_proteinmpnn` directly, so designability is hardwired
-to CA-ProteinMPNN whatever that key says. And
+*Resolved.* `metric.inverse_folding_model` governs both tracks: designability
+routes through the same `inverse_fold` dispatcher the complex track uses, so the
+two produce opinions about the same sequences rather than two models' views of
+one backbone. `redesign_model` records which, on both CSVs, because designability
+numbers are not comparable across runs that set it differently.
+
+One residual asymmetry: the complex track forces `ligand_mpnn` for ligand targets
+regardless of config, and `compute_monomer_metrics` cannot tell whether a target
+is a ligand. Both shipped ligand configs already set `ligand_mpnn`, so they agree
+in practice, and `redesign_model` on the two CSVs makes a disagreement visible in
+the data rather than only in a reader's assumptions.
+
+The ligand case was also quietly wrong before this. Designability reads the
+complex, and for a ligand target that complex contains the ligand -- which
+CA-ProteinMPNN parses by finding no CA atoms in the ligand chain and dropping it.
+Routing through the dispatcher means those runs get LigandMPNN, which is the
+model that can actually see what the binder has to bind.
+
+What follows is what the situation was before that change.
+
+`metric.inverse_folding_model` selected the model for the **complex track only**.
+`monomer_eval` imported `run_proteinmpnn` directly, so designability was hardwired
+to CA-ProteinMPNN whatever that key said. And
 `configs/pipeline/binder/binder_evaluate.yaml` sets `soluble_mpnn`, so in the
 binder pipeline as it actually runs:
 
@@ -315,11 +335,9 @@ the plain design PDB, which is consistent with their being all-atom models.
 
 Two consequences for the work ahead:
 
-- **Sharing has a precondition nobody stated:** the two tracks must use the same
-  inverse folder. Either `inverse_folding_model` starts governing designability
-  too, or sharing is only available when it is set to `protein_mpnn`. Silently
-  sharing across two models would hand the complex track sequences designability
-  drew from a different distribution.
+- **Sharing had a precondition nobody stated:** the two tracks must use the same
+  inverse folder, or sharing hands one track sequences the other drew from a
+  different distribution. Met now, by the change above.
 - **`mpnn_seed` does not include the model**, which is correct as long as each
   model seeds its own draw, and wrong the moment a shared draw is keyed on it.
 
