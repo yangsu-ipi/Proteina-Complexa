@@ -286,6 +286,6 @@ For the downstream design / evaluate runs that consume the target, defer to `com
 - `configs/targets/targets_dict.yaml` — live protein entries (copy a known-good one as a template).
 - `configs/targets/ligand_targets_dict.yaml` — live ligand entries.
 - `configs/design_tasks/ame_dict_v2.yaml` — AME task definitions (file-edit only, not exposed via `complexa target` CLI).
-- `src/proteinfoundation/cli/cli_runner.py:1177-1321` — argparse source of truth for `complexa target`. (`src/proteinfoundation/cli/target_cli.py` backs the *separate* `complexa-target` console script declared at `pyproject.toml:73`; its flags are not the ones `complexa target` parses.)
+- `src/proteinfoundation/cli/cli_runner.py:1177-1321` — argparse source of truth for `complexa target`. (`src/proteinfoundation/cli/target_cli.py` backs the *separate* `complexa-target` console script declared at `pyproject.toml:74`; its flags are not the ones `complexa target` parses.)
 - `src/proteinfoundation/cli/target_manager.py` — `add_target_cli`, `list_targets`, `show_target`, schema in `TARGET_FIELDS`, and the CLI-only defaults at `:1004-1030`.
 - `src/proteinfoundation/cli/validate.py` — `validate_target` implementation (currently cannot resolve `target_dict_cfg`; see Step 4).

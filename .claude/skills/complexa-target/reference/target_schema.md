@@ -279,7 +279,7 @@ Two things to know:
 
 ## Cross-references
 
-- CLI: `src/proteinfoundation/cli/cli_runner.py:1177-1321` (the parser behind `complexa target`). `src/proteinfoundation/cli/target_cli.py` is the separate `complexa-target` console script (`pyproject.toml:73`).
+- CLI: `src/proteinfoundation/cli/cli_runner.py:1177-1321` (the parser behind `complexa target`). `src/proteinfoundation/cli/target_cli.py` is the separate `complexa-target` console script (`pyproject.toml:74`).
 - Manager + schema: `src/proteinfoundation/cli/target_manager.py` (see `TARGET_FIELDS`; the CLI-only defaults are at `:984-1030`)
 - Validator: `src/proteinfoundation/cli/validate.py::validate_target` — **currently cannot resolve `target_dict_cfg` for any config in this repo**, so `complexa validate target CONFIG --target NAME` always fails with `Could not find target_dict_cfg in config` (`validate.py:183-187` skips Hydra composition, `:315-317` needs a dict-valued `defaults:` entry where the pipelines have strings, `:359-361` falls back to the non-existent `configs/generation/targets_dict.yaml`). Verify targets by reading the YAML and checking the PDB path — see `SKILL.md` Step 4.
 - Protein dict: `configs/targets/targets_dict.yaml`

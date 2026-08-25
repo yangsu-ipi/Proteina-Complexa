@@ -29,7 +29,7 @@ which raises `FileNotFoundError` from a module-level statement in
 `biotite`, `openfold`, and `torch` eagerly at module load, so those are all fine by the
 time you see this. `gen_dataset` is the **first lazily-imported module** in the run — it is
 pulled in only at `hydra.utils.instantiate(cfg_gen.dataloader)`
-(`src/proteinfoundation/generate.py:835`) — and it drags in four modules nothing in
+(`src/proteinfoundation/generate.py:959`) — and it drags in four modules nothing in
 `generate.py`'s eager graph touches:
 
 ```
@@ -244,7 +244,7 @@ cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
 before they could be forwarded — even though the script has always accepted them (the
 handler passes `sys.argv[2:]` verbatim). All five are now declared. If you hit
 `unrecognized arguments: --esm2`, either update the repo or bypass the wrapper:
-`complexa-download --esm2` (`pyproject.toml:72`, forwards `sys.argv[1:]`) or
+`complexa-download --esm2` (`pyproject.toml:73`, forwards `sys.argv[1:]`) or
 `bash env/download_startup.sh --esm2`.
 
 or skip the metric for this run:
