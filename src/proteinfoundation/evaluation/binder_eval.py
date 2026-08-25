@@ -252,6 +252,37 @@ def sequences_for_type(
     return stats_seqs
 
 
+def redesign_scores_for_type(
+    seq_type: str,
+    sequences: list[str],
+    sequences_dict: dict,
+) -> list[float]:
+    """ProteinMPNN's own score for each sequence, in the row's order.
+
+    Looked up *by sequence* rather than by position. ``sequences`` is ordered by
+    the stats (see ``sequences_for_type``) while the scores live in
+    ``sequences_dict``, and pairing two lists by index when only one of them is
+    known to be aligned is the mistake ``sequences_for_type`` exists to prevent.
+
+    NaN where there is no score: ``self`` is read off the PDB and was never
+    scored by an inverse folder, and a duplicate sequence with disagreeing scores
+    cannot be attributed to one of them.
+    """
+    by_seq: dict[str, float] = {}
+    ambiguous: set[str] = set()
+    for entry in sequences_dict.get(seq_type, []):
+        seq, score = entry.get("seq"), entry.get("score")
+        if seq is None or score is None:
+            continue
+        if seq in by_seq and by_seq[seq] != score:
+            ambiguous.add(seq)
+        by_seq[seq] = score
+    if ambiguous:
+        logger.warning(f"{len(ambiguous)} duplicate '{seq_type}' sequence(s) with differing scores; reporting NaN")
+
+    return [np.nan if s in ambiguous else by_seq.get(s, np.nan) for s in sequences]
+
+
 def compute_binder_metrics(
     eval_config: DictConfig,
     sample_root_paths: list[str],
@@ -534,6 +565,21 @@ def compute_binder_metrics(
                     row_dict[f"{seq_type}_sequence_all"] = seqs
                     if idx == 0:
                         all_columns.extend([f"{seq_type}_sequence", f"{seq_type}_sequence_all"])
+
+                    # ProteinMPNN's negative log-likelihood for each redesign.
+                    # Computed on every run and discarded until now. Recorded
+                    # because it is the leading candidate for ranking which
+                    # redesigns become candidate binders, and that choice needs
+                    # evidence that it predicts the gate -- which needs the
+                    # scores sitting beside the verdicts. See
+                    # docs/design-notes/apo-holo-redesign-sharing.md.
+                    scores = redesign_scores_for_type(seq_type, seqs, sequences_dict)
+                    if not all(np.isnan(v) for v in scores):
+                        row_dict[f"{seq_type}_mpnn_score"] = scores[seq_best_idx]
+                        row_dict[f"{seq_type}_mpnn_score_all"] = scores
+                        for col in (f"{seq_type}_mpnn_score", f"{seq_type}_mpnn_score_all"):
+                            if col not in all_columns:
+                                all_columns.append(col)
 
                 # Per-sequence verdict against the success criteria, positionally
                 # aligned with every other *_all column on this row, so

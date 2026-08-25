@@ -769,6 +769,8 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_sequence` | Best sequence selected by ranking |
 | `{seq}_complex_i_pAE_all` | All i_pAE values (list, one per MPNN sequence) |
 | `{seq}_binder_scRMSD_all` | All scRMSD values (list) |
+| `{seq}_mpnn_score` | ProteinMPNN negative log-likelihood for the best sequence (lower = better); absent for `self` |
+| `{seq}_mpnn_score_all` | Per-sequence ProteinMPNN scores (list) |
 | `{seq}_pass` | 1/0: does the best sequence meet every success criterion |
 | `{seq}_pass_all` | Per-sequence 1/0 verdicts (list) |
 | `{seq}_aa_counts` | Amino acid composition (dict) |
