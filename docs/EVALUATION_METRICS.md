@@ -75,7 +75,7 @@ Every evaluation is configured by two keys: **`protein_type`** (set in evaluatio
 
 | `protein_type` | `result_type` | What is evaluated | Pipeline config | Default thresholds |
 |----------------|---------------|-------------------|----------------|--------------------|
-| `binder` | `protein_binder` | Binder + protein target | `search_binder_local_pipeline.yaml` | i_pAE*31 <= 7.0, pLDDT >= 0.9, scRMSD_ca < 1.5 |
+| `binder` | `protein_binder` | Binder + protein target | `search_binder_local_pipeline.yaml` | i_pAE*31 <= 7.0, pLDDT >= 0.9, scRMSD_ca < 1.5, apo scRMSD_ca < 2.0 |
 | `binder` | `ligand_binder` | Binder + ligand target | `search_ligand_binder_local_pipeline.yaml` | min_ipAE*31 < 2.0, scRMSD_ca < 2.0, ligand scRMSD < 5.0 |
 | `monomer` | `monomer` | Single-chain protein | — | designability scRMSD < 2.0 |
 | `monomer_motif` | `monomer_motif` | Single-chain + motif region | — | motif RMSD + codesignability |
@@ -825,10 +825,23 @@ target. Both are per sequence and share the `_all` ordering, so index `i` is one
 sequence judged in both conditions — which is what a joint apo-and-holo criterion
 needs, and what the design-level designability metrics cannot express.
 
-It **gates nothing today**. The threshold should be chosen after seeing the
-distribution on a real run; picking one first makes "the gate works" and "the
-gate is mis-calibrated" indistinguishable. When it is chosen, the column name is
-built so a threshold entry finds it with no code change:
+It is **the fourth protein-binder success criterion**, `apo scRMSD_ca < 2.0`, in
+`DEFAULT_PROTEIN_BINDER_THRESHOLDS`. A design must fold as designed both with and
+without its target. Not in the ligand defaults — apo folding is skipped for
+ligand targets, whose folders take a single protein chain.
+
+2.0 Å follows the monomer scRMSD convention rather than a measured distribution.
+scRMSD is geometric so the number transfers in principle, but no run has produced
+the apo distribution for binders; expect to revisit it once one has. The apo
+columns are emitted whether or not they gate, so the distribution is readable
+from any run.
+
+**Turning `compute_apo_metrics` off removes gating entirely** — it does not fall
+back to the three holo criteria. A criterion whose column never appears makes
+`per_sequence_pass` return `None` and `add_success_rate_columns` return early, so
+no verdicts and no pass rates are produced for any sequence type. Both now log an
+error saying so, and evaluation warns at startup. To gate on the holo criteria
+alone, override the threshold set rather than switching the metric off:
 
 ```yaml
 aggregation:
@@ -836,12 +849,13 @@ aggregation:
     i_pAE:   {threshold: 7.0, op: "<=", scale: 31.0, column_prefix: complex}
     pLDDT:   {threshold: 0.9, op: ">=", scale: 1.0,  column_prefix: complex}
     scRMSD_ca: {threshold: 1.5, op: "<", scale: 1.0, column_prefix: binder}
-    scRMSD_ca_esmfold: {threshold: 2.0, op: "<", scale: 1.0, column_prefix: apo}
 ```
 
+The criterion names the mode and folding model, so changing `apo_rmsd_modes` or
+`apo_folding_models` changes the column and the threshold key must follow.
+
 Costs one monomer fold per sequence per design on top of complex folding, cached
-per design in `monomer_fold_cache_apo_{seq_type}.json`. Skipped for ligand
-targets, whose folders take a single protein chain.
+per design in `monomer_fold_cache_apo_{seq_type}.json`.
 
 `{seq}_pass*` is absent -- rather than zero -- when a criterion's column was
 never computed, because "not judged" is not "failed". The criteria applied are

@@ -32,9 +32,13 @@ metric:
   inverse_folding_model: soluble_mpnn  # protein_mpnn, ligand_mpnn, soluble_mpnn
 
   # Apo refolding: fold each sequence WITHOUT the target and measure scRMSD
-  # against the designed binder backbone. Ungated -- emitted for calibration.
+  # against the designed binder backbone. GATED at 2.0 A, as the fourth protein
+  # binder success criterion (DEFAULT_PROTEIN_BINDER_THRESHOLDS) -- a design must
+  # now fold as designed both with and without its target.
   # Costs one monomer fold per sequence per design on top of complex folding.
-  compute_apo_metrics: false
+  # Turning this off removes that criterion's column and so removes gating
+  # entirely; override aggregation.success_thresholds if that is what you want.
+  compute_apo_metrics: true
   apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true

@@ -31,6 +31,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     TMOL_METRIC_COLS,
     apo_column,
     apo_fold_fingerprint,
+    check_thresholds_are_computable,
     extract_binder_chain_to_pdb,
     get_binder_chain_from_complex,
     get_metric_columns,
@@ -430,6 +431,7 @@ def compute_binder_metrics(
     # Emitting the vector here settles it once, from the same
     # aggregation.success_thresholds analysis reads.
     success_thresholds = resolve_success_thresholds(eval_config, is_target_ligand)
+    check_thresholds_are_computable(success_thresholds, cfg_metric.get("compute_apo_metrics", False))
     logger.info(
         "Per-sequence pass criteria: " + ", ".join(f"{name}{spec}" for name, spec in success_thresholds.items())
     )
