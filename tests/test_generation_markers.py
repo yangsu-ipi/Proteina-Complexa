@@ -25,6 +25,7 @@ from omegaconf import OmegaConf
 from proteinfoundation.generate import (
     GENERATION_DIGEST_IGNORED_KEYS,
     GENERATION_DIGEST_VERSION,
+    digest_v1_candidates,
     generation_config_digest,
     shard_already_complete,
     shard_marker_path,
@@ -94,9 +95,19 @@ def test_matching_digest_skips(tmp_path):
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
 
 
-def test_matching_digest_regenerates_when_skipping_is_disabled(tmp_path):
-    write_marker(tmp_path, "a" * 64)
+def test_forcing_a_rerun_clears_what_it_is_about_to_redo(tmp_path):
+    """The digest matches, so this is a request to redo exactly this shard.
+    Leaving the old directories made the result a mix of two attempts, with the
+    colliding names overwritten and the rest left beside them -- the branch even
+    warned that names would differ, which the mismatch path above it corrects."""
+    produced = tmp_path / "job_0_n_100_id_0"
+    produced.mkdir()
+    (produced / "job_0_n_100_id_0.pdb").write_text("ATOM\n")
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=False) is False
+    assert not produced.exists(), "the recorded output should be gone before regenerating"
+    assert not os.path.exists(shard_marker_path(str(tmp_path), 0)), "the marker should go too"
 
 
 @pytest.mark.parametrize("skip_enabled", [True, False])
@@ -118,11 +129,58 @@ def test_the_refusal_names_both_recoveries(tmp_path):
 
 
 @pytest.mark.parametrize("version", [None, 1])
-def test_an_older_digest_formula_is_incomparable_not_a_mismatch(tmp_path, version):
-    """Aborting a resume because *our* hash changed would be a false alarm on a
-    hard failure -- worse than the warning it replaced."""
+def test_an_unrecognisable_legacy_marker_refuses(tmp_path, version):
+    """This test previously asserted the opposite, and was wrong to.
+
+    Continuing let the first post-upgrade resume of every existing campaign write
+    into a populated root whose config could not be checked -- overwriting
+    structures, since the counters restart, and leaving the previous run's
+    evaluation files beside the new designs. Being wrong that way loses data;
+    being wrong the other way costs one command.
+    """
     write_marker(tmp_path, "a" * 64, version=version)
-    assert shard_already_complete(str(tmp_path), 0, "b" * 64, skip_enabled=True) is False
+    with pytest.raises(SystemExit, match="Refusing to generate"):
+        shard_already_complete(str(tmp_path), 0, "b" * 64, skip_enabled=True)
+
+
+@pytest.mark.parametrize("version", [None, 1])
+def test_a_legacy_marker_whose_v1_digest_matches_is_the_same_request(tmp_path, version):
+    """So the upgrade does not force a rename on campaigns that did not change."""
+    config = cfg()
+    legacy = digest_v1_candidates(config)
+    write_marker(tmp_path, sorted(legacy)[0], version=version)
+    assert (
+        shard_already_complete(
+            str(tmp_path),
+            0,
+            generation_config_digest(config),
+            skip_enabled=True,
+            legacy_digests=legacy,
+        )
+        is True
+    )
+
+
+def test_v1_candidates_cover_the_operational_key_it_used_to_hash(tmp_path):
+    """v1 hashed skip_completed_shards, v2 does not, so an unchanged config has
+    several possible v1 digests. All of them must be recognised or the flag's
+    value at marker-write time decides whether a resume is refused."""
+    for value in (True, False):
+        assert digest_v1_candidates(cfg(skip_completed_shards=value)) == digest_v1_candidates(cfg())
+    assert len(digest_v1_candidates(cfg())) >= 2
+
+
+def test_a_changed_config_is_still_refused_under_the_legacy_path(tmp_path):
+    """Recomputing v1 must not become a way to wave through a real change."""
+    write_marker(tmp_path, "a" * 64, version=1)
+    with pytest.raises(SystemExit, match="Refusing to generate"):
+        shard_already_complete(
+            str(tmp_path),
+            0,
+            generation_config_digest(cfg()),
+            skip_enabled=True,
+            legacy_digests=digest_v1_candidates(cfg(args={"nsteps": 999})),
+        )
 
 
 def test_an_unreadable_marker_does_not_stop_the_run(tmp_path):

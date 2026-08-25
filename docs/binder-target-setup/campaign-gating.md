@@ -300,12 +300,28 @@ next run compares digests:
 |---|---|
 | absent | generate, silently |
 | digest matches, directories intact | **skip the shard** |
-| digest matches, directories missing | warn, regenerate |
-| digest differs | warn that output from a different request is present, regenerate |
+| digest matches, directories missing | clear what survived, regenerate |
+| **digest differs** | **abort** — a different request already owns this directory |
+| **older digest formula, v1 digest matches this config** | same request; behave as if it matched |
+| **older digest formula, v1 digest does not match** | **abort** — cannot tell whether the config changed |
 | unreadable | warn, regenerate |
 
-Set `skip_completed_shards: false` to force regeneration; the warning it then emits names the
-duplication that follows.
+Aborting rather than continuing, because directory names are
+`job_{job}_n_{length}_id_{counter}` with the counter restarting each run and PDBs written
+`overwrite=True`. Only a metadata tag (a beam path) makes them differ, so for pipelines
+without one, continuing overwrote structures and left the previous run's evaluation files
+beside the new designs. The recovery is a new `generation.run_name` or a clean directory.
+
+Markers written before the digest was versioned are recognised where possible: the older
+formula is recomputed for the current config, including for each value the operational keys
+it used to hash might have held. So an unchanged campaign resumes normally, and only a
+genuinely unrecognisable marker is refused.
+
+`skip_completed_shards: false` forces regeneration of a shard whose digest matches, and
+**removes the directories that shard recorded first**. The digest matching means this is a
+request to redo exactly that shard, and redoing it means replacing its output rather than
+writing over whichever names happen to collide. It previously warned that regeneration
+would produce new directory names; that was the same mistaken claim corrected above.
 
 **Resolution is attempted, never required.** The generation subtree carries `oc.env`
 interpolations for things a given run may not touch — `af_params_dir: ${oc.env:AF2_DIR}` sits
