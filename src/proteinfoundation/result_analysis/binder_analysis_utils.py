@@ -92,6 +92,26 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
         "scale": 1.0,
         "column_prefix": "binder",
     },
+    # Apo: the same sequence folded WITHOUT its target. BoltzGen reports that
+    # requiring a binder to fold as designed both with and without the target
+    # improves experimental success, and the holo criteria above cannot see it.
+    #
+    # 2.0 A follows the monomer scRMSD convention rather than a measured
+    # distribution -- scRMSD is geometric, so the number transfers in principle,
+    # but no run has produced the apo distribution for binders. Expect to revisit
+    # it once one has.
+    #
+    # Requires metric.compute_apo_metrics, and names the mode and folding model:
+    # changing apo_rmsd_modes or apo_folding_models changes the column, and a
+    # criterion naming a column that is not produced cannot be evaluated.
+    # check_thresholds_are_computable says so at startup rather than leaving it to
+    # be inferred from pass rates.
+    "scRMSD_ca_esmfold": {
+        "threshold": 2.0,
+        "op": "<",
+        "scale": 1.0,
+        "column_prefix": "apo",
+    },
 }
 
 # Default ligand binder success thresholds

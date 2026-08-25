@@ -326,7 +326,15 @@ def add_success_rate_columns(
         col_name = build_column_name(seq_type, parsed["column_prefix"], metric_name)
         required_cols.append(col_name)
 
-    if not all(col in df_grouped.columns for col in required_cols):
+    missing = [col for col in required_cols if col not in df_grouped.columns]
+    if missing:
+        # Loud, because returning here removes the gate rather than weakening it:
+        # no pass_rate column is written at all, and a reader sees an absent
+        # metric rather than an unevaluated one.
+        logger.error(
+            f"No '{criteria_name}' pass rates for '{seq_type}': the criteria need column(s) {missing}, "
+            f"which the results do not contain. Check that every metric in the threshold set was computed."
+        )
         return
 
     # Compute pass rates for each row
