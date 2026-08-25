@@ -96,7 +96,7 @@ ligand and let the model build the rest of the protein around them.
 - Pre- and post-refolding interface metrics are **disabled**:
   `compute_pre_refolding_metrics` and `compute_refolded_structure_metrics` are
   both `false` (`ame_evaluate.yaml:73, :81`), as are all four sub-toggles
-  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:401-403`
+  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:405-407`
   reads only `bioinformatics` and `tmol`.
 - Quick command:
   ```bash
@@ -189,5 +189,5 @@ Pass-rate columns land in `filter_results/res_filter_*_pass_*.csv` (AME's
 `res_filter_motif_binder_pass_*.csv` goes to `motif_binder_metrics/` instead);
 diversity columns in `diversity/res_div_foldseek_*.csv` and
 `diversity/res_div_mmseqs_*.csv`; per-design metrics in the combined CSV. The
-subdirectories are created by `organize_results()` (`analyze.py:2812-2855`),
+subdirectories are created by `organize_results()` (`analyze.py:2813-2856`),
 which moves these files out of the results-dir root.
