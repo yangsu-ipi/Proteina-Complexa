@@ -120,6 +120,42 @@ def sample(pdb_path, workdir, tag, context_chains, design_chain, n, seed):
     return [r["seq"] for r in results], seed_from_fasta(fasta_path)
 
 
+def input_equivalence(pdb_path, other_pdb, workdir, context_chains, design_chain, n, seed):
+    """Do two structures that should be the same ProteinMPNN input produce the same sequences?
+
+    The two tracks read different files for one design: the complex track reads
+    ``{stem}_updated.pdb``, which is CA-only with target residue identities
+    restored, and designability reads the design PDB itself. Under ``--ca_only``
+    ProteinMPNN parses CA atoms and CA coordinates from either, so the files
+    *should* be equivalent input -- but "should" is the word that precedes the
+    bugs, and if they are not equivalent then equal seeds still give different
+    redesigns and the tracks cannot share.
+
+    Both runs use the seed derived from the design, not from each file's own
+    stem, mirroring production: binder_metrics seeds on the design name even
+    though it hands ProteinMPNN the _updated view.
+
+    Returns True/False, or None if it could not be run.
+    """
+    print("\ninput equivalence (design PDB vs its _updated view)")
+    print(f"  other input:    {other_pdb}")
+    try:
+        a, _ = sample(pdb_path, workdir, "equiv_design", context_chains, design_chain, n, seed)
+        b, _ = sample(other_pdb, workdir, "equiv_updated", context_chains, design_chain, n, seed)
+    except Exception as exc:
+        print(f"  [ABORT] ProteinMPNN failed: {exc}")
+        return None
+
+    same = a == b
+    n_match = sum(x == y for x, y in zip(a, b, strict=False))
+    report("same seed, both inputs, same sequences", same, f"{n_match}/{max(len(a), len(b))} match")
+    if not same:
+        print(f"      design  [0]: {a[0] if a else '-'}")
+        print(f"      updated [0]: {b[0] if b else '-'}")
+        print("      The tracks must be standardised on one input file before they can share.")
+    return same
+
+
 def report(label: str, ok: bool, detail: str = "") -> bool:
     print(f"  [{'PASS' if ok else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
     return ok
@@ -200,6 +236,12 @@ def main() -> int:
     ap.add_argument("--binder-chain", default=None, help="Chain to redesign (default: last chain)")
     ap.add_argument("--small", type=int, default=2, help="num_redesign_seqs, the shared subset size")
     ap.add_argument("--large", type=int, default=8, help="designability_num_seq, the full draw")
+    ap.add_argument(
+        "--updated-pdb",
+        default=None,
+        help="The design's _updated.pdb, to check the two tracks' inputs are equivalent. "
+        "Auto-detected beside the design PDB when present; 'none' disables.",
+    )
     ap.add_argument("--keep", action="store_true", help="Keep the working directory for inspection")
     args = ap.parse_args()
 
@@ -242,6 +284,28 @@ def main() -> int:
             )
         else:
             print("\ncomplex: skipped -- single-chain PDB has no target context")
+
+        # The other half of the sharing question: the tracks read different
+        # files for one design, and equal seeds only give equal redesigns if
+        # those files are equivalent input.
+        updated = args.updated_pdb
+        if updated is None:
+            guess = os.path.join(os.path.dirname(args.pdb), design_name(args.pdb) + "_updated.pdb")
+            updated = guess if os.path.exists(guess) else None
+            if updated is None:
+                print(f"\ninput equivalence: skipped -- no {os.path.basename(guess)} beside the design")
+        elif updated.lower() == "none":
+            updated = None
+        if updated and targets:
+            verdicts["input_equivalence"] = input_equivalence(
+                args.pdb,
+                updated,
+                workdir,
+                chains,
+                binder,
+                args.small,
+                mpnn_seed(design_name(args.pdb), chains, [binder]),
+            )
     finally:
         if args.keep:
             print(f"\nWorking directory kept: {workdir}")
@@ -258,15 +322,25 @@ def main() -> int:
     if len(answered) < len(verdicts):
         print("  (some cases were undetermined; see above)")
 
-    # The sharing step depends on the complex case. A binder_only result that
-    # disagrees is worth seeing but does not decide anything.
-    deciding = answered.get("complex", answered.get("binder_only"))
-    if deciding:
+    # Sharing needs the prefix property under complex conditioning, and -- when it
+    # was checked -- the two tracks' inputs to be equivalent. A binder_only result
+    # that disagrees is worth seeing but decides nothing.
+    prefix_ok = answered.get("complex", answered.get("binder_only"))
+    equiv_ok = answered.get("input_equivalence")
+
+    if prefix_ok and equiv_ok is not False:
         print("\nRESULT: PASS -- the shared subset can be reproduced by a shorter seeded run.")
+        if equiv_ok:
+            print("Both tracks' inputs produce the same redesigns, so sharing needs no new plumbing:")
+            print("the second ProteinMPNN run is pure duplicated compute.")
         return EXIT_HOLDS
-    print("\nRESULT: PREFIX PROPERTY DOES NOT HOLD.")
-    print("The sharing step must take its subset from one run of designability_num_seq")
-    print("rather than reproducing it with a run of num_redesign_seqs.")
+    if not prefix_ok:
+        print("\nRESULT: PREFIX PROPERTY DOES NOT HOLD.")
+        print("The sharing step must take its subset from one run of designability_num_seq")
+        print("rather than reproducing it with a run of num_redesign_seqs.")
+    if equiv_ok is False:
+        print("\nRESULT: THE TWO TRACKS' INPUTS ARE NOT EQUIVALENT.")
+        print("Equal seeds still give different redesigns; standardise the input file first.")
     return EXIT_DOES_NOT_HOLD
 
 
