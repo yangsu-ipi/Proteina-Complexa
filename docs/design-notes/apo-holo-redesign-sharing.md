@@ -336,8 +336,8 @@ What survives that, roughly in order of how cheaply it is already available:
   drew, averaged over designed positions -- lower is better
   (`protein_mpnn_utils._scores`, an NLL). Already parsed by
   `extract_gen_seqs_proteinmpnn` into `sequences_dict`, already persisted in
-  `binder_eval_cache.json`, and until now read by nothing. Free. **The intended
-  starting criterion**, for the reason below.
+  `binder_eval_cache.json`, and until now read by nothing. Free. **The first
+  criterion, explicitly provisional** -- see below.
 - **`seqid`**, recovery against the input sequence, parsed and unused likewise.
   For a co-designed binder this measures agreement with the model's own sequence,
   which is a different thing from quality.
@@ -369,6 +369,31 @@ result is read as consistent rather than as evidence against.
 
 `{seq_type}_mpnn_score_all` is emitted beside `{seq_type}_pass_all` so the harm
 check can be run on an existing smoke test rather than argued.
+
+**And it is a starting point, not a decision.** Binding is one attribute of a
+good binder; expressibility is another; there are more, and ranking on the
+non-binding ones is the point rather than a compromise for lacking a binding
+proxy. The criterion is expected to change as the campaigns say more about which
+axes matter. That expectation is a design constraint, not a caveat, and three
+things follow from it:
+
+- **The ranking is a configured, replaceable component, not a sort.** One named
+  selection function, one config key, `none` available so the arbitrary
+  first-N subset stays reachable as the control the harm check compares against.
+  A hardcoded sort would have to be found and surgically replaced.
+- **The criterion in force is provenance, and must be recorded per run.** This
+  is exactly the trap `redesign_conditioning` exists for: two campaigns ranked by
+  different criteria produce different candidate binders under identical column
+  names, and concatenating them would average across a distinction nobody can
+  see. The column has to be groupby-eligible for the same reason -- see the
+  naming constraints in that section, which are not obvious and cost a rename to
+  discover.
+- **Candidate scores are recorded whether or not they rank.** Emitting only the
+  active criterion makes every change of criterion a re-run. Emitting the others
+  alongside makes "what would ranking by X have chosen?" answerable from data
+  already on disk, which is how a criterion gets chosen on evidence instead of
+  on argument. `esm_pseudo_perplexity` already lands this way and is already
+  write-only; the MPNN score now joins it.
 
 **One coupling to keep in view.** Selection and the prefix-property shortcut are
 mutually exclusive. Picking the best 2 of 8 requires generating 8, so the complex
@@ -408,11 +433,12 @@ must pass through one named function rather than a slice written at each use.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
-- **Ranking the redesigns by MPNN score.** The criterion is chosen; the
+- **Ranking the redesigns.** MPNN score is the provisional first criterion; the
   implementation is not written, and it pulls in the duplicate-run deletion,
   since picking the best N requires generating all of them in the track that
   does the picking. The harm check -- that ranking does not cost gate pass rate
-  -- has not been run.
+  against the unranked control -- has not been run. Which criterion it settles
+  on is open indefinitely, by design.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
