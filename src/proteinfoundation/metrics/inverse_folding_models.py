@@ -50,19 +50,44 @@ def extract_gen_seqs_proteinmpnn(path_to_file: str) -> list[dict[str, float]]:
     return seqs
 
 
+# The per-sequence quality number each inverse folder reports, and which way it
+# points. They disagree, and both arrive under the key "score":
+#
+#   ProteinMPNN  score=            an NLL averaged over designed positions,
+#                                  unbounded above, lower is better
+#   LigandMPNN   overall_confidence=  np.exp(-loss), a probability in (0, 1],
+#   SolubleMPNN                     higher is better
+#
+# Monotonically related, so they rank identically up to direction -- which is
+# exactly what makes this dangerous. A ranking hardcoded to one convention sorts
+# correctly for one model and selects the worst sequences for the other, with
+# nothing in the numbers to say which happened. Anything that orders by this
+# value must read the convention from here rather than assume one.
+SCORE_KIND_NLL = "nll_lower_better"
+SCORE_KIND_CONFIDENCE = "confidence_higher_better"
+
+REDESIGN_SCORE_KIND = {
+    "protein_mpnn": SCORE_KIND_NLL,
+    "ligand_mpnn": SCORE_KIND_CONFIDENCE,
+    "soluble_mpnn": SCORE_KIND_CONFIDENCE,
+}
+
+
 def extract_gen_seqs_ligandmpnn(
     path_to_file: str,
     backbone_name: str,
 ) -> list[dict[str, float]]:
-    """Extracts sequences and metadata from ProteinMPNN generation files.
+    """Extracts sequences and metadata from LigandMPNN/SolubleMPNN generation files.
 
     Args:
-        path_to_file: Path to file with ProteinMPNN output in FASTA format.
+        path_to_file: Path to file with LigandMPNN output in FASTA format.
 
     Returns:
         List of dictionaries, each containing:
             - 'seq': The amino acid sequence
-            - 'score': The score value
+            - 'score': overall_confidence -- a probability, HIGHER is better.
+              Not the same convention as the ProteinMPNN parser's 'score', which
+              is an NLL. See REDESIGN_SCORE_KIND.
             - 'seqid': The sequence recovery value
     """
     seqs = []

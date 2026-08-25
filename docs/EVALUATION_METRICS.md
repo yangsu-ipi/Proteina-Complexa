@@ -769,8 +769,9 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_sequence` | Best sequence selected by ranking |
 | `{seq}_complex_i_pAE_all` | All i_pAE values (list, one per MPNN sequence) |
 | `{seq}_binder_scRMSD_all` | All scRMSD values (list) |
-| `{seq}_mpnn_score` | ProteinMPNN negative log-likelihood for the best sequence (lower = better); absent for `self` |
-| `{seq}_mpnn_score_all` | Per-sequence ProteinMPNN scores (list) |
+| `{seq}_mpnn_score` | Inverse folder's own quality score for the best sequence; absent for `self` |
+| `{seq}_mpnn_score_all` | Per-sequence inverse-folder scores (list) |
+| `redesign_score_kind` | Which convention those scores follow — see below |
 | `{seq}_pass` | 1/0: does the best sequence meet every success criterion |
 | `{seq}_pass_all` | Per-sequence 1/0 verdicts (list) |
 | `{seq}_aa_counts` | Amino acid composition (dict) |
@@ -798,6 +799,20 @@ paths = df["mpnn_complex_pdb_path_all"].map(ast.literal_eval)
 failures = [(s, p) for row_s, row_v, row_p in zip(seqs, passes, paths)
             for s, v, p in zip(row_s, row_v, row_p) if not v]
 ```
+
+**The score's direction depends on `metric.inverse_folding_model`**, so read
+`redesign_score_kind` before ordering by it:
+
+| `inverse_folding_model` | reported as | `redesign_score_kind` | better |
+|---|---|---|---|
+| `protein_mpnn` | `score=`, an NLL over designed positions | `nll_lower_better` | lower |
+| `soluble_mpnn`, `ligand_mpnn` | `overall_confidence=`, `exp(-loss)` in (0,1] | `confidence_higher_better` | higher |
+
+Both arrive under the same key, and they are monotonically related, so they rank
+identically *up to direction*. That is what makes assuming a convention
+dangerous: a sort hardcoded to one of them is correct for one model and selects
+the worst sequences for the other, with nothing in the values to say which
+happened.
 
 `{seq}_pass*` is absent -- rather than zero -- when a criterion's column was
 never computed, because "not judged" is not "failed". The criteria applied are
