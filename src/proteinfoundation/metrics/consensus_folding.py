@@ -55,6 +55,7 @@ for binder work than the global ``ranking_score``.
 
 import hashlib
 import json
+import math
 import os
 from collections.abc import Callable
 
@@ -316,6 +317,58 @@ def available_backends() -> list[str]:
 
 def advisory_column(seq_type: str, backend: str, metric_suffix: str) -> str:
     return f"{seq_type}_{backend}_{metric_suffix}"
+
+
+def _agreeing_indices(row: dict, columns: list[str]) -> set[int] | None:
+    """Indices at which every scalar equals its own ``_all`` entry.
+
+    None when there is nothing to check. NaN counts as agreeing with NaN: a
+    backend that failed writes NaN to both, and that is consistent, not a
+    mismatch.
+    """
+    candidates: set[int] | None = None
+    for column in columns:
+        values = row.get(f"{column}_all")
+        if not isinstance(values, list):
+            continue
+        scalar = row.get(column)
+        here = {
+            i
+            for i, value in enumerate(values)
+            if value == scalar
+            or (isinstance(value, float) and isinstance(scalar, float) and math.isnan(value) and math.isnan(scalar))
+        }
+        candidates = here if candidates is None else candidates & here
+    return candidates
+
+
+def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> None:
+    """Fail if the advisory headline describes a different sequence than the primary one.
+
+    Every ``*_all`` column on a row is parallel: index *i* is one sequence, and the
+    scalar beside each list is that list's entry at the index the row's headline
+    refers to. The advisory scalars used ``advisory[0]`` while the primary ones
+    used ``seq_best_idx``, so whenever the best sequence was not the first,
+    ``{seq}_esmfold2_i_pAE`` and ``{seq}_complex_i_pAE`` described different
+    redesigns -- with nothing in either number saying so.
+
+    Checked on the row rather than at the point of assignment, because that is
+    where the property has to hold: a future call site can reintroduce the bug
+    with entirely different code and this still catches it.
+
+    Raises:
+        ValueError: If no single index explains both sets of headlines.
+    """
+    primary = _agreeing_indices(row, [f"{seq_type}_complex_{m}" for m in CONSENSUS_METRIC_SUFFIXES])
+    advisory = _agreeing_indices(row, [advisory_column(seq_type, backend, m) for m in CONSENSUS_METRIC_SUFFIXES])
+    if primary is None or advisory is None:
+        return  # best-only mode, or a metric this backend does not report
+    if primary and advisory and not (primary & advisory):
+        raise ValueError(
+            f"Advisory headline for '{seq_type}' / '{backend}' describes a different sequence than the "
+            f"primary headline: primary headline is at index(es) {sorted(primary)}, advisory at "
+            f"{sorted(advisory)}. Both scalars must be their own _all list's entry at one shared index."
+        )
 
 
 def assert_columns_are_advisory(columns: list[str], gated_columns: set[str]) -> None:
