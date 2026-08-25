@@ -292,6 +292,44 @@ make the design PDB an unsafe ProteinMPNN input and the file choice
 load-bearing. It is neither. Conditioning designability on the design PDB
 conditions it on the true target, with the true target sequence.
 
+## The tracks do not use the same inverse folder
+
+`metric.inverse_folding_model` selects the model for the **complex track only**.
+`monomer_eval` imports `run_proteinmpnn` directly, so designability is hardwired
+to CA-ProteinMPNN whatever that key says. And
+`configs/pipeline/binder/binder_evaluate.yaml` sets `soluble_mpnn`, so in the
+binder pipeline as it actually runs:
+
+| | model | weights | input |
+|---|---|---|---|
+| complex track | SolubleMPNN via LigandMPNN's `run.py` | `solublempnn_v_48_020.pt` | the design PDB, all atoms |
+| designability | CA-ProteinMPNN, vanilla | `ca_model_weights/v_48_020.pt` | the design PDB, CA read out |
+
+Different models, different sequences. The measurement below -- that the two
+tracks produce identical redesigns -- was made by driving `run_proteinmpnn`
+directly, so it establishes that for `inverse_folding_model: protein_mpnn` and
+says nothing about the configuration the binder pipeline uses.
+
+`_updated.pdb` is only ever ProteinMPNN's input. SolubleMPNN and LigandMPNN read
+the plain design PDB, which is consistent with their being all-atom models.
+
+Two consequences for the work ahead:
+
+- **Sharing has a precondition nobody stated:** the two tracks must use the same
+  inverse folder. Either `inverse_folding_model` starts governing designability
+  too, or sharing is only available when it is set to `protein_mpnn`. Silently
+  sharing across two models would hand the complex track sequences designability
+  drew from a different distribution.
+- **`mpnn_seed` does not include the model**, which is correct as long as each
+  model seeds its own draw, and wrong the moment a shared draw is keyed on it.
+
+There is also an opportunity here, given the ranking criterion is chosen for
+expressibility: SolubleMPNN is the model trained on soluble proteins, so its
+likelihood is a more direct expressibility signal than vanilla ProteinMPNN's.
+Which model *generates* the redesigns and which model's score *ranks* them are
+separate knobs, and scoring existing redesigns under a second model is far
+cheaper than changing generation.
+
 ## What sharing turned out to be
 
 Measured, on the CBLN1/5KC5 design, with `verify_mpnn_prefix.py --target-pdb`:

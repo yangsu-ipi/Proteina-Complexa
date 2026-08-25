@@ -15,16 +15,22 @@ lets the apo and holo tracks share one set of redesigns; see
 
 import hashlib
 
-# Bump whenever deterministic_seed changes -- adding a component, reordering the
-# parts, changing the hash. Every seed changes when it does, and therefore every
-# structure, every redesign and every number, while nothing else in a cache
-# fingerprint moves. It goes into the cache fingerprints so that a derivation
-# change invalidates instead of silently serving samples drawn from the old seeds
-# beside freshly drawn ones.
+# Bump whenever the seeds actually applied change -- a new component in
+# deterministic_seed, reordered parts, a different hash, or a plumbing fix that
+# changes which calls get seeded at all. It goes into the cache fingerprints so
+# that such a change invalidates instead of silently serving samples drawn under
+# the old seeds beside freshly drawn ones.
 #
-# Still 1: moving this function between modules did not change what it
-# computes, and bumping for a move would invalidate caches for no reason.
-SEED_DERIVATION_VERSION = 1
+# The looser wording is deliberate. Version 1 was documented as covering the hash
+# function, which read as narrower than what the constant has to guarantee: an
+# entry cached under this version must be reproducible by recomputing it. A
+# --seed that never reached the subprocess breaks that guarantee without touching
+# the hash at all, which is exactly what happened.
+#
+# 2: --seed was being dropped for LigandMPNN and SolubleMPNN, so redesigns on
+# those paths -- including the binder pipeline's, which configures soluble_mpnn --
+# were unseeded regardless of what was derived for them.
+SEED_DERIVATION_VERSION = 2
 
 
 def deterministic_seed(*parts: str) -> int:
