@@ -257,6 +257,41 @@ conditioning, new alphabet, new seeds. `redesign_conditioning` now reports
 `complex` for binder runs, which is what makes the two eras distinguishable
 rather than merely different.
 
+## What the target actually is, and what `_updated.pdb` is for
+
+Recorded because reading the code alone gave the wrong answer, twice.
+
+The paper (ICLR 2026, `openreview.net/forum?id=qmCpJtFZra`) is explicit that the
+target is **clean conditioning, never generated**: the denoiser processes "noisy
+binder embeddings and clean target embeddings", and "the output of our flow
+matching model is solely the binder" -- its generative output is "the velocity
+field for the binder", by the same construction La-Proteina uses for motif
+scaffolding, where the output is "restricted to the generated scaffold, not the
+motif itself". Training also "center[s] the complex so that the target lies at
+the origin".
+
+So the target chain of a generated complex is the input target under a rigid
+transform. Measured on a CBLN1/5KC5 design against its reference target: 136 CAs
+either side, **res_name identity 1.000**, CA RMSD 44.8 A as-is and **0.000 A
+superposed**. Bit-identical geometry in a moved frame, and identities already
+correct.
+
+Which means `replace_seq_in_generated_pdb` -- and therefore `_updated.pdb` --
+does two things, one of which is currently a no-op:
+
+- restores target residue identities: **a no-op today**, they already match;
+- reduces to CA only: the real difference from the design PDB.
+
+And `run_proteinmpnn` passes `--ca_only`, under which ProteinMPNN's `parse_PDB`
+reads CA atoms and CA coordinates only. So the reduction the file performs is one
+ProteinMPNN performs anyway.
+
+The tempting inference from the code alone -- that the model emits target residue
+identities and the replacement repairs them -- is wrong, and it matters: it would
+make the design PDB an unsafe ProteinMPNN input and the file choice
+load-bearing. It is neither. Conditioning designability on the design PDB
+conditions it on the true target, with the true target sequence.
+
 ## Still open
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
@@ -287,6 +322,14 @@ rather than merely different.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
+- **Do the two tracks' ProteinMPNN inputs produce identical redesigns?** They
+  read different files for one design -- the complex track `_updated.pdb`,
+  designability the design PDB -- which under `--ca_only` should be equivalent
+  input, and the section above says why. If it is, sharing needs no plumbing at
+  all: the seeds already agree, the prefix property already holds, and the second
+  ProteinMPNN run is pure duplicated compute to be deleted. Checked by
+  `verify_mpnn_prefix.py`, which auto-detects `{stem}_updated.pdb` beside the
+  design and runs both under one seed.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
