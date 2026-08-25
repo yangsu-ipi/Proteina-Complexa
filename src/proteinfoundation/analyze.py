@@ -73,6 +73,7 @@ from proteinfoundation.result_analysis.binder_analysis import (
     compute_filter_pass_rate,
     filter_by_success_thresholds,
     save_combined_success_criteria_json,
+    warn_if_pass_columns_are_stale,
 )
 from proteinfoundation.result_analysis.binder_analysis_utils import (
     DEFAULT_LIGAND_BINDER_THRESHOLDS,
@@ -2999,6 +3000,16 @@ def main(cfg: DictConfig) -> None:
     if not result_files:
         logger.error(f"No result files found in {results_dir}")
         sys.exit(1)
+
+    # The per-sequence *_pass columns were decided during evaluation. Say so now,
+    # before any number is printed, if this analysis is judging by different
+    # criteria than the ones baked into those columns.
+    if result_type in ("protein_binder", "ligand_binder"):
+        warn_if_pass_columns_are_stale(
+            result_files=result_files,
+            success_thresholds=success_thresholds,
+            is_ligand=result_type == "ligand_binder",
+        )
 
     # Handle dryrun mode
     if dryrun:

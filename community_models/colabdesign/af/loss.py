@@ -286,9 +286,9 @@ def get_min_ipae_loss(outputs, mask_1d=None, mask_1b=None, mask_2d=None):
   return mask_min_loss(p, mask_2d)
 
 def calc_d0(L):
-  L = jnp.clip(L, a_min=27)
+  L = jnp.clip(L, min=27)
   d0 = 1.24 * (L - 15) ** (1.0 / 3.0) - 1.8
-  return jnp.clip(d0, a_min=1.0)
+  return jnp.clip(d0, min=1.0)
 
 def get_min_ipsae_loss(outputs, mask_1d, mask_1b, pae_cutoff=15.0):
   # pae cutoff 15 for af2, 10 for af3 and boltz

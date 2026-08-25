@@ -34,7 +34,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
-from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table
+from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.inverse_folding_models import run_proteinmpnn
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
@@ -43,6 +43,23 @@ from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb, pd
 # =============================================================================
 # Structure Prediction
 # =============================================================================
+
+
+def designability_mpnn_chains(binder_chain: str | None) -> list[str]:
+    """The chains ProteinMPNN *sees* when redesigning a binder for designability.
+
+    Its context, not the set it redesigns -- those coincide today and stop
+    coinciding once the target is added.
+
+    A single definition so the redesigns and the ``redesign_conditioning`` column
+    that describes them cannot disagree: the column is derived from this list,
+    not asserted alongside it. Today the binder alone, because designability runs
+    on the extracted binder and the target is not in the file at all. Extending
+    it to the target's context is the change tracked in
+    ``docs/design-notes/apo-holo-redesign-sharing.md``; doing that here updates
+    the reported provenance in the same edit.
+    """
+    return [binder_chain if binder_chain is not None else "A"]
 
 
 def get_sequences_for_evaluation(
@@ -75,13 +92,16 @@ def get_sequences_for_evaluation(
         if tmp_path is None:
             tmp_path = os.path.dirname(pdb_path)
 
-        # Determine which chain to design (default "A" for monomers)
+        # Determine which chain to design (default "A" for monomers), and which
+        # chains ProteinMPNN gets to see while designing it. The same list today;
+        # kept separate because the conditioning change widens the second without
+        # widening the first -- the binder is still the only chain redesigned.
         chain_to_design = binder_chain if binder_chain is not None else "A"
 
         gen_seqs = run_proteinmpnn(
             pdb_path,
             tmp_path,
-            all_chains=[chain_to_design],
+            all_chains=designability_mpnn_chains(binder_chain),
             pdb_path_chains=[chain_to_design],
             num_seq_per_target=num_seq_per_target,
             sampling_temp=pmpnn_sampling_temp,
@@ -580,6 +600,12 @@ def compute_monomer_metrics(
     do_seq_rec = cfg_metric.get("compute_co_sequence_recovery", monomer_on)
     do_ss = cfg_metric.get("compute_ss", True)
 
+    # Provenance for the designability numbers. Declared with the columns because
+    # the frame is built with reindex(columns=columns) and anything absent here
+    # is dropped from every row.
+    if do_des:
+        columns.append("redesign_conditioning")
+
     metrics = {}
 
     # Initialize metric columns
@@ -671,6 +697,12 @@ def compute_monomer_metrics(
         }
         if _is_complex(protein_type):
             row_dict["complex_pdb_path"] = complex_pdb_path
+        if do_des:
+            # Which conditioning the designability numbers on this row carry.
+            # Groupby-eligible on purpose: concatenating results from before and
+            # after the conditioning change then splits into separate rows
+            # instead of averaging two different metrics into one.
+            row_dict["redesign_conditioning"] = redesign_conditioning(designability_mpnn_chains(binder_chain))
         results.append(row_dict)
 
         # Create tmp_dir for this sample

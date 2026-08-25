@@ -414,3 +414,35 @@ def read_and_update_timing_csv(timing_csv_path: str, job_id: int, evaluation_tim
             logger.info(f"Created timing CSV with evaluation_time={evaluation_time:.2f}s")
     except Exception as e:
         logger.error(f"Failed to update timing CSV: {e}")
+
+
+# =============================================================================
+# Redesign Provenance
+# =============================================================================
+
+REDESIGN_CONDITIONING_COMPLEX = "complex"
+REDESIGN_CONDITIONING_BINDER_ONLY = "binder_only"
+
+
+def redesign_conditioning(all_chains: list[str]) -> str:
+    """What ProteinMPNN saw when it produced a redesign set.
+
+    Recorded because the designability metrics keep their column names while
+    their meaning changes: the monomer track redesigns the extracted binder
+    alone today, and is moving to redesigning it in the target's context (see
+    ``docs/design-notes/apo-holo-redesign-sharing.md``). Old and new numbers
+    would otherwise share a column with no way to tell them apart, so a run
+    states which conditioning its numbers carry.
+
+    Derived from the chain set handed to ProteinMPNN rather than asserted, so
+    the two cannot drift: whatever ``all_chains`` the call actually uses is what
+    gets reported.
+
+    Args:
+        all_chains: The ``all_chains`` argument passed to ``run_proteinmpnn``.
+
+    Returns:
+        ``"complex"`` when more than one chain was visible, ``"binder_only"``
+        otherwise.
+    """
+    return REDESIGN_CONDITIONING_COMPLEX if len(all_chains) > 1 else REDESIGN_CONDITIONING_BINDER_ONLY
