@@ -310,6 +310,57 @@ That also means nothing about correctness rides on it. The apo/holo criterion
 needs one sequence carrying both verdicts, and it already can -- the sets
 coincide. Sharing only removes a second run.
 
+## Which `num_redesign_seqs` of the redesigns, and why it is not arbitrary
+
+Designability uses every redesign. The complex and apo tracks use
+`num_redesign_seqs` of them, and *which* ones has not been decided. Today it
+falls out of the prefix property -- the first N in generation order, which is to
+say whichever ones the RNG happened to emit first. That is a default, not a
+choice.
+
+It should become a choice, because these sequences are not metric inputs. They
+are the candidate binders: what gets folded with the target, gated, clustered
+and shipped. Designability asks a question about the backbone and can average
+over anything; the complex track is selecting things to make. Picking the first N
+spends the entire holo budget on an arbitrary slice of what was available.
+
+**The constraint that narrows the search:** the criterion must be computable
+*without folding*. The subset exists to bound how much folding happens, so
+anything that needs a fold to evaluate -- i_pAE, complex pLDDT, scRMSD, every
+metric that actually defines success here -- is circular. The ranking has to be
+done on sequence and structure alone.
+
+What survives that, roughly in order of how cheaply it is already available:
+
+- **ProteinMPNN's own score**, its negative log-likelihood for the sequence it
+  drew. Already parsed by `extract_gen_seqs_proteinmpnn` into `sequences_dict`,
+  already persisted in `binder_eval_cache.json`, and currently read by nothing.
+  Free. Whether it predicts anything about binding is the open part.
+- **`seqid`**, recovery against the input sequence, parsed and unused likewise.
+  For a co-designed binder this measures agreement with the model's own sequence,
+  which is a different thing from quality.
+- **ESM pseudo-perplexity**, already implemented (`esm_eval.py`, gated behind
+  `compute_esm_metrics`) and already write-only. Costs a forward pass per
+  residue, so not free, but far below a fold.
+- Composition heuristics -- hydrophobic surface fraction and the like, some of
+  which the interface metrics already compute for the generated structure.
+
+**Choosing the criterion needs data, not deliberation.** Any of these is a
+plausible ranking and none is obviously right; what settles it is whether a
+candidate correlates with passing the holo gate on real designs. That is
+measurable from a smoke test, provided the candidate scores are recorded beside
+the per-sequence verdicts. The MPNN score now is -- see
+`{seq_type}_mpnn_score_all` -- specifically so the question can be answered
+rather than argued.
+
+**One coupling to keep in view.** Selection and the prefix-property shortcut are
+mutually exclusive. Picking the best 2 of 8 requires generating 8, so the complex
+track can no longer run a shorter ProteinMPNN and rely on getting a prefix. The
+moment a ranking lands, deleting the duplicate ProteinMPNN run stops being an
+optimisation and becomes the implementation: one run of `designability_num_seq`,
+ranked, sliced. Which is why, when the subset is first materialised in code, it
+must pass through one named function rather than a slice written at each use.
+
 ## Still open
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
@@ -340,6 +391,9 @@ coincide. Sharing only removes a second run.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
+- **What criterion ranks the redesigns**, per the section above. Emitting the
+  candidate scores is done; correlating them against the holo verdicts on a real
+  run is not.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
