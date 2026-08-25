@@ -9,14 +9,30 @@
 # EVERY VERSION HERE IS PINNED ON PURPOSE. Unpinned installs of flax/chex/dm-haiku silently upgrade
 #   jax past 0.10.2 and break the source patches this branch carries -- see [6b].
 #   usage: bash build_blackwell.sh [ENV_DIR]     (default: ./.venv-blackwell)
-#   optional: WITH_ESMFOLD2=1 [ESM_SRC=...] adds ESMC/ESMFold2 -- see [6e]. Off by default because
-#   it replaces PyPI transformers with Biohub's fork for the whole env.
+#   ESMC/ESMFold2 are installed BY DEFAULT -- see [6e]. That puts the env on Biohub's transformers
+#   fork rather than PyPI's, deliberately. Opt out with WITH_ESMFOLD2=0; override the source tree
+#   with ESM_SRC=/path/to/esmfold2.
 set -eo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 ENV_DIR="${1:-$REPO/.venv-blackwell}"
 command -v mamba >/dev/null 2>&1 && CONDA=mamba || CONDA=conda
 [ -x "$ENV_DIR/bin/python" ] || "$CONDA" create -y -p "$ENV_DIR" python=3.12   # proteinfoundation needs >=3.12
 PY="$ENV_DIR/bin/python"; PIP="$ENV_DIR/bin/pip"
+
+# [0] Preconditions. ESMC/ESMFold2 are on by default and are the one input this script cannot
+#   fetch itself -- the packages are a source-only release, not on PyPI. Checked HERE rather than
+#   at [6e] so a missing tree costs a second instead of arriving after torch, tmol and jax are in.
+#   Not silently skipped: "on by default" that quietly turns itself off is worse than a clear stop.
+WITH_ESMFOLD2="${WITH_ESMFOLD2:-1}"
+ESM_SRC="${ESM_SRC:-$HOME/projects/esmfold2}"
+if [ "$WITH_ESMFOLD2" != "0" ] && [ ! -f "$ESM_SRC/pyproject.toml" ]; then
+  echo "ESMC/ESMFold2 source tree not found: $ESM_SRC/pyproject.toml"
+  echo "  It is a source-only release (no PyPI), so this script cannot fetch it. Either point at it:"
+  echo "    ESM_SRC=/path/to/esmfold2 ..."
+  echo "  or build without it -- apo folding falls back to plain ESMFold, complex to colabdesign:"
+  echo "    WITH_ESMFOLD2=0 ..."
+  exit 1
+fi
 
 "$PIP" install --upgrade pip
 # [1] torch cu128 for Blackwell (upstream uses 2.7.0+cu126):
@@ -109,22 +125,21 @@ command -v mamba >/dev/null 2>&1 && "$CONDA" install -y -p "$ENV_DIR" -c conda-f
   || echo "  (install foldseek + mmseqs2 into the env for diversity metrics)"
 echo "  set in .env: UV_FOLDSEEK_EXEC=$ENV_DIR/bin/foldseek  UV_MMSEQS_EXEC=$ENV_DIR/bin/mmseqs"
 
-# [6e] OPTIONAL: ESMC + ESMFold2. OFF unless WITH_ESMFOLD2=1, because it swaps PyPI transformers
-#   for Biohub's fork -- a non-PyPI dependency for the whole env, and not upstreamable. Nothing in
-#   the default configs needs it: apo/monomer folding defaults to `esmfold`, complex folding to
-#   colabdesign, consensus_backends is empty, and ESM perplexity defaults to facebook/esm2.
-#   Enable it for advisory complex refolding (metric.consensus_backends=[esmfold2]),
-#   apo_folding_models=[esmfold2], or an ESMC perplexity model.
+# [6e] ESMC + ESMFold2 -- ON by default (WITH_ESMFOLD2=0 to skip). This env therefore runs on
+#   Biohub's transformers fork rather than PyPI's: a non-PyPI dependency for everything here, and
+#   not upstreamable to proteininnovation/Proteina-Complexa. Accepted deliberately, because the
+#   models are wanted for real designs -- advisory complex refolding
+#   (metric.consensus_backends=[esmfold2]), apo_folding_models=[esmfold2], and ESMC perplexity.
+#   The default configs still do not require them: apo folding falls back to `esmfold` and complex
+#   folding to colabdesign, so WITH_ESMFOLD2=0 yields a working pipeline, just a narrower one.
 #
 #   Two packages, from two places. The fork carries ESMFold2Model and ESMCForMaskedLM (they exist
 #   nowhere else); the `esm` source tree carries ESMFold2InputBuilder, pae_interaction and MSA,
 #   which the fork does not. Both are required -- installing only one leaves import errors that
 #   surface at first fold, not at build.
 #
-#   usage: WITH_ESMFOLD2=1 [ESM_SRC=/path/to/esmfold2] bash build_blackwell.sh
-if [ -n "${WITH_ESMFOLD2:-}" ]; then
-  ESM_SRC="${ESM_SRC:-$HOME/projects/esmfold2}"
-  [ -f "$ESM_SRC/pyproject.toml" ] || { echo "  [6e] no pyproject.toml under ESM_SRC=$ESM_SRC"; exit 1; }
+#   WITH_ESMFOLD2 and ESM_SRC are resolved and validated in [0].
+if [ "$WITH_ESMFOLD2" != "0" ]; then
   # Freeze what [1]/[6]/[6b] fought for, and install everything below under it. These deps reach
   # numpy through rdkit and scipy through scikit-learn, and torch through esm's own torch>=2.2.0 --
   # which on PyPI is a cu126 wheel that would silently replace the cu128 build sm_120 needs.
@@ -185,6 +200,13 @@ try:
     from esm.utils.msa import MSA  # noqa: F401
 except Exception as e:
     bad.append(f"esm package: {type(e).__name__}: {e}")
+# The [6] canary ran while transformers was still 5.x. Every build now ends on 4.57.6, so re-check
+# the repo imports downstream of it rather than assuming a downgrade is transparent.
+try:
+    import proteinfoundation  # noqa: F401
+    import atomworks  # noqa: F401
+except Exception as e:
+    bad.append(f"post-downgrade import: {type(e).__name__}: {e}")
 # The constraint file should have held. Checked against the file itself rather than against
 # versions repeated here: those would drift the moment a pin above changes, and then this would
 # fail for the wrong reason. "nothing moved since we froze it" is the actual claim.
@@ -239,6 +261,8 @@ cat <<EOF
   needs: a target spec, the community reward/refolding models (ESM2 via a free HF token, AF2/RF3/Boltz2),
   and external tools (foldseek/mmseqs/dssp). See docs/INFERENCE.md. Generation-only uses just the
   checkpoints above.
-  ESMC/ESMFold2 are NOT installed unless you pass WITH_ESMFOLD2=1 -- see [6e]. The default configs
-  do not need them: apo refolding uses plain ESMFold, complex refolding uses colabdesign.
+  ESMC/ESMFold2 are installed by default ([6e]), so this env is on Biohub's transformers fork.
+  Their WEIGHTS are gated and are not fetched here -- set HF_TOKEN and accept the licences before
+  using metric.consensus_backends=[esmfold2] or apo_folding_models=[esmfold2]. Build without them
+  with WITH_ESMFOLD2=0: apo refolding falls back to plain ESMFold, complex to colabdesign.
 EOF
