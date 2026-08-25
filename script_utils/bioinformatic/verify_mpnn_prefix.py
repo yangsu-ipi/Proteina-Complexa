@@ -368,8 +368,18 @@ def main() -> int:
     if not answered:
         print("RESULT: UNDETERMINED -- no case produced a usable answer")
         return EXIT_UNDETERMINED
+    # Each verdict is named for the property it actually tested. The equivalence
+    # case is not the prefix property, and a summary that says it is would be
+    # read later by someone who was not here.
+    claims = {
+        "binder_only": "prefix property",
+        "complex": "prefix property",
+        "input_equivalence": "inputs equivalent",
+    }
+    width = max(len(n) for n in answered)
     for name, holds in answered.items():
-        print(f"  {name:12s} prefix property {'HOLDS' if holds else 'DOES NOT HOLD'}")
+        claim = claims.get(name, "property")
+        print(f"  {name:{width}s}  {claim}: {'HOLDS' if holds else 'DOES NOT HOLD'}")
     if len(answered) < len(verdicts):
         print("  (some cases were undetermined; see above)")
 

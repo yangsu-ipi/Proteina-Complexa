@@ -292,6 +292,24 @@ make the design PDB an unsafe ProteinMPNN input and the file choice
 load-bearing. It is neither. Conditioning designability on the design PDB
 conditions it on the true target, with the true target sequence.
 
+## What sharing turned out to be
+
+Measured, on the CBLN1/5KC5 design, with `verify_mpnn_prefix.py --target-pdb`:
+the two tracks' ProteinMPNN inputs -- `_updated.pdb` for the complex track, the
+design PDB for designability -- **produce identical sequences under one seed**,
+6/6. Under `--ca_only` ProteinMPNN reads CA atoms and CA coordinates from either,
+and the section above says why the two files carry the same ones.
+
+Put together with the seeds already agreeing by construction and the prefix
+property holding, the two tracks are *already* generating the same redesign set.
+Sharing is therefore not plumbing to build but duplicated compute to delete: one
+ProteinMPNN run per design, sliced to `num_redesign_seqs` for the complex track
+and used whole for designability.
+
+That also means nothing about correctness rides on it. The apo/holo criterion
+needs one sequence carrying both verdicts, and it already can -- the sets
+coincide. Sharing only removes a second run.
+
 ## Still open
 
 - **Does ProteinMPNN with a fixed seed return the same first N sequences when
@@ -322,16 +340,6 @@ conditions it on the true target, with the true target sequence.
   target, one binder length. Nothing here would catch a failure that depends on
   chain count or length. Established for this shape; re-check if a multi-chain
   target ever behaves oddly.
-- **Do the two tracks' ProteinMPNN inputs produce identical redesigns?** They
-  read different files for one design -- the complex track `_updated.pdb`,
-  designability the design PDB -- which under `--ca_only` should be equivalent
-  input, and the section above says why. If it is, sharing needs no plumbing at
-  all: the seeds already agree, the prefix property already holds, and the second
-  ProteinMPNN run is pure duplicated compute to be deleted. Checked by
-  `verify_mpnn_prefix.py --target-pdb <reference target>`, which builds the
-  `_updated` view with the production function and runs both inputs under one
-  seed. Building rather than looking for the file matters: evaluation cleans it
-  up, so a smoke-test tree that has finished has none left.
 - Whether the apo gate, once calibrated, applies to every sequence type or
   only to the types a campaign intends to ship.
 
