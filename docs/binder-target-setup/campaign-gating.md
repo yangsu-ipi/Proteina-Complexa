@@ -331,8 +331,13 @@ the save loop, one per design, while the marker is written only after every desi
 and timing record has been handled — so a kill between those points leaves populated output
 with no marker at all. Before treating a missing marker as a new run, generation looks for
 `job_{job_id}_n_*` directories under the output root and under `filtered_out_samples/`, and
-refuses if any exist. The `_n_` separator keeps the prefix unambiguous, so job 1 does not
-match job 10, and shards generated in parallel do not block each other.
+refuses if any exist — where `job_{job_id}_` is the whole ownership rule, defined once in
+`shard_dir_prefix` and used by all three save paths. That matters because they do not agree
+on the rest of the name: `save_predictions` and `save_protein_ligand_predictions` produce
+`job_{id}_n_{length}_id_{counter}[_tag]`, while `save_motif_predictions` produces
+`job_{id}_id_{index}_motif_{name}` with no `_n_` at all. A scan written against one format
+silently misses the others. The trailing underscore keeps job ids apart, so job 1 does not
+match job 10 and shards generated in parallel do not block each other.
 
 Found by name rather than by an in-progress marker written before the save loop. The latter
 would make the question answerable directly instead of inferred, but only for runs started

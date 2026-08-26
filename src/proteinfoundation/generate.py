@@ -386,6 +386,27 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     ]
 
 
+def shard_dir_prefix(job_id: int) -> str:
+    """The prefix every directory a shard produces begins with.
+
+    Three save paths write sample directories and they do not agree on the rest
+    of the name -- ``save_predictions`` and ``save_protein_ligand_predictions``
+    use ``job_{id}_n_{length}_id_{counter}[_tag]``, ``save_motif_predictions``
+    uses ``job_{id}_id_{index}_motif_{name}``, with no ``_n_`` at all. An
+    ownership scan written against one of those formats silently misses the
+    others, which is how interrupted motif output escaped the absent-marker
+    guard.
+
+    So ownership is defined by the part they share, in one place, and each save
+    path builds its name from here. A fourth format cannot escape the scan
+    without also failing to use this function.
+
+    The trailing underscore is what keeps job ids apart: ``job_1_`` is not a
+    prefix of ``job_10_n_100_id_0``.
+    """
+    return f"job_{job_id}_"
+
+
 def existing_shard_dirs(root_path: str, job_id: int) -> list[str]:
     """Directories this job produced, found by name rather than by marker.
 
@@ -406,7 +427,8 @@ def existing_shard_dirs(root_path: str, job_id: int) -> list[str]:
     """
     found: list[str] = []
     for base in (root_path, os.path.join(root_path, FILTERED_OUT_DIRNAME)):
-        found.extend(p for p in sorted(glob.glob(os.path.join(base, f"job_{job_id}_n_*"))) if os.path.isdir(p))
+        pattern = os.path.join(base, f"{shard_dir_prefix(job_id)}*")
+        found.extend(p for p in sorted(glob.glob(pattern)) if os.path.isdir(p))
     return found
 
 
@@ -754,8 +776,9 @@ def save_predictions(
                 tag = batch_pred["metadata_tag"][i]
                 if tag:
                     meta = f"_{tag}"
-            dir_name = f"job_{job_id}_n_{n}_id_{samples_per_length[n]}{meta}"
-            dir_name_suffix = f"job_{job_id}_n_{n}_id_{samples_per_length[n]}{meta}{suffix}"
+            stem = f"{shard_dir_prefix(job_id)}n_{n}_id_{samples_per_length[n]}{meta}"
+            dir_name = stem
+            dir_name_suffix = f"{stem}{suffix}"
             samples_per_length[n] += 1
             sample_root_path = os.path.join(root_path, dir_name)
             os.makedirs(sample_root_path, exist_ok=True)
@@ -852,7 +875,7 @@ def save_protein_ligand_predictions(
                 tag = batch_pred["metadata_tag"][i]
                 if tag:
                     meta = f"_{tag}"
-            dir_name = f"job_{job_id}_n_{n}_id_{samples_per_length[n]}{meta}{suffix}"
+            dir_name = f"{shard_dir_prefix(job_id)}n_{n}_id_{samples_per_length[n]}{meta}{suffix}"
             samples_per_length[n] += 1
             sample_root_path = os.path.join(root_path, dir_name)
             os.makedirs(sample_root_path, exist_ok=True)
@@ -917,7 +940,7 @@ def save_motif_predictions(
         for i in range(batch_size):
             coors_atom37 = batch_pred["coors"][i]  # [n, 37, 3]
             residue_type = batch_pred["residue_type"][i]  # [n]
-            dir_name = f"job_{job_id}_id_{sample_idx}_motif_{motif_pdb_name}"
+            dir_name = f"{shard_dir_prefix(job_id)}id_{sample_idx}_motif_{motif_pdb_name}"
             sample_idx += 1
             sample_root_path = os.path.join(root_path, dir_name)
             os.makedirs(sample_root_path, exist_ok=True)
