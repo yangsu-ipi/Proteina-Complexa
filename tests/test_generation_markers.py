@@ -318,13 +318,55 @@ def test_another_jobs_output_does_not_block_this_one(tmp_path):
         shard_already_complete(str(tmp_path), 1, "a" * 64, skip_enabled=True)
 
 
-def test_job_prefixes_do_not_collide(tmp_path):
-    """job_1_n_* must not match job_10_n_*."""
+@pytest.mark.parametrize(
+    "dir_name,save_path",
+    [
+        ("job_0_n_100_id_0", "save_predictions"),
+        ("job_0_n_100_id_0_beam_bm0", "save_predictions with a metadata tag"),
+        ("job_0_n_100_id_0_binder", "save_protein_ligand_predictions"),
+        ("job_0_id_0_motif_M0024_1nzy", "save_motif_predictions"),
+    ],
+)
+def test_every_save_path_is_recognised_as_this_jobs_output(tmp_path, dir_name, save_path):
+    """Three save paths, two naming schemes. The motif one carries no _n_ at all,
+    so a scan written against the standard format missed interrupted motif output
+    entirely -- which is the shape this parametrisation exists to prevent
+    recurring when a fourth format appears."""
+    (tmp_path / dir_name).mkdir()
+    with pytest.raises(SystemExit, match="no completion marker"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+@pytest.mark.parametrize("dir_name", ["job_0_n_100_id_0", "job_0_id_0_motif_M0024"])
+def test_filtered_out_output_is_recognised_for_every_format(tmp_path, dir_name):
+    (tmp_path / "filtered_out_samples" / dir_name).mkdir(parents=True)
+    with pytest.raises(SystemExit, match="no completion marker"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+@pytest.mark.parametrize("dir_name", ["job_10_n_100_id_0", "job_10_id_0_motif_M0024"])
+def test_job_prefixes_do_not_collide_in_either_format(tmp_path, dir_name):
+    """job_1_ must not prefix-match job_10_, whichever naming scheme follows."""
     from proteinfoundation.generate import existing_shard_dirs
 
-    (tmp_path / "job_10_n_100_id_0").mkdir()
+    (tmp_path / dir_name).mkdir()
     assert existing_shard_dirs(str(tmp_path), 1) == []
     assert len(existing_shard_dirs(str(tmp_path), 10)) == 1
+
+
+def test_stray_files_are_not_mistaken_for_output(tmp_path):
+    """The scan is a prefix match over directories, so two things must hold: other
+    root-level files do not begin with job_{id}_ (timing is timing_*), and a file
+    that happens to share the prefix is not a sample directory. Either would block
+    every new run in that directory.
+
+    Deliberately no shard_*_complete.json here -- writing one is writing a marker,
+    which takes a different branch entirely and would make this test pass for the
+    wrong reason.
+    """
+    (tmp_path / "timing_0.csv").write_text("job_id\n")
+    (tmp_path / "job_0_n_100_id_0.pdb").write_text("ATOM\n")  # a file, not a directory
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
 
 
 def test_a_partial_clear_refuses_and_keeps_the_marker(tmp_path, monkeypatch):
