@@ -274,10 +274,57 @@ def test_an_unreadable_marker_refuses(tmp_path):
         shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
 
 
-def test_an_absent_marker_is_still_an_ordinary_new_run(tmp_path):
-    """Absence means nothing has been generated here; only an unreadable marker
-    is evidence of output that cannot be accounted for."""
+def test_an_absent_marker_over_an_empty_directory_is_an_ordinary_new_run(tmp_path):
+    """Still the common case, and it must stay cheap: no marker, nothing on disk."""
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_an_absent_marker_over_existing_output_refuses(tmp_path):
+    """The docstring on the test this replaces claimed absence means nothing was
+    generated here. That does not follow from the write ordering: sample
+    directories are created inside the save loop and the marker only after every
+    design is handled, so a kill in between leaves populated output with no
+    marker. Retrying restarted the deterministic counters over it.
+    """
+    produced = tmp_path / "job_0_n_100_id_0"
+    produced.mkdir()
+    (produced / "job_0_n_100_id_0.pdb").write_text("ATOM\n")
+
+    with pytest.raises(SystemExit, match="no completion marker"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+    assert produced.exists(), "an interrupted run's output must survive the refusal"
+
+
+def test_output_moved_to_filtered_out_still_counts_as_existing(tmp_path):
+    """The filter stage relocates designs it did not keep; they are still this
+    shard's output and still collide on a rerun."""
+    filtered = tmp_path / "filtered_out_samples" / "job_0_n_100_id_0"
+    filtered.mkdir(parents=True)
+    with pytest.raises(SystemExit, match="no completion marker"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+def test_another_jobs_output_does_not_block_this_one(tmp_path):
+    """Shards are generated in parallel into one root, so job 0 must not refuse
+    because job 1 has written directories. The _n_ separator also keeps job 1 from
+    matching job 10."""
+    for name in ("job_1_n_100_id_0", "job_10_n_100_id_0"):
+        (tmp_path / name).mkdir()
+
+    # job 0 owns nothing here, so it proceeds
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+    # job 1 does, so it refuses -- and not because of job 10's directory
+    with pytest.raises(SystemExit, match="job_1_n_100_id_0"):
+        shard_already_complete(str(tmp_path), 1, "a" * 64, skip_enabled=True)
+
+
+def test_job_prefixes_do_not_collide(tmp_path):
+    """job_1_n_* must not match job_10_n_*."""
+    from proteinfoundation.generate import existing_shard_dirs
+
+    (tmp_path / "job_10_n_100_id_0").mkdir()
+    assert existing_shard_dirs(str(tmp_path), 1) == []
+    assert len(existing_shard_dirs(str(tmp_path), 10)) == 1
 
 
 def test_a_partial_clear_refuses_and_keeps_the_marker(tmp_path, monkeypatch):
