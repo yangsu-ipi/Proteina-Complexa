@@ -261,6 +261,12 @@ GENERATION_DIGEST_IGNORED_KEYS = ("skip_completed_shards",)
 # on a hard failure, which is worse than the warning it replaced.
 GENERATION_DIGEST_VERSION = 2
 
+# Bumped when the marker payload gains a field a reader depends on. Separate from
+# the digest version, which is about what a digest *means*; this is about what a
+# marker *carries*. 2 added `outputs`, the files a shard produced, because
+# `sample_dirs` records only their parents and a directory outlives its contents.
+MARKER_SCHEMA_VERSION = 2
+
 
 def generation_config_digest(cfg_gen: dict) -> str:
     """Stable digest of the generation config, computed before job splitting.
@@ -334,25 +340,46 @@ def digest_v1_candidates(cfg_gen: dict) -> set[str]:
     return candidates
 
 
-def write_shard_marker(root_path: str, job_id: int, njobs: int, digest: str,
-                       pdb_paths: list[str]) -> str:
+def write_shard_marker(
+    root_path: str,
+    job_id: int,
+    njobs: int,
+    digest: str,
+    pdb_paths: list[str],
+    extra_output_paths: list[str] | None = None,
+) -> str:
     """Record that this shard finished, so a later run can skip it.
 
-    Stores the directory *names* it produced, not just a count. A count cannot
-    survive either of the two things that normally happen next: the filter stage
-    relocates non-surviving designs into ``filtered_out_samples/``, and a rerun
-    with a different config adds directories alongside the old ones. Names are
-    checkable in both cases.
+    Records every file it produced, relative to *root_path*, not just the
+    directories holding them. A directory survives its contents: a PDB can be
+    deleted, truncated to zero bytes, or left unreadable while its parent stays
+    put, and a directory-level check then reports the shard complete. Evaluation
+    is where that surfaces, as a sample set smaller than the marker claims.
+
+    ``sample_dirs`` is still written. It is what ``clear_shard_output`` removes,
+    and it is what markers from before this schema carry, so both paths keep
+    working.
+
+    Args:
+        pdb_paths: The designs this shard produced. Their count is the sample
+            count.
+        extra_output_paths: Further files a sample is not complete without --
+            ligand generation writes a protein-ligand complex PDB beside each
+            binder, and a shard missing those is not whole either. Kept separate
+            so they do not inflate ``nsamples``.
     """
     marker_path = shard_marker_path(root_path, job_id)
+    every_output = list(pdb_paths) + list(extra_output_paths or [])
     sample_dirs = sorted({os.path.basename(os.path.dirname(p)) for p in pdb_paths})
     payload = {
         "job_id": job_id,
         "njobs": njobs,
+        "marker_schema_version": MARKER_SCHEMA_VERSION,
         "generation_config_sha256": digest,
         "generation_config_digest_version": GENERATION_DIGEST_VERSION,
         "nsamples": len(pdb_paths),
         "sample_dirs": sample_dirs,
+        "outputs": sorted(os.path.relpath(p, root_path) for p in every_output),
         "completed_at": datetime.now().isoformat(timespec="seconds"),
     }
     with open(marker_path, "w") as handle:
@@ -381,8 +408,7 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     return [
         name
         for name in names
-        if not os.path.isdir(os.path.join(root_path, name))
-        and not os.path.isdir(os.path.join(filtered_root, name))
+        if not os.path.isdir(os.path.join(root_path, name)) and not os.path.isdir(os.path.join(filtered_root, name))
     ]
 
 
@@ -453,6 +479,37 @@ def shard_output_is_identifiable(marker: dict) -> bool:
     if names:
         return True
     return marker.get("nsamples") == 0
+
+
+def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
+    """Recorded output files that are gone, empty, or unreadable.
+
+    Returns None for a marker that predates ``outputs``, meaning "cannot verify at
+    this level" -- the caller falls back to checking directories, which is all
+    those markers can support.
+
+    A file counts as present in either its original location or under
+    ``filtered_out_samples/``, for the same reason directories do: the filter
+    stage relocates designs it did not keep, and they are still this shard's
+    output. Zero bytes counts as missing -- an interrupted write leaves the file
+    there, and a shard whose PDB is empty is not one to skip.
+    """
+    outputs = marker.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        return None
+    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
+    missing = []
+    for relative in outputs:
+        for base in (root_path, filtered_root):
+            candidate = os.path.join(base, relative)
+            try:
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                    break
+            except OSError:
+                continue
+        else:
+            missing.append(relative)
+    return missing
 
 
 def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
@@ -617,7 +674,20 @@ def shard_already_complete(
     # Check the recorded directories individually: a count cannot distinguish
     # "the filter moved 14 of my 16 designs" from "someone deleted them", and it
     # is defeated outright once a rerun has piled extra directories alongside.
-    missing = missing_shard_dirs(root_path, marker)
+    # File level when the marker can support it, directories otherwise. A
+    # directory outlives its contents, so the older check passes a shard whose
+    # PDBs were deleted or truncated; it is kept only because markers written
+    # before `outputs` cannot answer anything finer.
+    missing = missing_shard_outputs(root_path, marker)
+    level = "output file"
+    if missing is None:
+        missing = missing_shard_dirs(root_path, marker)
+        level = "sample directory"
+        if missing is not None:
+            logger.debug(
+                f"Shard {job_id} marker predates per-file records; verifying directories only, "
+                f"which cannot detect a deleted or truncated PDB inside one."
+            )
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
         removed, remaining = clear_shard_output(root_path, marker)
@@ -627,14 +697,15 @@ def shard_already_complete(
         except OSError as exc:
             logger.warning(f"Could not remove stale marker {marker_path}: {exc}")
         logger.warning(
-            f"Shard {job_id} is marked complete but {len(missing)} of its "
-            f"{marker.get('nsamples', '?')} sample directories are gone ({shown}). "
-            f"Removed the {removed} that survived, plus the marker, so the shard is "
-            "regenerated as a whole rather than mixed with a partial earlier attempt."
+            f"Shard {job_id} is marked complete but {len(missing)} recorded {level}(s) are gone, "
+            f"empty or unreadable ({shown}), against {marker.get('nsamples', '?')} samples. "
+            f"Removed the {removed} director{'y' if removed == 1 else 'ies'} that survived, plus the "
+            "marker, so the shard is regenerated as a whole rather than mixed with a partial "
+            "earlier attempt."
         )
         return False
     if missing is None:
-        logger.debug(f"Shard {job_id} marker predates sample_dirs; skipping output verification")
+        logger.debug(f"Shard {job_id} marker records neither outputs nor sample_dirs; cannot verify")
 
     if not skip_enabled:
         # This branch used to warn that regeneration DUPLICATES under new
@@ -679,8 +750,7 @@ def shard_already_complete(
         return False
 
     logger.info(
-        f"Shard {job_id} already complete ({marker.get('nsamples', '?')} samples, "
-        f"{marker_path}). Skipping generation."
+        f"Shard {job_id} already complete ({marker.get('nsamples', '?')} samples, {marker_path}). Skipping generation."
     )
     return True
 
@@ -1122,6 +1192,9 @@ def main(cfg):
     # - 'chain_index': [batch_size, n] (optional)
     # - 'rewards': [batch_size] (optional)
 
+    # Only the ligand branch produces these; declared here so the marker call
+    # below does not have to ask whether the name exists.
+    complex_paths: list[str] = []
     if ligand_cond:
         complex_arrays = []
         for batch_idx, batch_pred in enumerate(predictions):
@@ -1217,7 +1290,18 @@ def main(cfg):
             f.write(f"{job_id},{end_time - start_time:.2f},{len(pdb_paths)}\n")
         logger.info(f"Timing information saved to: {timing_csv_path}")
 
-    write_shard_marker(root_path, job_id, njobs, gen_config_digest, pdb_paths)
+    # complex_paths exists only on the ligand branch, and a ligand sample is not
+    # complete without it: save_protein_ligand_predictions writes a protein-ligand
+    # complex PDB beside every binder. Recording only pdb_paths would leave the
+    # complex files unverifiable however fine-grained the check became.
+    write_shard_marker(
+        root_path,
+        job_id,
+        njobs,
+        gen_config_digest,
+        pdb_paths,
+        extra_output_paths=complex_paths,
+    )
 
 
 if __name__ == "__main__":
