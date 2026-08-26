@@ -385,6 +385,29 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     ]
 
 
+def shard_output_is_identifiable(marker: dict) -> bool:
+    """Whether we can tell which directories this shard produced.
+
+    ``sample_dirs`` was added by c09a82c, after markers themselves (d40066a), so a
+    campaign completed between those commits has a valid, digest-matching marker
+    that names nothing. Skipping such a shard is harmless -- nothing is written --
+    but *clearing* it is impossible, and a caller that clears nothing, sees
+    nothing remaining and regenerates would restart the deterministic counters
+    over output it never identified.
+
+    An empty list is only identifiable when the marker also says the shard
+    produced nothing; then there is genuinely nothing to clear. An empty list
+    beside a positive count is a marker disagreeing with itself, which is not a
+    state to act on.
+    """
+    names = marker.get("sample_dirs")
+    if not isinstance(names, list):
+        return False
+    if names:
+        return True
+    return marker.get("nsamples") == 0
+
+
 def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
     """Delete the directories a damaged shard recorded, before regenerating it.
 
@@ -567,6 +590,20 @@ def shard_already_complete(
         # The digest matches, so this is a request to redo *exactly* this shard.
         # Clearing what it recorded is what redoing it means -- and is what
         # clear_shard_output is documented for.
+        # Clearing is only safe when we know what to clear. A marker predating
+        # sample_dirs names nothing, so clear_shard_output would remove nothing,
+        # report nothing remaining, and let the run proceed over output it never
+        # identified -- the same overwrite this branch exists to prevent, reached
+        # through the one marker shape that cannot be checked.
+        if not shard_output_is_identifiable(marker):
+            raise SystemExit(
+                f"Refusing to generate into {root_path}: shard {job_id} is marked complete with "
+                f"{marker.get('nsamples', '?')} samples, but its marker records no sample directories, "
+                f"so a forced rerun cannot identify what it would replace.\n"
+                f"Markers written before sample_dirs was added have this shape.\n"
+                f"Use a new generation.run_name, or clear {root_path} first. Leaving "
+                f"skip_completed_shards at its default skips this shard instead, which writes nothing."
+            )
         removed, remaining = clear_shard_output(root_path, marker)
         _abort_if_output_remains(root_path, job_id, remaining, marker_path)
         logger.warning(
