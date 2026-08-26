@@ -13,7 +13,9 @@
 #   1. a completed shard writes a marker, and evaluate writes a fold cache
 #   2. re-running generate with the same config SKIPS (no new sample dirs)
 #   3. re-running evaluate with the same config REUSES every fold cache
-#   4. changing a generation parameter INVALIDATES the marker (regenerates)
+#   4. changing a generation parameter makes generate REFUSE (it does not
+#      regenerate: the marker describes a different request, and the directory
+#      names would collide)
 #   5. removing a sample directory INVALIDATES the marker (regenerates)
 #   6. changing the folding backend INVALIDATES the fold caches
 #
@@ -252,6 +254,16 @@ run_cx() {
 }
 
 gen()   { run_cx generate "generate" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" "$@"; }
+
+# Like gen(), but a nonzero exit is the expected outcome rather than an abort, so
+# it cannot go through run_cx. Prints "<rc> <logpath>".
+gen_refuses() {
+  STEP=$((STEP+1))
+  local log="$LOGDIR/$(printf '%02d' "$STEP")_generate_refused.log"
+  local rc=0
+  complexa generate "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" "$@" >"$log" 2>&1 || rc=$?
+  printf '%s %s' "$rc" "$log"
+}
 eval_() { run_cx evaluate "evaluate" "$CONFIG" --verbose "${BASE_OVERRIDES[@]}" "$@"; }
 
 # -----------------------------------------------------------------------------
@@ -310,32 +322,54 @@ fi
 fi
 
 # -----------------------------------------------------------------------------
-say "4. changed generation parameter (batch_size) -> marker invalidated"
-# From here on every generate uses ALT so the digest matches the marker this
-# step leaves behind. Step 5 must differ from the marker in exactly one way --
-# the missing directory -- or it would regenerate because of a stale digest and
-# pass without testing anything.
-# The perturbation has to sit inside `generation`, because that is the subtree
-# the marker digest hashes -- top-level `seed` would leave the digest unchanged
-# and this step would fail for the wrong reason. batch_size qualifies, changes
-# no counts, and cannot invalidate an absolute search schedule the way nsteps
-# does.
-ALT=("++generation.dataloader.batch_size=1")
-gen "${ALT[@]}"
-DIRS_4=$(n_all_sample_dirs "$RUN_DIR")
-if [[ "$DIRS_4" -gt "$DIRS_2" ]]; then
-  ok "regenerated on a config change ($DIRS_2 -> $DIRS_4 directories)"
+say "4. changed generation parameter (batch_size) -> generate refuses"
+# This step used to expect regeneration. It no longer does, and the change is the
+# point: a marker whose digest differs describes a DIFFERENT request, so its
+# samples must not be counted towards this one -- and regenerating in place is not
+# safe either, because without a metadata tag the directory names are
+# job_{job}_n_{n}_id_{counter} with the counter restarting each run, against PDB
+# writes that use overwrite=True. Continuing overwrote structures and left the
+# previous run's evaluation files beside the new designs. So generation aborts and
+# the caller picks a new run_name or clears the directory.
+#
+# The perturbation has to sit inside `generation`, because that is the subtree the
+# marker digest hashes -- a top-level `seed` would leave the digest unchanged and
+# this step would pass for the wrong reason. batch_size qualifies, changes no
+# counts, and cannot invalidate an absolute search schedule the way nsteps does.
+#
+# Because it refuses, it also leaves no marker behind: the digest on disk is still
+# the original one, which is why step 5 runs the unmodified config.
+DIRS_4A=$(n_all_sample_dirs "$RUN_DIR")
+read -r RC_4 LOG_4 <<<"$(gen_refuses ++generation.dataloader.batch_size=1)"
+DIRS_4B=$(n_all_sample_dirs "$RUN_DIR")
+if (( RC_4 != 0 )); then
+  ok "refused a changed generation config (exit $RC_4)"
 else
-  bad "config changed but the shard was skipped anyway -- STALE RESULTS ACCEPTED"
+  bad "config changed but generation proceeded -- STALE RESULTS ACCEPTED"
+fi
+if grep -q "DIFFERENT generation config" "$LOG_4"; then
+  ok "refused for the right reason (digest mismatch)"
+else
+  bad "generate failed, but not with the digest-mismatch message -- see $LOG_4"
+fi
+if [[ "$DIRS_4B" -eq "$DIRS_4A" ]]; then
+  ok "nothing was written over ($DIRS_4A directories unchanged)"
+else
+  bad "sample directories changed ($DIRS_4A -> $DIRS_4B) despite the refusal"
+fi
+if [[ -f "$RUN_DIR/shard_0_complete.json" ]]; then
+  ok "the marker is left in place for the caller to act on"
+else
+  bad "a run that refused to proceed removed the marker anyway"
 fi
 
 # -----------------------------------------------------------------------------
 say "5. removed sample directory -> marker invalidated"
 # Control: the same config now skips, so anything that changes below is the
 # deletion talking and not the digest.
-gen "${ALT[@]}"
+gen
 DIRS_5CTL=$(n_all_sample_dirs "$RUN_DIR")
-if [[ "$DIRS_5CTL" -eq "$DIRS_4" ]]; then
+if [[ "$DIRS_5CTL" -eq "$DIRS_4B" ]]; then
   ok "control: matching digest skips ($DIRS_5CTL directories unchanged)"
 else
   bad "control failed -- digest should have matched; steps below prove nothing"
@@ -360,7 +394,7 @@ VICTIM="$RUN_DIR/$VICTIM_NAME"
 printf '   removing recorded design %s\n' "$VICTIM_NAME"
 rm -rf "$VICTIM"
 DIRS_5a=$(n_all_sample_dirs "$RUN_DIR")
-gen "${ALT[@]}"
+gen
 DIRS_5b=$(n_all_sample_dirs "$RUN_DIR")
 if [[ "$DIRS_5b" -gt "$DIRS_5a" ]]; then
   ok "regenerated when output went missing ($DIRS_5a -> $DIRS_5b)"

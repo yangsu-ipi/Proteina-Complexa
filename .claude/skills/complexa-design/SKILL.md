@@ -42,7 +42,7 @@ for those, including three failure modes that are silent.
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
 with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
-`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:120-140`);
+`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:121-141`);
 pass-rate and diversity analysis per `result_type`.
 
 ## Step 1: Pre-flight
