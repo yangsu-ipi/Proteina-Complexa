@@ -349,7 +349,14 @@ def test_an_unreadable_pdb_counts_as_missing(tmp_path):
     try:
         assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
     finally:
-        target.chmod(0o644)
+        # Detecting the unusable file makes this a damaged shard, so the caller
+        # clears it -- the file this restores is gone by design. Guarded rather
+        # than removed: if the detection ever stops happening, the mode must
+        # still be restored or pytest cannot clean up its own tmp_path.
+        if target.exists():
+            target.chmod(0o644)
+
+    assert not target.parent.exists(), "the damaged shard is cleared before regenerating"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads regardless of mode")
