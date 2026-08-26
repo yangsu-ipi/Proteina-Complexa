@@ -306,6 +306,7 @@ next run compares digests:
 | **older digest formula, v1 digest does not match** | **abort** — cannot tell whether the config changed |
 | **unreadable** | **abort** — a marker exists only after output does, and its contents cannot be checked |
 | **a clear leaves anything behind** | **abort**, keeping the marker — see below |
+| **forced rerun, marker names no directories** | **abort** — cannot identify what it would replace |
 
 Aborting rather than continuing, because directory names are
 `job_{job}_n_{length}_id_{counter}` with the counter restarting each run and PDBs written
@@ -323,6 +324,13 @@ are still on disk *after* the attempt, not which deletions raised, because a del
 reports success and leaves the directory is the case that matters. If anything remains the
 run aborts and the **marker is kept** — it is the only record of which directories belong to
 that shard, so deleting it after a failed clear would remove the means of recovery.
+
+`sample_dirs` was added (`c09a82c`) after markers themselves (`d40066a`), so a campaign
+finished between those commits has a valid digest-matching marker that names nothing.
+Skipping such a shard is harmless — nothing is written — but a *forced* rerun cannot
+identify what it would replace, so it aborts rather than clearing nothing and proceeding. An
+empty `sample_dirs` beside `nsamples: 0` is the one exception: the shard genuinely produced
+nothing, so there is nothing to clear.
 
 `skip_completed_shards: false` forces regeneration of a shard whose digest matches, and
 **removes the directories that shard recorded first**. The digest matching means this is a
