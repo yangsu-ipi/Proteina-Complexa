@@ -304,7 +304,8 @@ next run compares digests:
 | **digest differs** | **abort** — a different request already owns this directory |
 | **older digest formula, v1 digest matches this config** | same request; behave as if it matched |
 | **older digest formula, v1 digest does not match** | **abort** — cannot tell whether the config changed |
-| unreadable | warn, regenerate |
+| **unreadable** | **abort** — a marker exists only after output does, and its contents cannot be checked |
+| **a clear leaves anything behind** | **abort**, keeping the marker — see below |
 
 Aborting rather than continuing, because directory names are
 `job_{job}_n_{length}_id_{counter}` with the counter restarting each run and PDBs written
@@ -316,6 +317,12 @@ Markers written before the digest was versioned are recognised where possible: t
 formula is recomputed for the current config, including for each value the operational keys
 it used to hash might have held. So an unchanged campaign resumes normally, and only a
 genuinely unrecognisable marker is refused.
+
+Clearing verifies rather than trusts. `clear_shard_output` reports which recorded directories
+are still on disk *after* the attempt, not which deletions raised, because a delete that
+reports success and leaves the directory is the case that matters. If anything remains the
+run aborts and the **marker is kept** — it is the only record of which directories belong to
+that shard, so deleting it after a failed clear would remove the means of recovery.
 
 `skip_completed_shards: false` forces regeneration of a shard whose digest matches, and
 **removes the directories that shard recorded first**. The digest matching means this is a
