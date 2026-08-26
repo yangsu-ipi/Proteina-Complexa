@@ -111,9 +111,9 @@ Once the dry-run looks right, drop `--dryrun` to materialize `inf_{idx}_{run_nam
 > `sample_storage_path = root_path` plus `output_dir` / `results_dir = ./evaluation_results/eval_{idx}_{run_name}`
 > (`create_eval_config`, `:225-253`). `complexa design` runs all four stages —
 > `generate → filter → evaluate → analyze` (`cli_runner.py:122`) — from the one config you hand
-> it. Generation honours the injected `root_path` (`generate.py:851, :66-82`), but
+> it. Generation honours the injected `root_path` (`generate.py:1417, :68-84`), but
 > **`evaluate.py` never reads `root_path`**: with `sample_storage_path` absent it builds
-> `./inference/{config_name}_{target_task_name}` and appends `_{run_name}` (`:732, :752-768`),
+> `./inference/{config_name}_{target_task_name}` and appends `_{run_name}` (`:750, :770-785`),
 > e.g. `./inference/inf_0_my_sweep_22_DerF21_search_binder_local` — not where generate wrote.
 > `analyze.py:2922, :2947-2953` does the same for `results_dir`. A sweep driven by
 > `complexa design` therefore yields structures and **no usable evaluation results**.
@@ -190,14 +190,14 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 | `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3047`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
 | `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:648`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
-The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:575, :592`), with one column *prefix* per requested `metric.sequence_types` value:
+The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:576, :593`), with one column *prefix* per requested `metric.sequence_types` value:
 
 | Column | Meaning |
 |---|---|
 | `{seq}_complex_i_pAE` | interface PAE of the best refold — stored **0–1 scaled** |
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
-| `{seq}_sequence` | the binder sequence (`binder_eval.py:703`) |
+| `{seq}_sequence` | the binder sequence (`binder_eval.py:704`) |
 | `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:182-193`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.

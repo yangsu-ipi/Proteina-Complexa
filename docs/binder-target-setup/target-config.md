@@ -271,7 +271,7 @@ writes.
 Both output roots are hardcoded relative paths with no config key:
 
 ```python
-# src/proteinfoundation/generate.py:66
+# src/proteinfoundation/generate.py:68
 root_path = f"./inference/{config_name}_{task_name}"   # + f"_{run_name}" if set
 # src/proteinfoundation/cli/cli_runner.py:128
 LOG_DIR = Path("./logs")
