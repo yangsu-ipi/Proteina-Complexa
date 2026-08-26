@@ -302,7 +302,8 @@ next run compares digests:
 | **absent, but this job's directories exist** | **abort** — an interrupted run, not a new one |
 | digest matches, every recorded file present and nonempty | **skip the shard** |
 | digest matches, a recorded file gone, empty or unreadable | clear what survived, regenerate |
-| digest matches, marker predates per-file records | fall back to the directory check |
+| digest matches, marker predates per-file records | each recorded directory must still hold a usable design |
+| digest matches, marker claims samples but records no outputs | **abort** — it disagrees with itself |
 | **digest differs** | **abort** — a different request already owns this directory |
 | **older digest formula, v1 digest matches this config** | same request; behave as if it matched |
 | **older digest formula, v1 digest does not match** | **abort** — cannot tell whether the config changed |
@@ -335,8 +336,21 @@ generation writes a protein-ligand complex PDB beside every binder, and those ar
 too: `nsamples` counts designs, `outputs` counts files. Relocation into
 `filtered_out_samples/` is not a loss, for files as for directories.
 
-Markers written before `outputs` existed (`marker_schema_version` below 2) fall back to the
-directory check, which is all they can support, and say so in the log.
+A recorded output counts only if it is present, nonempty **and readable** — `isfile` and
+`getsize` both read metadata without opening anything, so a mode-000 PDB passed a check that
+claimed otherwise. One byte is read.
+
+Markers written before `outputs` existed (`marker_schema_version` below 2) cannot name the
+files they expect, so each recorded directory must instead still contain at least one usable
+`.pdb`. That is weaker than the per-file check — it cannot confirm the expected count — and
+much stronger than trusting the directory, which was the previous behaviour and skipped
+shards whose designs had been deleted. A current-schema marker that records no outputs
+against a positive sample count is contradictory rather than merely old, and aborts.
+
+Reward CSVs are shard output, not a side effect: the filter stage reads
+`rewards_{config}_{job}.csv` and raises `No reward files found!` without them, and across
+several shards it processes the ones it can see — so evaluation covers fewer designs than
+generation claimed, silently. They are recorded and verified like any other file.
 
 An absent marker does **not** mean an empty directory. Sample directories are created inside
 the save loop, one per design, while the marker is written only after every design, reward

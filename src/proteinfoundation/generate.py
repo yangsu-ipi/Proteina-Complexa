@@ -405,11 +405,27 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     if not isinstance(names, list) or not names:
         return None
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
-    return [
-        name
-        for name in names
-        if not os.path.isdir(os.path.join(root_path, name)) and not os.path.isdir(os.path.join(filtered_root, name))
-    ]
+
+    def intact(base: str, name: str) -> bool:
+        """Present *and* still holding a usable design.
+
+        A marker without per-file records cannot name the PDB it expects, but the
+        directory is not evidence on its own -- it outlives its contents.
+        Requiring at least one usable .pdb inside catches the deletion these
+        markers were previously blind to, without reconstructing a filename from
+        a convention that differs across the three save paths. Weaker than the
+        per-file check, and much stronger than trusting the directory.
+        """
+        directory = os.path.join(base, name)
+        if not os.path.isdir(directory):
+            return False
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return False
+        return any(e.endswith(".pdb") and is_usable_output(os.path.join(directory, e)) for e in entries)
+
+    return [name for name in names if not any(intact(base, name) for base in (root_path, filtered_root))]
 
 
 def shard_dir_prefix(job_id: int) -> str:
@@ -481,6 +497,24 @@ def shard_output_is_identifiable(marker: dict) -> bool:
     return marker.get("nsamples") == 0
 
 
+def is_usable_output(path: str) -> bool:
+    """Whether a recorded output is present, nonempty and actually readable.
+
+    isfile() and getsize() both read metadata and neither opens anything, so a
+    file with mode 000 passed a check whose docstring claimed to detect unreadable
+    output -- the shard was skipped and evaluation met the file instead. One byte
+    is read to make the claim true.
+    """
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            return False
+        with open(path, "rb") as handle:
+            handle.read(1)
+    except OSError:
+        return False
+    return True
+
+
 def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     """Recorded output files that are gone, empty, or unreadable.
 
@@ -500,14 +534,7 @@ def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
     missing = []
     for relative in outputs:
-        for base in (root_path, filtered_root):
-            candidate = os.path.join(base, relative)
-            try:
-                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
-                    break
-            except OSError:
-                continue
-        else:
+        if not any(is_usable_output(os.path.join(base, relative)) for base in (root_path, filtered_root)):
             missing.append(relative)
     return missing
 
@@ -678,15 +705,28 @@ def shard_already_complete(
     # directory outlives its contents, so the older check passes a shard whose
     # PDBs were deleted or truncated; it is kept only because markers written
     # before `outputs` cannot answer anything finer.
+    schema = marker.get("marker_schema_version", 1)
     missing = missing_shard_outputs(root_path, marker)
     level = "output file"
+    if missing is None and schema >= MARKER_SCHEMA_VERSION and marker.get("nsamples", 0) > 0:
+        # Written by a schema that records outputs, yet recording none for a
+        # positive sample count: the marker disagrees with itself, so nothing it
+        # says can be acted on. Distinct from a legacy marker, which is silent
+        # about outputs rather than contradictory.
+        raise SystemExit(
+            f"Refusing to generate into {root_path}: shard {job_id}'s marker claims schema "
+            f"v{schema} and {marker.get('nsamples')} samples but records no output files, so its "
+            f"completeness cannot be established.\n"
+            f"Repair or delete {marker_path}, use a new generation.run_name, or clear {root_path}."
+        )
     if missing is None:
         missing = missing_shard_dirs(root_path, marker)
         level = "sample directory"
         if missing is not None:
             logger.debug(
-                f"Shard {job_id} marker predates per-file records; verifying directories only, "
-                f"which cannot detect a deleted or truncated PDB inside one."
+                f"Shard {job_id} marker predates per-file records; each recorded directory is "
+                f"checked for a usable design instead, which cannot confirm the expected file "
+                f"count but does detect a deleted or empty one."
             )
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
@@ -1195,6 +1235,11 @@ def main(cfg):
     # Only the ligand branch produces these; declared here so the marker call
     # below does not have to ask whether the name exists.
     complex_paths: list[str] = []
+    # The filter stage reads these and raises "No reward files found!" without
+    # them; with several shards it silently processes the ones it can see and
+    # evaluates fewer designs than generation claims. So they are shard output,
+    # not a side effect, and belong in the marker like any other file.
+    reward_csv_paths: list[str] = []
     if ligand_cond:
         complex_arrays = []
         for batch_idx, batch_pred in enumerate(predictions):
@@ -1243,11 +1288,13 @@ def main(cfg):
             cath_codes=cath_codes,
         )
         if len(reward_df) > 0:
-            save_rewards_to_csv(
-                df=reward_df,
-                root_path=root_path,
-                config_name=config_name,
-                job_id=job_id,
+            reward_csv_paths.append(
+                save_rewards_to_csv(
+                    df=reward_df,
+                    root_path=root_path,
+                    config_name=config_name,
+                    job_id=job_id,
+                )
             )
     elif motif_cond:
         pdb_paths = save_motif_predictions(
@@ -1268,11 +1315,13 @@ def main(cfg):
         )
 
         if len(reward_df) > 0:
-            save_rewards_to_csv(
-                df=reward_df,
-                root_path=root_path,
-                config_name=config_name,
-                job_id=job_id,
+            reward_csv_paths.append(
+                save_rewards_to_csv(
+                    df=reward_df,
+                    root_path=root_path,
+                    config_name=config_name,
+                    job_id=job_id,
+                )
             )
 
     # Record end time
@@ -1300,7 +1349,7 @@ def main(cfg):
         njobs,
         gen_config_digest,
         pdb_paths,
-        extra_output_paths=complex_paths,
+        extra_output_paths=complex_paths + reward_csv_paths,
     )
 
 
