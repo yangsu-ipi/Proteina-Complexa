@@ -220,7 +220,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
   (`cli_runner.py:650` passes `++base_config_name=<stem>`).
 - **Primary CSV** from `analyze` — `RAW_{result_type}_results_{config_name}_combined.csv`
   (`analyze.py:3047`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
-  enumerate index over the file walk (`binder_eval.py:576, :592`). `sequence_types` are column
+  enumerate index over the file walk (`binder_eval.py:576, :593`). `sequence_types` are column
   **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
   `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
   lists (`binder_eval.py:669-705`; `binder_analysis_utils.py:182-193` builds
