@@ -449,17 +449,73 @@ def generation_save_branch(ligand_cond: bool, motif_cond: bool) -> str:
     return "standard"
 
 
-def shard_output_contract(branch: str, config_name: str, job_id: int) -> ShardOutputContract:
+def motif_info_csv_name(task_name: str | None, job_id: int) -> str:
+    """Where main tells MotifFeatures to write its per-sample contig table.
+
+    Built here rather than inlined so the resume check and the assignment in
+    ``main`` cannot drift apart -- the same reason the save branch has one rule.
+    """
+    return f"{task_name or 'motif'}_{job_id}_motif_info.csv"
+
+
+def motif_info_csv_required(
+    conditional_features_cfg, motif_cond: bool, task_name: str | None, job_id: int
+) -> str | None:
+    """The motif_info CSV this config will write, or None if it writes none.
+
+    MotifFeatures writes it only in contig mode -- ``motif_atom_spec is None`` --
+    and only when given a path, which ``main`` supplies for every motif run
+    (``gen_dataset.py:359-368``). Indexed motif evaluation then *requires* it to
+    map samples to contigs and raises FileNotFoundError without it
+    (``motif_eval.py:284``), so a shard that skipped after the file was deleted
+    left evaluation unable to run at all.
+
+    Not a function of the save branch, and deliberately a separate argument from
+    it: a config can set both MotifFeatures and LigandFeatures, save on the ligand
+    branch, and still have written this file. Folding it into the branch would
+    reproduce the AME mistake in a new place.
+
+    An unresolvable ``motif_atom_spec`` is treated as set, i.e. no CSV required.
+    That is the fail-open direction and it is chosen on purpose: guessing wrong
+    this way costs a loud, deterministic FileNotFoundError from evaluation that
+    names the missing file, while guessing wrong the other way clears and
+    regenerates a completed shard's GPU work over a file that was never meant to
+    exist. Markers written from here on record the CSV when it is present, so this
+    inference only ever applies to markers that predate the requirement.
+    """
+    if not motif_cond or conditional_features_cfg is None:
+        return None
+    for entry in conditional_features_cfg:
+        try:
+            if str(entry.get("_target_", "")).split(".")[-1] != "MotifFeatures":
+                continue
+            atom_spec = entry.get("motif_atom_spec", None)
+        except OmegaConfBaseException as exc:
+            logger.debug(f"Could not read motif_atom_spec ({type(exc).__name__}: {exc}); assuming no motif_info CSV")
+            return None
+        return None if atom_spec is not None else motif_info_csv_name(task_name, job_id)
+    return None
+
+
+def shard_output_contract(
+    branch: str, config_name: str, job_id: int, motif_info_csv: str | None = None
+) -> ShardOutputContract:
     """The files a shard on *branch* must produce.
 
     Motif generation writes no rewards; the other two write one CSV per nonempty
     shard, which the filter finds by globbing the output root. Ligand generation
     writes ``{dir}.pdb`` (the protein-ligand complex) and ``{dir}_binder.pdb`` (the
     design) into each sample directory; the others write ``{dir}.pdb`` alone.
+
+    ``motif_info_csv`` comes in separately because writing it depends on the
+    MotifFeatures mode rather than on which save branch runs.
     """
+    root: list[str] = [] if branch == "motif" else [f"rewards_{config_name}_{job_id}.csv"]
+    if motif_info_csv:
+        root.append(motif_info_csv)
     return ShardOutputContract(
         sample_files=("{dir}.pdb", "{dir}_binder.pdb") if branch == "ligand" else ("{dir}.pdb",),
-        root_outputs=() if branch == "motif" else (f"rewards_{config_name}_{job_id}.csv",),
+        root_outputs=tuple(root),
     )
 
 
@@ -1293,6 +1349,9 @@ def main(cfg):
     # AME sets both MotifFeatures and LigandFeatures -- so every site that needs to
     # know reads it from here rather than re-deriving it in its own order.
     save_branch = generation_save_branch(ligand_cond, motif_cond)
+    # Written by MotifFeatures during dataset construction, not by a save path, so
+    # it hangs off the feature config rather than off the branch.
+    motif_info_csv = motif_info_csv_required(conditional_features_cfg, motif_cond, task_name, job_id)
     cath_codes = (
         cfg.generation.dataloader.dataset.conditional_features[conditional_features_types.index("CathCodes")].cath_codes
         if fold_cond
@@ -1337,7 +1396,7 @@ def main(cfg):
         # disk may predate and so cannot be asked. Derived from the same branch
         # rule the save dispatch uses, because the conditions are not exclusive
         # and asking them in the other order silently misfiles every AME run.
-        contract=shard_output_contract(save_branch, config_name, job_id),
+        contract=shard_output_contract(save_branch, config_name, job_id, motif_info_csv),
     ):
         sys.exit(0)
 
@@ -1351,11 +1410,9 @@ def main(cfg):
     cfg_gen = split_by_job(cfg_gen, job_id, njobs)
 
     # Motif-specific dataset creation
+    motif_csv_path = None
     if motif_cond:
-        motif_csv_path = os.path.join(
-            root_path,
-            f"{task_name or 'motif'}_{job_id}_motif_info.csv",
-        )
+        motif_csv_path = os.path.join(root_path, motif_info_csv_name(task_name, job_id))
         """
         Motif Configuration Examples:
         
@@ -1486,6 +1543,11 @@ def main(cfg):
             job_id=job_id,
             motif_pdb_name=task_name,
         )
+        # Dead as written: this names ./{task}_motif_info.csv with no job id, while
+        # MotifFeatures writes {task}_{job}_motif_info.csv straight into root_path
+        # (motif_csv_path above). Left in place rather than removed -- it is guarded
+        # by exists() and changing generation behaviour is not this change -- but it
+        # is not what puts the contig table where evaluation finds it.
         motif_csv = f"./{task_name or ''}_motif_info.csv"
         if os.path.exists(motif_csv):
             shutil.copy(motif_csv, root_path)
@@ -1526,13 +1588,19 @@ def main(cfg):
     # complete without it: save_protein_ligand_predictions writes a protein-ligand
     # complex PDB beside every binder. Recording only pdb_paths would leave the
     # complex files unverifiable however fine-grained the check became.
+    # MotifFeatures writes the contig table during dataset construction, so by now
+    # it either exists or this config does not produce one. Recording it makes
+    # later runs verify the file instead of re-deriving the requirement from the
+    # feature config, which is inference and can only ever be as good as the
+    # interpolations resolve.
+    motif_csv_paths = [motif_csv_path] if motif_csv_path and os.path.exists(motif_csv_path) else []
     write_shard_marker(
         root_path,
         job_id,
         njobs,
         gen_config_digest,
         pdb_paths,
-        extra_output_paths=complex_paths + reward_csv_paths,
+        extra_output_paths=complex_paths + reward_csv_paths + motif_csv_paths,
     )
 
 
