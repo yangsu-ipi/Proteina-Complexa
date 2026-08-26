@@ -110,6 +110,12 @@ def test_forcing_a_rerun_clears_what_it_is_about_to_redo(tmp_path):
     assert not os.path.exists(shard_marker_path(str(tmp_path), 0)), "the marker should go too"
 
 
+def test_write_marker_returns_its_path(tmp_path):
+    """Guards the fixture the cleanup tests rely on."""
+    path = write_marker(tmp_path, "a" * 64)
+    assert os.path.exists(path)
+
+
 @pytest.mark.parametrize("skip_enabled", [True, False])
 def test_a_different_config_refuses_rather_than_overwriting(tmp_path, skip_enabled):
     """Continuing would overwrite structures wherever directory names coincide and
@@ -183,9 +189,76 @@ def test_a_changed_config_is_still_refused_under_the_legacy_path(tmp_path):
         )
 
 
-def test_an_unreadable_marker_does_not_stop_the_run(tmp_path):
+def test_an_unreadable_marker_refuses(tmp_path):
+    """This test previously asserted the opposite, and was wrong to -- for the
+    second time in this file.
+
+    A marker exists only because a shard finished, so its directory holds output;
+    an unreadable one is most likely a write interrupted after the structures were
+    produced. Continuing restarts the deterministic counters over that output, and
+    since the marker cannot be read there is no list of directories to clear
+    either.
+    """
     path = shard_marker_path(str(tmp_path), 0)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as handle:
         handle.write("{not json")
+    with pytest.raises(SystemExit, match="cannot be read"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+def test_an_absent_marker_is_still_an_ordinary_new_run(tmp_path):
+    """Absence means nothing has been generated here; only an unreadable marker
+    is evidence of output that cannot be accounted for."""
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_a_partial_clear_refuses_and_keeps_the_marker(tmp_path, monkeypatch):
+    """Cleanup catches OSError per directory, so a permission failure part way
+    through used to leave the caller regenerating over what survived -- with the
+    marker already deleted, taking the record of which directories belonged to the
+    shard with it."""
+    import shutil as real_shutil
+
+    from proteinfoundation import generate as gen
+
+    kept = tmp_path / "job_0_n_100_id_0"
+    gone = tmp_path / "job_0_n_100_id_1"
+    for d in (kept, gone):
+        d.mkdir()
+    marker_path = write_marker(tmp_path, "a" * 64, sample_dirs=[kept.name, gone.name])
+
+    def refuse_one(path, *args, **kwargs):
+        if path.endswith(kept.name):
+            raise OSError(13, "Permission denied")
+        return real_shutil.rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(gen.shutil, "rmtree", refuse_one)
+    with pytest.raises(SystemExit, match="could not be cleared"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=False)
+
+    assert kept.exists(), "the directory that could not be removed is still there"
+    assert os.path.exists(marker_path), "the marker must survive so recovery is possible"
+
+
+def test_clear_reports_what_survived(tmp_path, monkeypatch):
+    """Checked on disk after the attempt rather than inferred from which calls
+    raised -- a delete that reports success but leaves the directory is the case
+    that matters."""
+    import shutil as real_shutil
+
+    from proteinfoundation import generate as gen
+
+    d = tmp_path / "job_0_n_100_id_0"
+    d.mkdir()
+    marker = {"sample_dirs": [d.name]}
+
+    removed, remaining = gen.clear_shard_output(str(tmp_path), marker)
+    assert (removed, remaining) == (1, [])
+
+    d.mkdir()
+    monkeypatch.setattr(gen.shutil, "rmtree", lambda *a, **k: None)  # silent no-op
+    removed, remaining = gen.clear_shard_output(str(tmp_path), marker)
+    assert remaining == [str(d)], "a no-op delete must still be reported as remaining"
+
+    monkeypatch.setattr(gen.shutil, "rmtree", real_shutil.rmtree)

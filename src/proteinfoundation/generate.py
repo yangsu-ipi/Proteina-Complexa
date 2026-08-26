@@ -385,7 +385,7 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     ]
 
 
-def clear_shard_output(root_path: str, marker: dict) -> int:
+def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
     """Delete the directories a damaged shard recorded, before regenerating it.
 
     Only reached when the digest matches, i.e. we are about to redo *exactly*
@@ -395,8 +395,14 @@ def clear_shard_output(root_path: str, marker: dict) -> int:
     only the newer one recorded, and a retry silently overwrites whichever names
     happen to collide. Names come from the marker, so nothing outside this
     shard's own recorded output is touched -- in particular, designs from a run
-    with a *different* config are never removed, because that branch warns
+    with a *different* config are never removed, because that branch aborts
     instead of clearing.
+
+    Returns ``(removed, remaining)``. ``remaining`` is checked on disk after the
+    attempt rather than inferred from which calls raised: a partial clear leaves
+    the caller about to regenerate over surviving directories, which is the
+    condition clearing exists to prevent, so the caller has to be able to see it.
+    Callers must refuse to regenerate while anything remains.
     """
     names = marker.get("sample_dirs") or []
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
@@ -410,7 +416,34 @@ def clear_shard_output(root_path: str, marker: dict) -> int:
                     removed += 1
                 except OSError as exc:
                     logger.warning(f"Could not remove {path}: {exc}")
-    return removed
+    remaining = [
+        os.path.join(base, name)
+        for name in names
+        for base in (root_path, filtered_root)
+        if os.path.isdir(os.path.join(base, name))
+    ]
+    return removed, remaining
+
+
+def _abort_if_output_remains(root_path: str, job_id: int, remaining: list[str], marker_path: str) -> None:
+    """Stop before regenerating if any recorded directory survived the clear.
+
+    The marker is deliberately left in place: it is the only record of which
+    directories belong to this shard, so removing it after a failed clear would
+    take the means of recovery with it.
+    """
+    if not remaining:
+        return
+    shown = ", ".join(remaining[:3]) + (" ..." if len(remaining) > 3 else "")
+    raise SystemExit(
+        f"Refusing to generate into {root_path}: shard {job_id} could not be cleared -- "
+        f"{len(remaining)} recorded director{'y' if len(remaining) == 1 else 'ies'} still present "
+        f"({shown}).\n"
+        f"Regenerating now would write over them, since the directory names are deterministic and "
+        f"the counters restart.\n"
+        f"The marker at {marker_path} is left in place; it records which directories belong to this "
+        f"shard. Fix the permissions and retry, use a new generation.run_name, or clear {root_path}."
+    )
 
 
 def shard_already_complete(
@@ -442,8 +475,19 @@ def shard_already_complete(
         with open(marker_path) as handle:
             marker = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning(f"Ignoring unreadable shard marker {marker_path}: {exc}")
-        return False
+        # A marker exists only because a shard finished, so its directory holds
+        # output; an unreadable one is most likely a write interrupted after the
+        # structures were produced. Continuing restarts the deterministic counters
+        # over that output. We cannot read which directories it owned, so we
+        # cannot clear them either -- there is nothing safe left to do but stop.
+        raise SystemExit(
+            f"Refusing to generate into {root_path}: shard {job_id} has a completion marker at "
+            f"{marker_path} that cannot be read ({type(exc).__name__}: {exc}).\n"
+            f"A marker is only written after a shard produces output, so that directory holds "
+            f"structures this run would overwrite -- the directory names are deterministic and the "
+            f"counters restart.\n"
+            f"Repair or delete the marker, use a new generation.run_name, or clear {root_path}."
+        ) from exc
 
     marker_version = marker.get("generation_config_digest_version")
     recorded = marker.get("generation_config_sha256")
@@ -494,7 +538,8 @@ def shard_already_complete(
     missing = missing_shard_dirs(root_path, marker)
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
-        removed = clear_shard_output(root_path, marker)
+        removed, remaining = clear_shard_output(root_path, marker)
+        _abort_if_output_remains(root_path, job_id, remaining, marker_path)
         try:
             os.remove(marker_path)
         except OSError as exc:
@@ -522,7 +567,8 @@ def shard_already_complete(
         # The digest matches, so this is a request to redo *exactly* this shard.
         # Clearing what it recorded is what redoing it means -- and is what
         # clear_shard_output is documented for.
-        removed = clear_shard_output(root_path, marker)
+        removed, remaining = clear_shard_output(root_path, marker)
+        _abort_if_output_remains(root_path, job_id, remaining, marker_path)
         logger.warning(
             f"Shard {job_id} already completed with this exact config "
             f"({marker.get('nsamples', '?')} samples), and skip_completed_shards is false. "
