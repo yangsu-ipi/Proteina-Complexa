@@ -458,6 +458,45 @@ def motif_info_csv_name(task_name: str | None, job_id: int) -> str:
     return f"{task_name or 'motif'}_{job_id}_motif_info.csv"
 
 
+def motif_features_entry(conditional_features_cfg):
+    """The MotifFeatures entry of a conditional_features list, or None.
+
+    By ``_target_``, which is how ``main`` classifies these entries everywhere
+    else. The alternative -- asking whether the entry carries a particular key --
+    is what broke the assignment below: on a DictConfig, ``hasattr`` is False for
+    a key the config does not declare, ``open_dict`` does not change that, and no
+    shipped motif config declares ``motif_csv_path``.
+    """
+    if conditional_features_cfg is None:
+        return None
+    for entry in conditional_features_cfg:
+        try:
+            target = str(entry.get("_target_", ""))
+        except OmegaConfBaseException:
+            continue
+        if target.split(".")[-1] == "MotifFeatures":
+            return entry
+    return None
+
+
+def assign_motif_csv_path(conditional_features_cfg, path: str) -> bool:
+    """Tell MotifFeatures where to write its contig table. Returns whether it could.
+
+    ``motif_csv_path`` is a real MotifFeatures parameter defaulting to None, and
+    ``gen_dataset`` writes the table only when it is set -- so a guard that never
+    fired meant no shipped motif config ever produced one, and indexed evaluation
+    raised FileNotFoundError every time. Adding the key requires ``open_dict``;
+    ``hasattr`` does not become true inside it, which is what made the old guard
+    look reasonable while doing nothing.
+    """
+    entry = motif_features_entry(conditional_features_cfg)
+    if entry is None:
+        return False
+    with open_dict(entry):
+        entry.motif_csv_path = path
+    return True
+
+
 def motif_info_csv_required(
     conditional_features_cfg, motif_cond: bool, task_name: str | None, job_id: int
 ) -> str | None:
@@ -483,18 +522,17 @@ def motif_info_csv_required(
     exist. Markers written from here on record the CSV when it is present, so this
     inference only ever applies to markers that predate the requirement.
     """
-    if not motif_cond or conditional_features_cfg is None:
+    if not motif_cond:
         return None
-    for entry in conditional_features_cfg:
-        try:
-            if str(entry.get("_target_", "")).split(".")[-1] != "MotifFeatures":
-                continue
-            atom_spec = entry.get("motif_atom_spec", None)
-        except OmegaConfBaseException as exc:
-            logger.debug(f"Could not read motif_atom_spec ({type(exc).__name__}: {exc}); assuming no motif_info CSV")
-            return None
-        return None if atom_spec is not None else motif_info_csv_name(task_name, job_id)
-    return None
+    entry = motif_features_entry(conditional_features_cfg)
+    if entry is None:
+        return None
+    try:
+        atom_spec = entry.get("motif_atom_spec", None)
+    except OmegaConfBaseException as exc:
+        logger.debug(f"Could not read motif_atom_spec ({type(exc).__name__}: {exc}); assuming no motif_info CSV")
+        return None
+    return None if atom_spec is not None else motif_info_csv_name(task_name, job_id)
 
 
 def shard_output_contract(
@@ -798,6 +836,31 @@ def _abort_if_output_remains(root_path: str, job_id: int, remaining: list[str], 
         f"the counters restart.\n"
         f"The marker at {marker_path} is left in place; it records which output belongs to this "
         f"shard. Fix the permissions and retry, use a new generation.run_name, or clear {root_path}."
+    )
+
+
+def assert_contract_produced(root_path: str, contract: ShardOutputContract, job_id: int) -> None:
+    """Refuse to record a shard complete when it did not produce what it owes.
+
+    Without this, a required output that generation never writes is a loop rather
+    than a failure: the run finishes, writes a marker that omits the file because
+    the file is not there, and the next run's contract check finds it missing,
+    clears the completed designs and regenerates them -- to the same end, forever.
+
+    A marker means complete. If the shard is not, the right outcome is no marker
+    and a message naming the file, which is what this does. The designs stay on
+    disk; only the claim that they are finished is withheld.
+    """
+    missing = [rel for rel in contract.root_outputs if not is_usable_output(os.path.join(root_path, rel))]
+    if not missing:
+        return
+    raise SystemExit(
+        f"Shard {job_id} generated its designs but did not produce {len(missing)} required "
+        f"output file(s): {', '.join(missing)}.\n"
+        f"No completion marker is written, so nothing will be skipped on the strength of an "
+        f"incomplete shard -- but rerunning will not fix this by itself if the configuration is "
+        f"the reason the file was never written.\n"
+        f"The designs in {root_path} are left in place."
     )
 
 
@@ -1442,15 +1505,31 @@ def main(cfg):
            
         If atom_selection_mode is not specified, defaults to "ca_only" for backward compatibility.
         """
-        if conditional_features_cfg is not None:
-            with open_dict(conditional_features_cfg):
-                for conditional_feature_cfg in conditional_features_cfg:
-                    if hasattr(conditional_feature_cfg, "motif_csv_path"):
-                        conditional_feature_cfg.motif_csv_path = motif_csv_path
-                        break
+        # Read back off cfg_gen rather than reusing the node captured before
+        # split_by_job. They are the same object today -- split_by_job mutates and
+        # returns its argument -- but the config that gets instantiated is the one
+        # that has to carry this, and that is not a fact worth depending on
+        # silently.
+        if not assign_motif_csv_path(cfg_gen.dataloader.dataset.get("conditional_features", None), motif_csv_path):
+            logger.warning(
+                "This is a motif run but its conditional_features declare no MotifFeatures entry, "
+                "so no contig table will be written."
+            )
     logger.info(f"cfg_gen: {filter_config_for_logging(cfg_gen)}")
     dataloader = hydra.utils.instantiate(cfg_gen.dataloader)
     dataset = dataloader.dataset
+
+    # MotifFeatures writes the contig table while the dataset is built, so this is
+    # the first moment it can be checked -- and it is before any sampling, which is
+    # where the cost is. Evaluation needs the file; finding out here costs a
+    # checkpoint load, finding out later costs the whole run.
+    if motif_info_csv and not os.path.exists(os.path.join(root_path, motif_info_csv)):
+        raise SystemExit(
+            f"Refusing to generate into {root_path}: this config requires the motif contig table "
+            f"{motif_info_csv}, but building the dataset did not write it.\n"
+            f"Indexed motif evaluation needs it to map samples to contigs and fails without it "
+            f"(motif_eval.py), so generating now would produce designs that cannot be evaluated."
+        )
 
     if ligand_cond:  #! this is where se set self.ligand for the model
         ligand = dataset.conditional_features[conditional_features_types.index("LigandFeatures")].ligand
@@ -1594,6 +1673,13 @@ def main(cfg):
     # feature config, which is inference and can only ever be as good as the
     # interpolations resolve.
     motif_csv_paths = [motif_csv_path] if motif_csv_path and os.path.exists(motif_csv_path) else []
+    # A marker means complete, so it is not written over a shard that owes a file.
+    # An empty shard owes nothing: the reward CSV is written only for a nonempty
+    # frame, and there is no contig table without samples either.
+    if pdb_paths:
+        assert_contract_produced(
+            root_path, shard_output_contract(save_branch, config_name, job_id, motif_info_csv), job_id
+        )
     write_shard_marker(
         root_path,
         job_id,
