@@ -265,12 +265,112 @@ def test_output_relocated_by_the_filter_still_counts(tmp_path):
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
 
 
-def test_a_marker_without_outputs_falls_back_to_directories(tmp_path):
-    """Markers written before this schema cannot answer at file level. They must
-    keep resuming on the directory check rather than being refused."""
-    (tmp_path / "job_0_n_100_id_0").mkdir()
+def test_a_legacy_marker_with_intact_output_still_resumes(tmp_path):
+    """Markers written before per-file records must keep resuming -- they are the
+    state every existing campaign meets on upgrade."""
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
     write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+def test_a_legacy_marker_does_not_fail_open_on_a_deleted_pdb(tmp_path):
+    """This replaces a test that codified the opposite. A legacy marker cannot
+    name the file it expects, but it can require that the directory still holds a
+    usable design -- which is the deletion it was previously blind to. Logging
+    that verification is weaker does not restore the artifact."""
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
+    assert (tmp_path / "job_0_n_100_id_0").is_dir()
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_a_legacy_marker_treats_an_empty_pdb_as_missing(tmp_path):
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", content="")
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_a_marker_claiming_samples_but_recording_no_outputs_refuses(tmp_path):
+    """marker_schema_version was written and never consulted. A current-schema
+    marker with a positive sample count and no outputs disagrees with itself, so
+    nothing it says can be acted on -- distinct from a legacy marker, which is
+    silent rather than contradictory."""
+    from proteinfoundation.generate import MARKER_SCHEMA_VERSION
+
+    path = shard_marker_path(str(tmp_path), 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        json.dump(
+            {
+                "generation_config_sha256": "a" * 64,
+                "generation_config_digest_version": GENERATION_DIGEST_VERSION,
+                "marker_schema_version": MARKER_SCHEMA_VERSION,
+                "nsamples": 4,
+                "sample_dirs": [],
+                "outputs": [],
+            },
+            handle,
+        )
+    with pytest.raises(SystemExit, match="records no output files"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+# ------------------------------------------------------------- reward CSVs
+
+
+def test_a_missing_reward_csv_stops_the_shard_being_skipped(tmp_path):
+    """The filter stage reads rewards_{config}_{job}.csv and raises "No reward
+    files found!" without any. Across several shards it is quieter and worse: it
+    processes the ones it can see, so evaluation covers fewer designs than
+    generation claimed, with nothing reporting the shortfall."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / "rewards_cfg_0.csv").write_text("sample,reward\n")
+    write_v2_marker(tmp_path, outputs + ["rewards_cfg_0.csv"], nsamples=1)
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+    (tmp_path / "rewards_cfg_0.csv").unlink()
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+# ------------------------------------------------------------- readability
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads regardless of mode")
+def test_an_unreadable_pdb_counts_as_missing(tmp_path):
+    """isfile() and getsize() both read metadata and neither opens anything, so a
+    mode-000 file passed a check whose docstring claimed to detect unreadable
+    output."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_v2_marker(tmp_path, outputs)
+    target = tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb"
+    target.chmod(0)
+    try:
+        assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+    finally:
+        target.chmod(0o644)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads regardless of mode")
+def test_is_usable_output_separates_the_three_failures(tmp_path):
+    from proteinfoundation.generate import is_usable_output
+
+    good = tmp_path / "good.pdb"
+    good.write_text("ATOM\n")
+    empty = tmp_path / "empty.pdb"
+    empty.write_text("")
+    locked = tmp_path / "locked.pdb"
+    locked.write_text("ATOM\n")
+    locked.chmod(0)
+    try:
+        assert is_usable_output(str(good)) is True
+        assert is_usable_output(str(empty)) is False
+        assert is_usable_output(str(locked)) is False
+        assert is_usable_output(str(tmp_path / "absent.pdb")) is False
+        assert is_usable_output(str(tmp_path)) is False  # a directory is not an output
+    finally:
+        locked.chmod(0o644)
 
 
 def test_the_marker_records_every_file_including_ligand_complexes(tmp_path):
