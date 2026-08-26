@@ -353,9 +353,10 @@ any `.pdb` matters because the other PDBs in a sample directory were vouching fo
 ligand sample holds its complex as `{dir}.pdb` and a binder beside it, and binder evaluation
 writes a `{dir}_binder.pdb` sidecar into ordinary sample directories, which outlives the
 design it was extracted from while evaluation itself skips the design when the base PDB is
-gone. One case stays open for these markers only: a ligand sample whose binder was deleted
-while its complex survived, because a marker without `outputs` does not say whether the run
-was a ligand run. A marker at or above the schema that introduced `outputs` and recording
+gone. Which files a sample needs comes from the *contract* rather than from the marker: a
+ligand sample needs its binder as well as its complex, and a marker without `outputs` does
+not record that it was a ligand run — so the config is asked instead, which the matching
+digest is what licenses. A marker at or above the schema that introduced `outputs` and recording
 none against a positive sample count is contradictory rather than merely old, and aborts.
 
 Reward CSVs are shard output, not a side effect: the filter stage reads
@@ -369,6 +370,18 @@ The config is asked instead: generation passes the root-level files the *current
 would produce for this shard, and they are verified whether or not the marker names them.
 Motif generation writes no rewards, and a shard whose marker says it produced nothing wrote
 none either.
+
+**Which save path a config takes is one rule.** `generation_save_branch` decides it and both
+the save dispatch and the resume check read it from there, because the conditions are not
+exclusive: the shipped AME config sets *both* MotifFeatures and LigandFeatures, so an AME run
+is a ligand save with a motif dataset. Saving asks `ligand?` first; a resume check that asked
+`motif?` first classified every AME shard as reward-free while saving wrote a reward CSV per
+shard — each site correct read alone, in incompatible orders.
+
+Cleanup owns what the contract requires as well as what the marker recorded. A reward-unaware
+marker does not list its CSV, so clearing from the marker alone left behind the very file
+whose absence triggered the clear — and reported success, because that file was equally
+absent from the check that verifies removal.
 
 An absent marker does **not** mean an empty directory. Sample directories are created inside
 the save loop, one per design, while the marker is written only after every design, reward

@@ -20,16 +20,21 @@ import os
 import pytest
 
 torch = pytest.importorskip("torch", reason="generate.py needs the full runtime")
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from proteinfoundation.generate import (
     GENERATION_DIGEST_IGNORED_KEYS,
     GENERATION_DIGEST_VERSION,
+    ShardOutputContract,
     digest_v1_candidates,
     generation_config_digest,
+    generation_save_branch,
     shard_already_complete,
     shard_marker_path,
+    shard_output_contract,
 )
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cfg(**overrides):
@@ -682,6 +687,8 @@ def test_another_pdb_in_the_directory_does_not_answer_for_the_design(tmp_path, s
 
 
 REWARDS = "rewards_binder_generate_0.csv"
+REWARD_CONTRACT = shard_output_contract("standard", "binder_generate", 0)
+LIGAND_CONTRACT = shard_output_contract("ligand", "binder_generate", 0)
 
 
 def test_a_reward_csv_missing_from_a_reward_unaware_marker_blocks_the_skip(tmp_path):
@@ -696,9 +703,7 @@ def test_a_reward_csv_missing_from_a_reward_unaware_marker_blocks_the_skip(tmp_p
         "the marker's own records are intact, which is why asking it cannot settle this"
     )
 
-    assert (
-        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is False
-    )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT) is False
     assert not (tmp_path / "job_0_n_100_id_0").exists(), "the shard is cleared, not just refused"
 
 
@@ -706,9 +711,7 @@ def test_a_recorded_and_present_reward_csv_still_skips(tmp_path):
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
     (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
     write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
-    assert (
-        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is True
-    )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT) is True
 
 
 def test_a_zero_sample_shard_needs_no_reward_csv(tmp_path):
@@ -716,9 +719,7 @@ def test_a_zero_sample_shard_needs_no_reward_csv(tmp_path):
     of a shard that generated nothing would refuse a resume over a file that was
     never meant to exist."""
     write_output_marker(tmp_path, [], nsamples=0)
-    assert (
-        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is True
-    )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT) is True
 
 
 def test_a_reward_csv_under_filtered_out_samples_does_not_count(tmp_path):
@@ -792,3 +793,139 @@ def test_the_outputs_schema_floor_survives_a_version_bump(tmp_path):
     )
     with pytest.raises(SystemExit, match="records no output files"):
         shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+
+
+# ------------------------------------------------ which save path this config takes
+
+
+def ame_conditional_features():
+    """The feature classes the shipped AME config actually declares.
+
+    Read from the file rather than asserted as a boolean, because the finding was
+    not that the expression was wrong in the abstract -- it was that no config was
+    consulted about which branch it takes. Resolution is off: the config is full of
+    interpolations over campaign variables that are unset here, and none of them
+    affect which _target_ classes are listed.
+    """
+    ame = OmegaConf.load(os.path.join(REPO_ROOT, "configs", "pipeline", "ame", "ame_generate.yaml"))
+    found = []
+
+    def walk(node):
+        if isinstance(node, DictConfig):
+            for key in node.keys():
+                if key == "_target_":
+                    found.append(str(node._get_node(key)).split(".")[-1])
+                else:
+                    walk(node._get_node(key))
+        elif isinstance(node, ListConfig):
+            for i in range(len(node)):
+                walk(node._get_node(i))
+
+    walk(ame)
+    return found
+
+
+def test_the_shipped_ame_config_declares_both_motif_and_ligand_features():
+    """The premise of the bug, checked against the file. If AME ever stops setting
+    both, the test below is testing nothing and should be revisited rather than
+    quietly passing."""
+    features = ame_conditional_features()
+    assert "MotifFeatures" in features
+    assert "LigandFeatures" in features
+
+
+def test_a_config_setting_both_features_saves_on_the_ligand_branch():
+    """main dispatches `if ligand_cond ... elif motif_cond ...`, so a config with
+    both saves ligand output and writes a reward CSV. The resume check asked
+    "motif?" first and so expected no rewards from every AME shard -- each site
+    reading correctly on its own, in incompatible orders."""
+    features = ame_conditional_features()
+    branch = generation_save_branch("LigandFeatures" in features, "MotifFeatures" in features)
+    assert branch == "ligand"
+    assert shard_output_contract(branch, "ame_generate", 0).root_outputs == ("rewards_ame_generate_0.csv",)
+
+
+def test_only_a_motif_run_without_a_ligand_expects_no_rewards():
+    assert generation_save_branch(False, True) == "motif"
+    assert shard_output_contract("motif", "ame_generate", 0).root_outputs == ()
+    assert generation_save_branch(False, False) == "standard"
+
+
+def test_an_ame_shard_missing_its_reward_csv_is_not_skipped(tmp_path):
+    """The whole point, end to end: a reward-unaware marker whose recorded PDBs all
+    survive, under a config that sets both features."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", "job_0_n_100_id_0_binder.pdb")
+    write_output_marker(tmp_path, outputs, schema=2, nsamples=1)
+    contract = shard_output_contract(generation_save_branch(True, True), "ame_generate", 0)
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=contract) is False
+
+
+# --------------------------------------- the per-sample contract, for old markers
+
+
+def test_a_legacy_ligand_sample_missing_its_binder_is_not_intact(tmp_path):
+    """The inverse of the sidecar case, and the residual I documented instead of
+    fixing last round. A ligand sample needs both files; a marker without `outputs`
+    does not record that it was a ligand run. That uncertainty is a reason to ask
+    the config, not to read the surviving complex as completeness."""
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")  # complex kept, binder gone
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True, (
+        "under a non-ligand config that directory is complete, which is why the contract decides"
+    )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=LIGAND_CONTRACT) is False
+
+
+def test_a_legacy_ligand_sample_with_both_files_still_resumes(tmp_path):
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", "job_0_n_100_id_0_binder.pdb")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"], nsamples=1)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=LIGAND_CONTRACT) is True
+
+
+def test_the_default_contract_asks_for_the_design_alone(tmp_path):
+    """Callers that pass no contract keep the previous rule, so the parameter adds a
+    requirement where a config states one rather than everywhere."""
+    assert ShardOutputContract().files_for("job_0_n_100_id_0") == ["job_0_n_100_id_0.pdb"]
+
+
+# --------------------------------- cleanup owns required output the marker omits
+
+
+def test_an_unrecorded_reward_csv_is_cleared_with_the_shard(tmp_path):
+    """Detected via the contract, so it must be cleared via the contract too --
+    clearing from marker.outputs alone left the file whose absence triggered the
+    clear, and reported success because it was equally absent from the check."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / REWARDS).write_text("")  # present but empty: unusable, so it triggers the clear
+    write_output_marker(tmp_path, outputs, schema=2, nsamples=1)
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT) is False
+    assert not (tmp_path / REWARDS).exists(), "the required file is cleared even though the marker never named it"
+    assert not (tmp_path / "job_0_n_100_id_0").exists()
+
+
+def test_an_unrecorded_reward_csv_that_cannot_be_removed_aborts(tmp_path, monkeypatch):
+    """And if it will not go, the run stops with the marker kept -- rather than
+    repeating the GPU work only to fail writing over it."""
+    import proteinfoundation.generate as gen
+
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / REWARDS).write_text("")
+    marker = write_output_marker(tmp_path, outputs, schema=2, nsamples=1)
+
+    real_remove = gen.os.remove
+
+    def refuse_the_csv(path, *args, **kwargs):
+        if str(path).endswith(".csv"):
+            raise PermissionError(f"refusing {path}")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(gen.os, "remove", refuse_the_csv)
+
+    with pytest.raises(SystemExit, match="could not be cleared"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT)
+    assert (tmp_path / REWARDS).exists()
+    assert os.path.exists(marker), "a failed clear must not take the record of what the shard owns"
