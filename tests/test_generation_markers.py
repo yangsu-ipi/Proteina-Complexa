@@ -26,9 +26,12 @@ from proteinfoundation.generate import (
     GENERATION_DIGEST_IGNORED_KEYS,
     GENERATION_DIGEST_VERSION,
     ShardOutputContract,
+    assert_contract_produced,
+    assign_motif_csv_path,
     digest_v1_candidates,
     generation_config_digest,
     generation_save_branch,
+    motif_features_entry,
     motif_info_csv_name,
     motif_info_csv_required,
     shard_already_complete,
@@ -1043,3 +1046,83 @@ def test_clearing_a_motif_shard_removes_its_contig_table(tmp_path):
 
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is False
     assert not (tmp_path / MOTIF_CSV).exists()
+
+
+# ------------------------------- getting the contig table actually written
+
+
+MOTIF_CONFIGS = [("pipeline", "motif", "idx_motif_generate.yaml"), ("pipeline", "motif", "uidx_motif_generate.yaml")]
+
+
+@pytest.mark.parametrize("config_path", MOTIF_CONFIGS, ids=["indexed", "unindexed"])
+def test_no_shipped_motif_config_declares_the_csv_path(config_path):
+    """The premise of the bug. main guarded the assignment on the key already being
+    there, and no config puts it there -- so the contig table was never written and
+    indexed evaluation raised FileNotFoundError every time."""
+    entry = motif_features_entry(conditional_features_of(*config_path))
+    assert entry is not None
+    assert "motif_csv_path" not in entry
+
+
+def test_hasattr_stays_false_for_an_undeclared_key_inside_open_dict():
+    """The mechanism, asserted directly because it is what made the old guard look
+    reasonable. open_dict permits *adding* a key; it does not make hasattr true for
+    one that is absent."""
+    from omegaconf import open_dict
+
+    entry = OmegaConf.create({"_target_": "x.MotifFeatures"})
+    assert hasattr(entry, "motif_csv_path") is False
+    with open_dict(entry):
+        assert hasattr(entry, "motif_csv_path") is False, "which is why the guarded assignment never ran"
+        entry.motif_csv_path = "/out/t_0_motif_info.csv"
+    assert entry.motif_csv_path == "/out/t_0_motif_info.csv", "assigning directly does work"
+
+
+@pytest.mark.parametrize("config_path", MOTIF_CONFIGS, ids=["indexed", "unindexed"])
+def test_the_path_assignment_lands_on_a_shipped_motif_config(config_path):
+    """What main now does, against the real configs. Asserted through the list node
+    as well, since it is the list that gets instantiated, not the entry we held."""
+    features = conditional_features_of(*config_path)
+    assert assign_motif_csv_path(features, "/out/1YCR_AA_0_motif_info.csv") is True
+    assert features[0].get("motif_csv_path") == "/out/1YCR_AA_0_motif_info.csv"
+
+
+def test_the_assignment_reports_when_there_is_no_motif_features_entry():
+    """Reported rather than silent: a motif run whose features declare no
+    MotifFeatures writes no table, and the caller warns instead of assuming."""
+    assert assign_motif_csv_path(OmegaConf.create([{"_target_": "x.LigandFeatures"}]), "/out/x.csv") is False
+    assert assign_motif_csv_path(None, "/out/x.csv") is False
+
+
+def test_motif_features_really_takes_the_parameter_we_set():
+    """Setting a key hydra would reject is the same bug in a new place -- the
+    assignment would land and instantiation would fail."""
+    import inspect
+
+    from proteinfoundation.datasets.gen_dataset import MotifFeatures
+
+    assert "motif_csv_path" in inspect.signature(MotifFeatures.__init__).parameters
+
+
+# ----------------------------- a marker is not written over an unfinished shard
+
+
+def test_a_shard_that_did_not_produce_what_it_owes_gets_no_marker(tmp_path):
+    """Without this the missing file is a loop, not a failure: the run writes a
+    marker that omits the file because the file is not there, and the next run's
+    contract check clears the designs and regenerates them to the same end."""
+    with pytest.raises(SystemExit, match=MOTIF_CSV):
+        assert_contract_produced(str(tmp_path), MOTIF_CONTRACT, 0)
+    assert not os.path.exists(shard_marker_path(str(tmp_path), 0)), "no marker, so nothing is skipped later"
+
+
+def test_a_shard_that_produced_everything_passes_the_check(tmp_path):
+    (tmp_path / MOTIF_CSV).write_text("sample,contig\n")
+    assert_contract_produced(str(tmp_path), MOTIF_CONTRACT, 0)  # does not raise
+
+
+def test_an_empty_but_present_required_output_is_not_produced(tmp_path):
+    """Same rule as verification uses: an interrupted write leaves the file there."""
+    (tmp_path / MOTIF_CSV).write_text("")
+    with pytest.raises(SystemExit, match="did not produce"):
+        assert_contract_produced(str(tmp_path), MOTIF_CONTRACT, 0)

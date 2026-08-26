@@ -391,6 +391,19 @@ unset, the requirement is dropped rather than assumed: being wrong that way cost
 `FileNotFoundError` naming the file, while being wrong the other way clears a completed
 shard's GPU work over a file that never existed.
 
+Requiring a file and producing one are separate problems, and for a while only the first was
+solved. `main` passed MotifFeatures its output path under `if hasattr(entry, "motif_csv_path")`
+— and on a DictConfig `hasattr` is false for a key the config does not declare, which no
+shipped motif config does, and `open_dict` does not change that. So the table was never
+written, indexed evaluation raised `FileNotFoundError` every time, and adding the requirement
+without fixing the plumbing would have turned that into a loop: finish, write a marker that
+omits the file because the file is not there, then clear the designs and regenerate them to
+the same end. The entry is now found by `_target_` and the key set unconditionally, and two
+guards keep the loop closed — the run stops right after dataset construction if the table it
+owes is absent, which costs a checkpoint load rather than a sampling run, and **no completion
+marker is written over a shard that owes a file at all**. A marker means complete; when the
+shard is not, the designs stay and the claim is withheld.
+
 Cleanup owns what the contract requires as well as what the marker recorded. A reward-unaware
 marker does not list its CSV, so clearing from the marker alone left behind the very file
 whose absence triggered the clear — and reported success, because that file was equally
