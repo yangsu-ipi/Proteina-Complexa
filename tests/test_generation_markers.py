@@ -177,6 +177,122 @@ def test_identifiable_output_is_the_narrow_case(marker, identifiable):
     assert shard_output_is_identifiable(marker) is identifiable
 
 
+# --------------------------------------------------------- file-level checks
+
+
+def write_v2_marker(tmp_path, outputs, *, nsamples=None, digest="a" * 64):
+    """A current-schema marker recording the files a shard produced."""
+    from proteinfoundation.generate import MARKER_SCHEMA_VERSION
+
+    path = shard_marker_path(str(tmp_path), 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        json.dump(
+            {
+                "generation_config_sha256": digest,
+                "generation_config_digest_version": GENERATION_DIGEST_VERSION,
+                "marker_schema_version": MARKER_SCHEMA_VERSION,
+                "nsamples": nsamples if nsamples is not None else len(outputs),
+                "sample_dirs": sorted({os.path.dirname(o) for o in outputs}),
+                "outputs": sorted(outputs),
+            },
+            handle,
+        )
+    return path
+
+
+def make_sample(tmp_path, dir_name, *file_names, content="ATOM\n"):
+    """A sample directory holding the given files, returned as relative paths."""
+    (tmp_path / dir_name).mkdir(parents=True, exist_ok=True)
+    for name in file_names:
+        (tmp_path / dir_name / name).write_text(content)
+    return [f"{dir_name}/{name}" for name in file_names]
+
+
+@pytest.mark.parametrize(
+    "dir_name,files",
+    [
+        ("job_0_n_100_id_0", ["job_0_n_100_id_0.pdb"]),
+        ("job_0_n_100_id_0", ["job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0_complex.pdb"]),
+        ("job_0_id_0_motif_M0024", ["job_0_id_0_motif_M0024.pdb"]),
+    ],
+)
+def test_a_complete_sample_still_skips(tmp_path, dir_name, files):
+    """Standard, ligand and motif shapes, all intact -- the common path must stay
+    cheap, or file-level verification would cost every resume."""
+    outputs = make_sample(tmp_path, dir_name, *files)
+    write_v2_marker(tmp_path, outputs)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+def test_a_deleted_pdb_is_detected_though_its_directory_remains(tmp_path):
+    """The directory outlives its contents. sample_dirs alone reported this shard
+    complete, and evaluation was where the shortfall surfaced."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_v2_marker(tmp_path, outputs)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
+    assert (tmp_path / "job_0_n_100_id_0").is_dir(), "the directory is still there, which is the point"
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+    assert not (tmp_path / "job_0_n_100_id_0").exists(), "the partial sample is cleared before regenerating"
+
+
+def test_a_zero_byte_pdb_counts_as_missing(tmp_path):
+    """An interrupted write leaves the file in place. A shard whose PDB is empty
+    is not one to skip."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", content="")
+    write_v2_marker(tmp_path, outputs)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_a_ligand_sample_missing_its_complex_pdb_is_incomplete(tmp_path):
+    """save_protein_ligand_predictions writes a complex PDB beside every binder,
+    and only pdb_paths used to reach the marker -- so the complex file was
+    unverifiable however fine-grained the check became."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0_complex.pdb")
+    write_v2_marker(tmp_path, outputs, nsamples=1)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0_complex.pdb").unlink()
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_output_relocated_by_the_filter_still_counts(tmp_path):
+    """The filter stage moves designs it did not keep into filtered_out_samples/;
+    they are still this shard's output, so a relocated file is not a missing one."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_v2_marker(tmp_path, outputs)
+    (tmp_path / "filtered_out_samples").mkdir()
+    (tmp_path / "job_0_n_100_id_0").rename(tmp_path / "filtered_out_samples" / "job_0_n_100_id_0")
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+def test_a_marker_without_outputs_falls_back_to_directories(tmp_path):
+    """Markers written before this schema cannot answer at file level. They must
+    keep resuming on the directory check rather than being refused."""
+    (tmp_path / "job_0_n_100_id_0").mkdir()
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+def test_the_marker_records_every_file_including_ligand_complexes(tmp_path):
+    """Guards the write side: nsamples counts designs, outputs counts files."""
+    from proteinfoundation.generate import write_shard_marker
+
+    binder = tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0_binder.pdb"
+    complex_pdb = tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0_complex.pdb"
+    binder.parent.mkdir(parents=True)
+    for f in (binder, complex_pdb):
+        f.write_text("ATOM\n")
+
+    path = write_shard_marker(str(tmp_path), 0, 1, "a" * 64, [str(binder)], extra_output_paths=[str(complex_pdb)])
+    with open(path) as handle:
+        marker = json.load(handle)
+    assert marker["nsamples"] == 1, "the complex PDB is not a second sample"
+    assert marker["outputs"] == sorted(
+        ["job_0_n_100_id_0/job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0/job_0_n_100_id_0_complex.pdb"]
+    )
+    assert marker["sample_dirs"] == ["job_0_n_100_id_0"]
+
+
 def test_write_marker_returns_its_path(tmp_path):
     """Guards the fixture the cleanup tests rely on."""
     path = write_marker(tmp_path, "a" * 64)

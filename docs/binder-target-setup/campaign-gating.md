@@ -300,8 +300,9 @@ next run compares digests:
 |---|---|
 | absent, output root empty for this job | generate, silently |
 | **absent, but this job's directories exist** | **abort** — an interrupted run, not a new one |
-| digest matches, directories intact | **skip the shard** |
-| digest matches, directories missing | clear what survived, regenerate |
+| digest matches, every recorded file present and nonempty | **skip the shard** |
+| digest matches, a recorded file gone, empty or unreadable | clear what survived, regenerate |
+| digest matches, marker predates per-file records | fall back to the directory check |
 | **digest differs** | **abort** — a different request already owns this directory |
 | **older digest formula, v1 digest matches this config** | same request; behave as if it matched |
 | **older digest formula, v1 digest does not match** | **abort** — cannot tell whether the config changed |
@@ -325,6 +326,17 @@ are still on disk *after* the attempt, not which deletions raised, because a del
 reports success and leaves the directory is the case that matters. If anything remains the
 run aborts and the **marker is kept** — it is the only record of which directories belong to
 that shard, so deleting it after a failed clear would remove the means of recovery.
+
+**A directory outlives its contents.** The marker records every file a shard produced,
+relative to the output root, not just the directories holding them — a PDB can be deleted,
+truncated to zero bytes or left unreadable while its parent stays put, and a directory-level
+check then reports the shard complete, with evaluation the place it surfaces. Ligand
+generation writes a protein-ligand complex PDB beside every binder, and those are recorded
+too: `nsamples` counts designs, `outputs` counts files. Relocation into
+`filtered_out_samples/` is not a loss, for files as for directories.
+
+Markers written before `outputs` existed (`marker_schema_version` below 2) fall back to the
+directory check, which is all they can support, and say so in the log.
 
 An absent marker does **not** mean an empty directory. Sample directories are created inside
 the save loop, one per design, while the marker is written only after every design, reward
