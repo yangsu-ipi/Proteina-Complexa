@@ -31,6 +31,7 @@ from proteinfoundation.generate import (
     digest_v1_candidates,
     generation_config_digest,
     generation_save_branch,
+    motif_csv_outputs,
     motif_features_entry,
     motif_info_csv_name,
     motif_info_csv_required,
@@ -1126,3 +1127,46 @@ def test_an_empty_but_present_required_output_is_not_produced(tmp_path):
     (tmp_path / MOTIF_CSV).write_text("")
     with pytest.raises(SystemExit, match="did not produce"):
         assert_contract_produced(str(tmp_path), MOTIF_CONTRACT, 0)
+
+
+# ------------------------- an atom-spec run does not own a table it never wrote
+
+
+def test_an_atom_spec_run_claims_no_contig_table_even_if_one_is_lying_there(tmp_path):
+    """Every motif run is handed a motif_csv_path, atom-spec runs included -- AME is
+    one -- and those write no table. Recording whatever sits at that path claimed a
+    file the run neither produced nor needed."""
+    stray = tmp_path / MOTIF_CSV
+    stray.write_text("sample,contig\n")  # left by some earlier contig-mode run
+
+    assert motif_csv_outputs(str(tmp_path), None) == [], "not required, so not owned"
+    assert motif_csv_outputs(str(tmp_path), MOTIF_CSV) == [str(stray)]
+
+
+def test_cleanup_leaves_a_contig_table_this_shard_never_claimed(tmp_path):
+    """Cleanup treats every recorded root-level output as owned, which is right --
+    the bug was upstream, in what got recorded. A forced rerun of an atom-spec shard
+    deleted a stray table belonging to a different run."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", "job_0_n_100_id_0_binder.pdb")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    stray = tmp_path / MOTIF_CSV
+    stray.write_text("sample,contig\n")
+    # what an AME shard records now: ligand output and its reward CSV, no table
+    write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()  # damage it
+
+    contract = shard_output_contract(generation_save_branch(True, True), "binder_generate", 0, None)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=contract) is False
+    assert not (tmp_path / REWARDS).exists(), "its own reward CSV goes with the shard"
+    assert stray.exists(), "the table it never claimed stays"
+
+
+def test_a_contig_mode_shard_still_owns_and_clears_its_own_table(tmp_path):
+    """The other side of the same gate: required means owned."""
+    outputs = make_sample(tmp_path, MOTIF_DIR, f"{MOTIF_DIR}.pdb")
+    (tmp_path / MOTIF_CSV).write_text("sample,contig\n")
+    write_output_marker(tmp_path, outputs + [MOTIF_CSV], nsamples=1)
+    (tmp_path / MOTIF_DIR / f"{MOTIF_DIR}.pdb").unlink()
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is False
+    assert not (tmp_path / MOTIF_CSV).exists()
