@@ -6,6 +6,7 @@ from proteinfoundation.cli.startup import quiet_startup
 
 quiet_startup()
 
+import glob
 import hashlib
 import json
 import os
@@ -294,7 +295,7 @@ def generation_config_digest(cfg_gen: dict) -> str:
         logger.debug(f"Generation config digest computed unresolved ({type(exc).__name__}: {exc})")
         text = OmegaConf.to_yaml(cfg_for_digest, resolve=False)
         mode = "unresolved"
-    return hashlib.sha256(f"v{GENERATION_DIGEST_VERSION}\n{mode}\n{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"v{GENERATION_DIGEST_VERSION}\n{mode}\n{text}".encode()).hexdigest()
 
 
 def digest_v1_candidates(cfg_gen: dict) -> set[str]:
@@ -329,7 +330,7 @@ def digest_v1_candidates(cfg_gen: dict) -> set[str]:
             text = OmegaConf.to_yaml(cfg, resolve=False)
             mode = "unresolved"
         # v1 exactly: no version prefix, no key exclusion.
-        candidates.add(hashlib.sha256(f"{mode}\n{text}".encode("utf-8")).hexdigest())
+        candidates.add(hashlib.sha256(f"{mode}\n{text}".encode()).hexdigest())
     return candidates
 
 
@@ -383,6 +384,30 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
         if not os.path.isdir(os.path.join(root_path, name))
         and not os.path.isdir(os.path.join(filtered_root, name))
     ]
+
+
+def existing_shard_dirs(root_path: str, job_id: int) -> list[str]:
+    """Directories this job produced, found by name rather than by marker.
+
+    Sample directories are created inside the save loop, one per design, while the
+    completion marker is written only after every design, reward and timing record
+    has been handled. A kill or crash between those two points leaves a populated
+    output root with no marker at all -- so "no marker" cannot be read as "nothing
+    was generated here", which is what it was read as until now.
+
+    Names are ``job_{job_id}_n_{length}_id_{counter}[_tag]``. The ``_n_`` separator
+    keeps the prefix unambiguous: job 1 does not match job 10.
+
+    Found by name because that works on output already on disk. The stronger
+    alternative -- writing an in-progress marker before the save loop and
+    replacing it atomically on success -- makes the question answerable directly
+    rather than inferred, but only for runs started after it exists, which leaves
+    exactly the interrupted campaigns this is meant to catch uncovered.
+    """
+    found: list[str] = []
+    for base in (root_path, os.path.join(root_path, FILTERED_OUT_DIRNAME)):
+        found.extend(p for p in sorted(glob.glob(os.path.join(base, f"job_{job_id}_n_*"))) if os.path.isdir(p))
+    return found
 
 
 def shard_output_is_identifiable(marker: dict) -> bool:
@@ -493,6 +518,18 @@ def shard_already_complete(
     """
     marker_path = shard_marker_path(root_path, job_id)
     if not os.path.exists(marker_path):
+        orphans = existing_shard_dirs(root_path, job_id)
+        if orphans:
+            shown = ", ".join(os.path.basename(o) for o in orphans[:3]) + (" ..." if len(orphans) > 3 else "")
+            raise SystemExit(
+                f"Refusing to generate into {root_path}: shard {job_id} has no completion marker but "
+                f"{len(orphans)} of its sample director{'y' if len(orphans) == 1 else 'ies'} already "
+                f"exist ({shown}).\n"
+                f"The marker is written only after every design is saved, so this is what an "
+                f"interrupted run leaves behind. Regenerating would restart the deterministic "
+                f"counters over those directories.\n"
+                f"Use a new generation.run_name, or clear {root_path} first."
+            )
         return False
     try:
         with open(marker_path) as handle:
