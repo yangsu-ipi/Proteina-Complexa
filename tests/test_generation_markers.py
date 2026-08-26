@@ -110,6 +110,73 @@ def test_forcing_a_rerun_clears_what_it_is_about_to_redo(tmp_path):
     assert not os.path.exists(shard_marker_path(str(tmp_path), 0)), "the marker should go too"
 
 
+def test_a_forced_rerun_refuses_when_the_marker_names_no_directories(tmp_path):
+    """The shape the reviewer specified: a matching legacy marker with no
+    sample_dirs, an existing sample directory, skip disabled.
+
+    sample_dirs was added after markers themselves, so a campaign finished between
+    those two commits has a valid digest-matching marker that names nothing.
+    Clearing it removes nothing and reports nothing remaining, which let the run
+    proceed over output it never identified -- the same overwrite this branch
+    exists to prevent, through the one marker shape that cannot be checked.
+    """
+    produced = tmp_path / "job_0_n_100_id_0"
+    produced.mkdir()
+    (produced / "job_0_n_100_id_0.pdb").write_text("ATOM\n")
+    marker_path = shard_marker_path(str(tmp_path), 0)
+    os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+    with open(marker_path, "w") as handle:
+        json.dump(
+            {
+                "generation_config_sha256": "a" * 64,
+                "generation_config_digest_version": GENERATION_DIGEST_VERSION,
+                "nsamples": 16,
+            },  # no sample_dirs, as markers between d40066a and c09a82c were written
+            handle,
+        )
+
+    with pytest.raises(SystemExit, match="records no sample directories"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=False)
+
+    assert produced.exists(), "the output must survive a refusal"
+    assert os.path.exists(marker_path), "so must the marker"
+
+
+def test_the_default_skip_path_is_unaffected_by_a_legacy_marker(tmp_path):
+    """Skipping writes nothing, so an unidentifiable marker is only a problem for
+    a forced rerun. Refusing here would break resume for those campaigns."""
+    marker_path = shard_marker_path(str(tmp_path), 0)
+    os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+    with open(marker_path, "w") as handle:
+        json.dump(
+            {
+                "generation_config_sha256": "a" * 64,
+                "generation_config_digest_version": GENERATION_DIGEST_VERSION,
+                "nsamples": 16,
+            },
+            handle,
+        )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+@pytest.mark.parametrize(
+    "marker,identifiable",
+    [
+        ({"sample_dirs": ["a"], "nsamples": 1}, True),
+        ({"sample_dirs": [], "nsamples": 0}, True),  # produced nothing; nothing to clear
+        ({"sample_dirs": [], "nsamples": 16}, False),  # a marker disagreeing with itself
+        ({"nsamples": 16}, False),  # predates sample_dirs
+        ({"sample_dirs": "job_0", "nsamples": 1}, False),  # not a list
+    ],
+)
+def test_identifiable_output_is_the_narrow_case(marker, identifiable):
+    """An empty list is only safe when the marker also says nothing was produced.
+    Everything else the caller cannot act on."""
+    from proteinfoundation.generate import shard_output_is_identifiable
+
+    assert shard_output_is_identifiable(marker) is identifiable
+
+
 def test_write_marker_returns_its_path(tmp_path):
     """Guards the fixture the cleanup tests rely on."""
     path = write_marker(tmp_path, "a" * 64)
