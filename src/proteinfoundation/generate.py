@@ -265,7 +265,20 @@ GENERATION_DIGEST_VERSION = 2
 # the digest version, which is about what a digest *means*; this is about what a
 # marker *carries*. 2 added `outputs`, the files a shard produced, because
 # `sample_dirs` records only their parents and a directory outlives its contents.
-MARKER_SCHEMA_VERSION = 2
+# 3 widened what `outputs` must hold from the design PDBs to every file the shard
+# wrote, reward CSVs included. A v2 marker may have been written on either side of
+# that widening and nothing in it says which, so a v2 marker cannot answer "is a
+# reward CSV required here" and has to be asked separately -- see
+# `expected_root_outputs`.
+MARKER_SCHEMA_VERSION = 3
+
+# The schema from which `outputs` exists at all. A marker at or above this that
+# records no outputs beside a positive sample count contradicts itself; one below
+# is merely silent, which is a different thing to do about. Kept apart from
+# MARKER_SCHEMA_VERSION so that bumping the latter cannot quietly turn that
+# contradiction back into silence -- which bumping it to 3 would otherwise have
+# done, undoing the check a moment after it was added.
+MARKER_SCHEMA_WITH_OUTPUTS = 2
 
 
 def generation_config_digest(cfg_gen: dict) -> str:
@@ -363,10 +376,11 @@ def write_shard_marker(
     Args:
         pdb_paths: The designs this shard produced. Their count is the sample
             count.
-        extra_output_paths: Further files a sample is not complete without --
+        extra_output_paths: Further files the shard is not complete without --
             ligand generation writes a protein-ligand complex PDB beside each
-            binder, and a shard missing those is not whole either. Kept separate
-            so they do not inflate ``nsamples``.
+            binder, and both generation modes that produce rewards write one
+            reward CSV at the output root. Kept separate so they do not inflate
+            ``nsamples``.
     """
     marker_path = shard_marker_path(root_path, job_id)
     every_output = list(pdb_paths) + list(extra_output_paths or [])
@@ -407,23 +421,29 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
 
     def intact(base: str, name: str) -> bool:
-        """Present *and* still holding a usable design.
+        """Present *and* still holding the design it is named for.
 
-        A marker without per-file records cannot name the PDB it expects, but the
-        directory is not evidence on its own -- it outlives its contents.
-        Requiring at least one usable .pdb inside catches the deletion these
-        markers were previously blind to, without reconstructing a filename from
-        a convention that differs across the three save paths. Weaker than the
-        per-file check, and much stronger than trusting the directory.
+        All three save paths write ``{dir}/{dir}.pdb`` -- each builds the filename
+        from the directory stem it just created -- so the expected name *is*
+        reconstructable from a recorded directory name. The previous any-.pdb test
+        assumed it was not, and was too weak in two shapes that occur:
+
+        A ligand sample holds both ``{dir}.pdb`` (the complex) and
+        ``{dir}_binder.pdb``; delete the complex and the binder vouched for it.
+        And binder evaluation writes a ``{dir}_binder.pdb`` sidecar into ordinary
+        sample directories (``binder_eval.py:771``), which outlives the generated
+        design it was extracted from and then answered for it -- while evaluation
+        itself looks for the base PDB and skips the design when that is gone.
+
+        One case stays open, and only for markers this old: a ligand sample whose
+        binder PDB was deleted while its complex survived still reads as intact,
+        because a marker without ``outputs`` does not record whether the run was a
+        ligand run, and ``{dir}_binder.pdb`` is a required output there and a
+        derived sidecar everywhere else. Markers from MARKER_SCHEMA_WITH_OUTPUTS
+        on name both files, so that gap closes with the campaign rather than
+        persisting.
         """
-        directory = os.path.join(base, name)
-        if not os.path.isdir(directory):
-            return False
-        try:
-            entries = os.listdir(directory)
-        except OSError:
-            return False
-        return any(e.endswith(".pdb") and is_usable_output(os.path.join(directory, e)) for e in entries)
+        return is_usable_output(os.path.join(base, name, f"{name}.pdb"))
 
     return [name for name in names if not any(intact(base, name) for base in (root_path, filtered_root))]
 
@@ -515,6 +535,43 @@ def is_usable_output(path: str) -> bool:
     return True
 
 
+def root_level_outputs(marker: dict) -> list[str]:
+    """Recorded outputs that live in the output root rather than in a sample dir.
+
+    Reward CSVs, today. Separated because the two kinds behave differently in
+    both directions: the filter relocates sample directories but not root files,
+    and clearing a shard must remove root files individually rather than by
+    removing their parent -- their parent is the campaign.
+
+    Only outputs with no directory component at all count. A recorded path with a
+    directory component that is *not* a sample directory would be something this
+    shard does not own the parent of, and removing it by name is not a thing to
+    do on a guess.
+    """
+    outputs = marker.get("outputs")
+    if not isinstance(outputs, list):
+        return []
+    return [rel for rel in outputs if isinstance(rel, str) and rel and os.path.dirname(rel) == ""]
+
+
+def output_search_bases(root_path: str, relative: str, sample_dirs: set[str]) -> list[str]:
+    """Where a recorded output may legitimately be found.
+
+    The filter moves whole sample directories into ``filtered_out_samples/``, so
+    an output *inside* one of them is this shard's output relocated, not missing.
+    Nothing relocates root-level files, and the filter looks for
+    ``rewards_{config_name}_*.csv`` in the output root and nowhere else
+    (``filter.py:113-117``). Allowing the same fallback for a reward CSV therefore
+    accepted it in a location the filter cannot see: generation would report the
+    shard complete while filtering either raised "No reward files found" or
+    silently evaluated only the shards whose CSV was still in place.
+    """
+    head = relative.split(os.sep)[0]
+    if head != relative and head in sample_dirs:
+        return [root_path, os.path.join(root_path, FILTERED_OUT_DIRNAME)]
+    return [root_path]
+
+
 def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     """Recorded output files that are gone, empty, or unreadable.
 
@@ -522,19 +579,18 @@ def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     this level" -- the caller falls back to checking directories, which is all
     those markers can support.
 
-    A file counts as present in either its original location or under
-    ``filtered_out_samples/``, for the same reason directories do: the filter
-    stage relocates designs it did not keep, and they are still this shard's
-    output. Zero bytes counts as missing -- an interrupted write leaves the file
-    there, and a shard whose PDB is empty is not one to skip.
+    Where each file may be counts on what kind of output it is; see
+    ``output_search_bases``. Zero bytes counts as missing -- an interrupted write
+    leaves the file there, and a shard whose PDB is empty is not one to skip.
     """
     outputs = marker.get("outputs")
     if not isinstance(outputs, list) or not outputs:
         return None
-    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
+    sample_dirs = {name for name in (marker.get("sample_dirs") or []) if isinstance(name, str)}
     missing = []
     for relative in outputs:
-        if not any(is_usable_output(os.path.join(base, relative)) for base in (root_path, filtered_root)):
+        bases = output_search_bases(root_path, relative, sample_dirs)
+        if not any(is_usable_output(os.path.join(base, relative)) for base in bases):
             missing.append(relative)
     return missing
 
@@ -552,13 +608,22 @@ def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
     with a *different* config are never removed, because that branch aborts
     instead of clearing.
 
+    Root-level outputs are removed as well as sample directories. While every
+    recorded output lived inside a sample directory, removing the directories
+    cleared the shard; reward CSVs are root-level, so that stopped being true.
+    The failure it left was concrete: an unusable reward CSV was detected, the
+    sample directories were cleared, the CSV itself survived, and generation then
+    repeated the whole GPU run only to fail writing over the file it could not
+    remove -- leaving regenerated directories with no marker.
+
     Returns ``(removed, remaining)``. ``remaining`` is checked on disk after the
     attempt rather than inferred from which calls raised: a partial clear leaves
-    the caller about to regenerate over surviving directories, which is the
-    condition clearing exists to prevent, so the caller has to be able to see it.
-    Callers must refuse to regenerate while anything remains.
+    the caller about to regenerate over surviving output, which is the condition
+    clearing exists to prevent, so the caller has to be able to see it. Callers
+    must refuse to regenerate while anything remains.
     """
     names = marker.get("sample_dirs") or []
+    root_files = root_level_outputs(marker)
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
     removed = 0
     for name in names:
@@ -570,32 +635,44 @@ def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
                     removed += 1
                 except OSError as exc:
                     logger.warning(f"Could not remove {path}: {exc}")
+    for relative in root_files:
+        path = os.path.join(root_path, relative)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError as exc:
+                logger.warning(f"Could not remove {path}: {exc}")
     remaining = [
         os.path.join(base, name)
         for name in names
         for base in (root_path, filtered_root)
         if os.path.isdir(os.path.join(base, name))
+    ] + [
+        os.path.join(root_path, relative)
+        for relative in root_files
+        if os.path.exists(os.path.join(root_path, relative))
     ]
     return removed, remaining
 
 
 def _abort_if_output_remains(root_path: str, job_id: int, remaining: list[str], marker_path: str) -> None:
-    """Stop before regenerating if any recorded directory survived the clear.
+    """Stop before regenerating if any recorded output survived the clear.
 
     The marker is deliberately left in place: it is the only record of which
-    directories belong to this shard, so removing it after a failed clear would
-    take the means of recovery with it.
+    output belongs to this shard, so removing it after a failed clear would take
+    the means of recovery with it.
     """
     if not remaining:
         return
     shown = ", ".join(remaining[:3]) + (" ..." if len(remaining) > 3 else "")
     raise SystemExit(
         f"Refusing to generate into {root_path}: shard {job_id} could not be cleared -- "
-        f"{len(remaining)} recorded director{'y' if len(remaining) == 1 else 'ies'} still present "
+        f"{len(remaining)} recorded output{'' if len(remaining) == 1 else 's'} still present "
         f"({shown}).\n"
         f"Regenerating now would write over them, since the directory names are deterministic and "
         f"the counters restart.\n"
-        f"The marker at {marker_path} is left in place; it records which directories belong to this "
+        f"The marker at {marker_path} is left in place; it records which output belongs to this "
         f"shard. Fix the permissions and retry, use a new generation.run_name, or clear {root_path}."
     )
 
@@ -606,6 +683,7 @@ def shard_already_complete(
     digest: str,
     skip_enabled: bool,
     legacy_digests: set[str] | None = None,
+    expected_root_outputs: list[str] | None = None,
 ) -> bool:
     """Whether this shard can be skipped. Aborts on a config mismatch.
 
@@ -621,6 +699,15 @@ def shard_already_complete(
 
     Aborting instead. The recovery is one command either way (new ``run_name``, or
     clear the directory), and it is the caller who knows which they meant.
+
+    Args:
+        expected_root_outputs: Root-level files the *current* config would produce
+            for this shard, asked of the config rather than read from the marker.
+            A marker written before reward CSVs joined ``outputs`` records intact
+            PDBs and says nothing about the CSV, and it claims the same schema
+            version as one written after, so the marker cannot be the source of
+            this answer. Ignored for a shard the marker says produced nothing,
+            which writes no rewards either.
     """
     marker_path = shard_marker_path(root_path, job_id)
     if not os.path.exists(marker_path):
@@ -708,7 +795,7 @@ def shard_already_complete(
     schema = marker.get("marker_schema_version", 1)
     missing = missing_shard_outputs(root_path, marker)
     level = "output file"
-    if missing is None and schema >= MARKER_SCHEMA_VERSION and marker.get("nsamples", 0) > 0:
+    if missing is None and schema >= MARKER_SCHEMA_WITH_OUTPUTS and marker.get("nsamples", 0) > 0:
         # Written by a schema that records outputs, yet recording none for a
         # positive sample count: the marker disagrees with itself, so nothing it
         # says can be acted on. Distinct from a legacy marker, which is silent
@@ -728,6 +815,24 @@ def shard_already_complete(
                 f"checked for a usable design instead, which cannot confirm the expected file "
                 f"count but does detect a deleted or empty one."
             )
+    # Required root-level output, checked against the config rather than the
+    # marker. Every path above answers "did what the marker recorded survive",
+    # and for a marker written before reward CSVs were recorded the honest answer
+    # to that is yes while the shard is still unusable: in a multi-shard run
+    # generation would skip it and filtering would quietly evaluate the shards
+    # whose CSV remained. Skipped where the marker already records the file --
+    # that is the current schema, and it has been checked at file level already.
+    if expected_root_outputs and marker.get("nsamples", 0) > 0:
+        recorded_outputs = set(marker.get("outputs") or [])
+        missing_required = [
+            relative
+            for relative in expected_root_outputs
+            if relative not in recorded_outputs and not is_usable_output(os.path.join(root_path, relative))
+        ]
+        if missing_required:
+            missing = (missing or []) + missing_required
+            level = "required output"
+
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
         removed, remaining = clear_shard_output(root_path, marker)
@@ -739,8 +844,8 @@ def shard_already_complete(
         logger.warning(
             f"Shard {job_id} is marked complete but {len(missing)} recorded {level}(s) are gone, "
             f"empty or unreadable ({shown}), against {marker.get('nsamples', '?')} samples. "
-            f"Removed the {removed} director{'y' if removed == 1 else 'ies'} that survived, plus the "
-            "marker, so the shard is regenerated as a whole rather than mixed with a partial "
+            f"Removed the {removed} recorded output{'' if removed == 1 else 's'} that survived, plus "
+            "the marker, so the shard is regenerated as a whole rather than mixed with a partial "
             "earlier attempt."
         )
         return False
@@ -1155,6 +1260,13 @@ def main(cfg):
         # Lets a marker written before the digest was versioned be recognised as
         # the same request rather than refused.
         legacy_digests=digest_v1_candidates(cfg_gen),
+        # The filter finds rewards by globbing rewards_{config_name}_*.csv in the
+        # output root and nowhere else (filter.py:113-117), so a shard whose CSV
+        # is gone must not be skipped however intact its designs are. Motif
+        # generation writes no rewards; the ligand and standard branches each
+        # write one per shard. Whether the shard produced anything at all is
+        # settled inside, from the marker's own sample count.
+        expected_root_outputs=[] if motif_cond else [f"rewards_{config_name}_{job_id}.csv"],
     ):
         sys.exit(0)
 
