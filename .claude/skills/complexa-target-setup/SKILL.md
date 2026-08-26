@@ -242,7 +242,7 @@ cd /data/targets/MINE && complexa design ./pipeline.yaml --verbose
 ```
 
 The `cd` matters: output roots are hardcoded relative paths — `./inference/...`
-(`generate.py:66`) and `./logs` (`cli_runner.py:128`) — with no `os.chdir` or `cwd=`
+(`generate.py:68`) and `./logs` (`cli_runner.py:128`) — with no `os.chdir` or `cwd=`
 anywhere, so they land in the shell's cwd.
 
 Confirm the right target dict is live before letting a long run proceed:
@@ -255,8 +255,12 @@ grep -o "'target_dict_cfg': '<filtered: [0-9]* entries>'" logs/generate.log
 
 Shards and binder refolds are reused by default (`generation.skip_completed_shards`,
 `metric.reuse_cached_folding`). Before a long campaign leans on that, confirm resume
-*invalidates* as well as reuses — `bash docs/binder-target-setup/scripts/check_resume.sh
---config ./pipeline.yaml --samples 2`, six assertions, needs a GPU.
+*invalidates and refuses* as well as reuses — `bash
+docs/binder-target-setup/scripts/check_resume.sh --config ./pipeline.yaml --samples 2`,
+six checks, needs a GPU. Note what a **changed generation config** does: generation
+aborts rather than regenerating, because the directory names are deterministic and the
+counters restart, so continuing would overwrite the earlier run's structures. Pick a new
+`generation.run_name` or clear the directory — the message says which.
 
 ## Step 6: Emit manifest
 
