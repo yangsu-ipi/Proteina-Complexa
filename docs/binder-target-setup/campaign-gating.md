@@ -378,6 +378,19 @@ is a ligand save with a motif dataset. Saving asks `ligand?` first; a resume che
 `motif?` first classified every AME shard as reward-free while saving wrote a reward CSV per
 shard — each site correct read alone, in incompatible orders.
 
+The motif contig table is required output too, and hangs off the MotifFeatures mode rather
+than the save branch. MotifFeatures writes `{task_name}_{job_id}_motif_info.csv` into the
+output root whenever `motif_atom_spec` is unset, and indexed motif evaluation *requires* it
+to map samples to contigs — it raises `FileNotFoundError` without it. So a shard that skipped
+after the file was deleted left evaluation unable to run at all. A config can set both
+MotifFeatures and LigandFeatures, save on the ligand branch, and still owe this file, which is
+why it is a separate input to the contract rather than a property of the branch. Markers
+written from here on record the file, so the config-derived requirement only has to carry
+markers that predate it — and where `motif_atom_spec` interpolates over a variable that is
+unset, the requirement is dropped rather than assumed: being wrong that way costs a loud
+`FileNotFoundError` naming the file, while being wrong the other way clears a completed
+shard's GPU work over a file that never existed.
+
 Cleanup owns what the contract requires as well as what the marker recorded. A reward-unaware
 marker does not list its CSV, so clearing from the marker alone left behind the very file
 whose absence triggered the clear — and reported success, because that file was equally

@@ -29,6 +29,8 @@ from proteinfoundation.generate import (
     digest_v1_candidates,
     generation_config_digest,
     generation_save_branch,
+    motif_info_csv_name,
+    motif_info_csv_required,
     shard_already_complete,
     shard_marker_path,
     shard_output_contract,
@@ -929,3 +931,115 @@ def test_an_unrecorded_reward_csv_that_cannot_be_removed_aborts(tmp_path, monkey
         shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=REWARD_CONTRACT)
     assert (tmp_path / REWARDS).exists()
     assert os.path.exists(marker), "a failed clear must not take the record of what the shard owns"
+
+
+# ------------------------------------------------- the motif contig table
+
+
+def conditional_features_of(*config_path):
+    """The `conditional_features` node of a shipped config, unresolved.
+
+    Unresolved on purpose: these configs interpolate over campaign variables that
+    are unset here, and the production helper has to cope with exactly that.
+    """
+    cfg = OmegaConf.load(os.path.join(REPO_ROOT, "configs", *config_path))
+    found = []
+
+    def walk(node):
+        if isinstance(node, DictConfig):
+            for key in node.keys():
+                if key == "conditional_features":
+                    found.append(node._get_node(key))
+                else:
+                    walk(node._get_node(key))
+        elif isinstance(node, ListConfig):
+            for i in range(len(node)):
+                walk(node._get_node(i))
+
+    walk(cfg)
+    assert found, "the config declares no conditional_features"
+    return found[0]
+
+
+def test_the_motif_info_csv_name_follows_the_convention_evaluation_documents():
+    """motif_eval's FileNotFoundError tells the user to place the file at
+    {task_name}_{job_id}_motif_info.csv, so that is what generation must write and
+    what the contract must ask for."""
+    assert motif_info_csv_name("1YCR_AA", 3) == "1YCR_AA_3_motif_info.csv"
+    assert motif_info_csv_name(None, 0) == "motif_0_motif_info.csv"
+
+
+def test_the_shipped_indexed_motif_config_requires_its_contig_table():
+    """idx_motif_generate.yaml sets contig_string and no motif_atom_spec, so
+    MotifFeatures writes the CSV -- and indexed evaluation cannot run without it."""
+    features = conditional_features_of("pipeline", "motif", "idx_motif_generate.yaml")
+    assert motif_info_csv_required(features, True, "1YCR_AA", 0) == "1YCR_AA_0_motif_info.csv"
+
+
+def test_an_atom_spec_config_requires_no_contig_table():
+    """gen_dataset writes the CSV only when motif_atom_spec is None. Requiring it
+    of an atom-spec run would clear and regenerate a healthy shard over a file that
+    was never meant to exist."""
+    features = OmegaConf.create(
+        [{"_target_": "proteinfoundation.datasets.gen_dataset.MotifFeatures", "motif_atom_spec": "A64: [O, CG]"}]
+    )
+    assert motif_info_csv_required(features, True, "T", 0) is None
+    assert motif_info_csv_required(features, False, "T", 0) is None, "not a motif run at all"
+    assert motif_info_csv_required(None, True, "T", 0) is None
+
+
+def test_an_unresolvable_atom_spec_does_not_demand_a_contig_table():
+    """AME interpolates motif_atom_spec over a campaign variable that is unset
+    outside a real run. Reading it raises, and the fail-open direction is chosen
+    deliberately: guessing wrong here costs a loud FileNotFoundError from
+    evaluation that names the file, while guessing wrong the other way clears a
+    completed shard's GPU work over a file that never existed."""
+    features = conditional_features_of("pipeline", "ame", "ame_generate.yaml")
+    assert motif_info_csv_required(features, True, "some_task", 0) is None
+
+
+def test_a_ligand_save_can_still_owe_a_contig_table():
+    """The requirement hangs off the MotifFeatures mode, not off the save branch --
+    a config can set both features, save ligand output, and have written the CSV.
+    Folding this into the branch would repeat the AME mistake in a new place."""
+    contract = shard_output_contract("ligand", "ame_generate", 0, "some_task_0_motif_info.csv")
+    assert contract.root_outputs == ("rewards_ame_generate_0.csv", "some_task_0_motif_info.csv")
+    assert shard_output_contract("motif", "idx_motif_generate", 0).root_outputs == ()
+
+
+MOTIF_DIR = "job_0_id_0_motif_1YCR_AA"
+MOTIF_CSV = "1YCR_AA_0_motif_info.csv"
+MOTIF_CONTRACT = shard_output_contract("motif", "idx_motif_generate", 0, MOTIF_CSV)
+
+
+def test_a_motif_shard_missing_its_contig_table_is_not_skipped(tmp_path):
+    """The marker recorded intact designs, so every marker-derived check said
+    complete -- and indexed evaluation then failed deterministically on the file
+    generation never claimed to owe."""
+    outputs = make_sample(tmp_path, MOTIF_DIR, f"{MOTIF_DIR}.pdb")
+    write_output_marker(tmp_path, outputs, nsamples=1)
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True, (
+        "the recorded output all survives, which is why the marker cannot settle this"
+    )
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is False
+    assert not (tmp_path / MOTIF_DIR).exists(), "the shard is cleared, not just refused"
+
+
+def test_a_motif_shard_with_its_contig_table_skips(tmp_path):
+    outputs = make_sample(tmp_path, MOTIF_DIR, f"{MOTIF_DIR}.pdb")
+    (tmp_path / MOTIF_CSV).write_text("sample,contig\n")
+    write_output_marker(tmp_path, outputs + [MOTIF_CSV], nsamples=1)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is True
+
+
+def test_clearing_a_motif_shard_removes_its_contig_table(tmp_path):
+    """Recorded or not, it is required output, so it goes with the rest of the
+    shard -- otherwise regeneration meets a stale contig table from the run before."""
+    outputs = make_sample(tmp_path, MOTIF_DIR, f"{MOTIF_DIR}.pdb")
+    (tmp_path / MOTIF_CSV).write_text("sample,contig\n")
+    write_output_marker(tmp_path, outputs, nsamples=1)  # an older marker: CSV not recorded
+    (tmp_path / MOTIF_DIR / f"{MOTIF_DIR}.pdb").unlink()
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is False
+    assert not (tmp_path / MOTIF_CSV).exists()
