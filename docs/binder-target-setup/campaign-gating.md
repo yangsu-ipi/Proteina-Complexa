@@ -404,6 +404,15 @@ owes is absent, which costs a checkpoint load rather than a sampling run, and **
 marker is written over a shard that owes a file at all**. A marker means complete; when the
 shard is not, the designs stay and the claim is withheld.
 
+What a shard *owns* follows from what it owed, not from what happens to be on disk under the
+right name. Every motif run is handed a `motif_csv_path`, atom-spec runs included — AME is one
+— and those write no table; recording whatever sat at that path claimed a file the run neither
+produced nor needed, and cleanup then deleted a stray table belonging to an earlier
+contig-mode run. Marker inclusion is gated on the requirement instead. Where `motif_atom_spec`
+cannot be resolved the requirement is dropped, so a table that does get written goes
+unrecorded and outlives the shard — a stale file rather than a deleted one, which is the right
+way round for a guess.
+
 Cleanup owns what the contract requires as well as what the marker recorded. A reward-unaware
 marker does not list its CSV, so clearing from the marker alone left behind the very file
 whose absence triggered the clear — and reported success, because that file was equally

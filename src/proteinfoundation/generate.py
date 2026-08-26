@@ -839,6 +839,26 @@ def _abort_if_output_remains(root_path: str, job_id: int, remaining: list[str], 
     )
 
 
+def motif_csv_outputs(root_path: str, motif_info_csv: str | None) -> list[str]:
+    """The contig table this shard owns, as absolute marker output.
+
+    Gated on the *requirement*, not on a file of that name being present. Every
+    motif run is handed a ``motif_csv_path``, atom-spec runs included -- AME is one
+    -- and those write no table. Recording "whatever is at that path" therefore
+    claimed a file the run neither produced nor needed, and since cleanup treats
+    every recorded root-level output as owned, a forced rerun or a damaged-shard
+    clear then deleted a stray table belonging to some earlier contig-mode run.
+
+    No existence check, because the guard after dataset construction has already
+    refused to continue when a required table is absent -- so if the requirement is
+    set, the file is there. The one gap runs the safe way: where
+    ``motif_atom_spec`` cannot be resolved the requirement is dropped, so a table
+    that does get written goes unrecorded and outlives the shard. A stale file, not
+    a deleted one.
+    """
+    return [os.path.join(root_path, motif_info_csv)] if motif_info_csv else []
+
+
 def assert_contract_produced(root_path: str, contract: ShardOutputContract, job_id: int) -> None:
     """Refuse to record a shard complete when it did not produce what it owes.
 
@@ -1672,7 +1692,7 @@ def main(cfg):
     # later runs verify the file instead of re-deriving the requirement from the
     # feature config, which is inference and can only ever be as good as the
     # interpolations resolve.
-    motif_csv_paths = [motif_csv_path] if motif_csv_path and os.path.exists(motif_csv_path) else []
+    motif_csv_paths = motif_csv_outputs(root_path, motif_info_csv)
     # A marker means complete, so it is not written over a shard that owes a file.
     # An empty shard owes nothing: the reward CSV is written only for a nonempty
     # frame, and there is no contig table without samples either.
