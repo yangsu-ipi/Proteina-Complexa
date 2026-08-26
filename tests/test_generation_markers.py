@@ -332,8 +332,6 @@ def test_a_partial_clear_refuses_and_keeps_the_marker(tmp_path, monkeypatch):
     through used to leave the caller regenerating over what survived -- with the
     marker already deleted, taking the record of which directories belonged to the
     shard with it."""
-    import shutil as real_shutil
-
     from proteinfoundation import generate as gen
 
     kept = tmp_path / "job_0_n_100_id_0"
@@ -342,10 +340,16 @@ def test_a_partial_clear_refuses_and_keeps_the_marker(tmp_path, monkeypatch):
         d.mkdir()
     marker_path = write_marker(tmp_path, "a" * 64, sample_dirs=[kept.name, gone.name])
 
+    # Capture the *function*, not the module. gen.shutil is the global shutil
+    # module, so `import shutil as real_shutil` aliases the same object and
+    # real_shutil.rmtree resolves to whatever is patched at call time -- which is
+    # this wrapper, recursing until the stack ends.
+    real_rmtree = gen.shutil.rmtree
+
     def refuse_one(path, *args, **kwargs):
         if path.endswith(kept.name):
             raise OSError(13, "Permission denied")
-        return real_shutil.rmtree(path, *args, **kwargs)
+        return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(gen.shutil, "rmtree", refuse_one)
     with pytest.raises(SystemExit, match="could not be cleared"):
@@ -359,8 +363,6 @@ def test_clear_reports_what_survived(tmp_path, monkeypatch):
     """Checked on disk after the attempt rather than inferred from which calls
     raised -- a delete that reports success but leaves the directory is the case
     that matters."""
-    import shutil as real_shutil
-
     from proteinfoundation import generate as gen
 
     d = tmp_path / "job_0_n_100_id_0"
@@ -373,6 +375,7 @@ def test_clear_reports_what_survived(tmp_path, monkeypatch):
     d.mkdir()
     monkeypatch.setattr(gen.shutil, "rmtree", lambda *a, **k: None)  # silent no-op
     removed, remaining = gen.clear_shard_output(str(tmp_path), marker)
-    assert remaining == [str(d)], "a no-op delete must still be reported as remaining"
-
-    monkeypatch.setattr(gen.shutil, "rmtree", real_shutil.rmtree)
+    assert removed == 1, "the no-op reported success"
+    assert remaining == [str(d)], "...but the directory is still there, which is what counts"
+    # monkeypatch undoes the patch at teardown; restoring it here by reading
+    # gen.shutil.rmtree would read back the no-op.
