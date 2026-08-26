@@ -325,8 +325,11 @@ genuinely unrecognisable marker is refused.
 Clearing verifies rather than trusts. `clear_shard_output` reports which recorded directories
 are still on disk *after* the attempt, not which deletions raised, because a delete that
 reports success and leaves the directory is the case that matters. If anything remains the
-run aborts and the **marker is kept** — it is the only record of which directories belong to
-that shard, so deleting it after a failed clear would remove the means of recovery.
+run aborts and the **marker is kept** — it is the only record of which output belongs to
+that shard, so deleting it after a failed clear would remove the means of recovery. Root-level
+outputs are cleared too, not only sample directories: once reward CSVs became recorded output,
+removing the directories stopped clearing the shard, and the residue showed up as a repeated
+GPU run that then failed writing over the CSV it had not removed.
 
 **A directory outlives its contents.** The marker records every file a shard produced,
 relative to the output root, not just the directories holding them — a PDB can be deleted,
@@ -334,23 +337,38 @@ truncated to zero bytes or left unreadable while its parent stays put, and a dir
 check then reports the shard complete, with evaluation the place it surfaces. Ligand
 generation writes a protein-ligand complex PDB beside every binder, and those are recorded
 too: `nsamples` counts designs, `outputs` counts files. Relocation into
-`filtered_out_samples/` is not a loss, for files as for directories.
+`filtered_out_samples/` is not a loss for a file *inside* a sample directory — the filter
+moves those. It is not a fallback for root-level files, which nothing moves and which the
+filter looks for in the output root and nowhere else; accepting a reward CSV there reported
+the shard complete while filtering could not see it.
 
 A recorded output counts only if it is present, nonempty **and readable** — `isfile` and
 `getsize` both read metadata without opening anything, so a mode-000 PDB passed a check that
 claimed otherwise. One byte is read.
 
-Markers written before `outputs` existed (`marker_schema_version` below 2) cannot name the
-files they expect, so each recorded directory must instead still contain at least one usable
-`.pdb`. That is weaker than the per-file check — it cannot confirm the expected count — and
-much stronger than trusting the directory, which was the previous behaviour and skipped
-shards whose designs had been deleted. A current-schema marker that records no outputs
-against a positive sample count is contradictory rather than merely old, and aborts.
+Markers written before `outputs` existed (`marker_schema_version` below 2) cannot name every
+file they expect, but they can name one: all three save paths write `{dir}/{dir}.pdb`, so the
+design is reconstructable from a recorded directory name. Requiring *that* file rather than
+any `.pdb` matters because the other PDBs in a sample directory were vouching for it — a
+ligand sample holds its complex as `{dir}.pdb` and a binder beside it, and binder evaluation
+writes a `{dir}_binder.pdb` sidecar into ordinary sample directories, which outlives the
+design it was extracted from while evaluation itself skips the design when the base PDB is
+gone. One case stays open for these markers only: a ligand sample whose binder was deleted
+while its complex survived, because a marker without `outputs` does not say whether the run
+was a ligand run. A marker at or above the schema that introduced `outputs` and recording
+none against a positive sample count is contradictory rather than merely old, and aborts.
 
 Reward CSVs are shard output, not a side effect: the filter stage reads
 `rewards_{config}_{job}.csv` and raises `No reward files found!` without them, and across
 several shards it processes the ones it can see — so evaluation covers fewer designs than
 generation claimed, silently. They are recorded and verified like any other file.
+
+Schema 3 is what records them, and schema 2 markers exist on both sides of that change while
+claiming the same version, so the marker cannot be asked whether a reward CSV is required.
+The config is asked instead: generation passes the root-level files the *current* config
+would produce for this shard, and they are verified whether or not the marker names them.
+Motif generation writes no rewards, and a shard whose marker says it produced nothing wrote
+none either.
 
 An absent marker does **not** mean an empty directory. Sample directories are created inside
 the save loop, one per design, while the marker is written only after every design, reward

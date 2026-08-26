@@ -180,8 +180,12 @@ def test_identifiable_output_is_the_narrow_case(marker, identifiable):
 # --------------------------------------------------------- file-level checks
 
 
-def write_v2_marker(tmp_path, outputs, *, nsamples=None, digest="a" * 64):
-    """A current-schema marker recording the files a shard produced."""
+def write_output_marker(tmp_path, outputs, *, nsamples=None, digest="a" * 64, schema=None, extra_dirs=()):
+    """A marker recording the files a shard produced.
+
+    ``schema`` writes an older payload version deliberately: markers from before
+    reward CSVs joined ``outputs`` are the upgrade state, not a hypothetical.
+    """
     from proteinfoundation.generate import MARKER_SCHEMA_VERSION
 
     path = shard_marker_path(str(tmp_path), 0)
@@ -191,9 +195,9 @@ def write_v2_marker(tmp_path, outputs, *, nsamples=None, digest="a" * 64):
             {
                 "generation_config_sha256": digest,
                 "generation_config_digest_version": GENERATION_DIGEST_VERSION,
-                "marker_schema_version": MARKER_SCHEMA_VERSION,
+                "marker_schema_version": MARKER_SCHEMA_VERSION if schema is None else schema,
                 "nsamples": nsamples if nsamples is not None else len(outputs),
-                "sample_dirs": sorted({os.path.dirname(o) for o in outputs}),
+                "sample_dirs": sorted({os.path.dirname(o) for o in outputs if os.path.dirname(o)} | set(extra_dirs)),
                 "outputs": sorted(outputs),
             },
             handle,
@@ -213,7 +217,7 @@ def make_sample(tmp_path, dir_name, *file_names, content="ATOM\n"):
     "dir_name,files",
     [
         ("job_0_n_100_id_0", ["job_0_n_100_id_0.pdb"]),
-        ("job_0_n_100_id_0", ["job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0_complex.pdb"]),
+        ("job_0_n_100_id_0", ["job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0.pdb"]),
         ("job_0_id_0_motif_M0024", ["job_0_id_0_motif_M0024.pdb"]),
     ],
 )
@@ -221,7 +225,7 @@ def test_a_complete_sample_still_skips(tmp_path, dir_name, files):
     """Standard, ligand and motif shapes, all intact -- the common path must stay
     cheap, or file-level verification would cost every resume."""
     outputs = make_sample(tmp_path, dir_name, *files)
-    write_v2_marker(tmp_path, outputs)
+    write_output_marker(tmp_path, outputs)
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
 
 
@@ -229,7 +233,7 @@ def test_a_deleted_pdb_is_detected_though_its_directory_remains(tmp_path):
     """The directory outlives its contents. sample_dirs alone reported this shard
     complete, and evaluation was where the shortfall surfaced."""
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
-    write_v2_marker(tmp_path, outputs)
+    write_output_marker(tmp_path, outputs)
     (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
     assert (tmp_path / "job_0_n_100_id_0").is_dir(), "the directory is still there, which is the point"
 
@@ -241,7 +245,7 @@ def test_a_zero_byte_pdb_counts_as_missing(tmp_path):
     """An interrupted write leaves the file in place. A shard whose PDB is empty
     is not one to skip."""
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb", content="")
-    write_v2_marker(tmp_path, outputs)
+    write_output_marker(tmp_path, outputs)
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
 
 
@@ -249,9 +253,9 @@ def test_a_ligand_sample_missing_its_complex_pdb_is_incomplete(tmp_path):
     """save_protein_ligand_predictions writes a complex PDB beside every binder,
     and only pdb_paths used to reach the marker -- so the complex file was
     unverifiable however fine-grained the check became."""
-    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0_complex.pdb")
-    write_v2_marker(tmp_path, outputs, nsamples=1)
-    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0_complex.pdb").unlink()
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0_binder.pdb", "job_0_n_100_id_0.pdb")
+    write_output_marker(tmp_path, outputs, nsamples=1)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
 
 
@@ -259,7 +263,7 @@ def test_output_relocated_by_the_filter_still_counts(tmp_path):
     """The filter stage moves designs it did not keep into filtered_out_samples/;
     they are still this shard's output, so a relocated file is not a missing one."""
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
-    write_v2_marker(tmp_path, outputs)
+    write_output_marker(tmp_path, outputs)
     (tmp_path / "filtered_out_samples").mkdir()
     (tmp_path / "job_0_n_100_id_0").rename(tmp_path / "filtered_out_samples" / "job_0_n_100_id_0")
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
@@ -327,7 +331,7 @@ def test_a_missing_reward_csv_stops_the_shard_being_skipped(tmp_path):
     generation claimed, with nothing reporting the shortfall."""
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
     (tmp_path / "rewards_cfg_0.csv").write_text("sample,reward\n")
-    write_v2_marker(tmp_path, outputs + ["rewards_cfg_0.csv"], nsamples=1)
+    write_output_marker(tmp_path, outputs + ["rewards_cfg_0.csv"], nsamples=1)
 
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
     (tmp_path / "rewards_cfg_0.csv").unlink()
@@ -343,7 +347,7 @@ def test_an_unreadable_pdb_counts_as_missing(tmp_path):
     mode-000 file passed a check whose docstring claimed to detect unreadable
     output."""
     outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
-    write_v2_marker(tmp_path, outputs)
+    write_output_marker(tmp_path, outputs)
     target = tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb"
     target.chmod(0)
     try:
@@ -644,3 +648,147 @@ def test_clear_reports_what_survived(tmp_path, monkeypatch):
     assert remaining == [str(d)], "...but the directory is still there, which is what counts"
     # monkeypatch undoes the patch at teardown; restoring it here by reading
     # gen.shutil.rmtree would read back the no-op.
+
+
+# ------------------------------------------- legacy markers: the exact design
+
+
+@pytest.mark.parametrize(
+    "survivor,why",
+    [
+        ("job_0_n_100_id_0_binder.pdb", "an evaluation sidecar, which is derived and not the design"),
+        ("job_0_n_100_id_0_binder.pdb", "a ligand binder, whose complex PDB is the file that went"),
+    ],
+    ids=["evaluation-sidecar", "ligand-binder"],
+)
+def test_another_pdb_in_the_directory_does_not_answer_for_the_design(tmp_path, survivor, why):
+    """Any-.pdb was too weak. All three save paths write {dir}/{dir}.pdb, so the
+    expected name is reconstructable from the directory name -- and the files that
+    were vouching for it are exactly the ones that must not.
+
+    binder_eval.py:771 writes a {dir}_binder.pdb sidecar into ordinary sample
+    directories; it outlives the design it was extracted from, while evaluation
+    itself looks for the base PDB and skips the design when that is gone. A ligand
+    sample holds both files for real, and deleting the complex left the binder to
+    vouch for it."""
+    make_sample(tmp_path, "job_0_n_100_id_0", survivor)
+    write_marker(tmp_path, "a" * 64, sample_dirs=["job_0_n_100_id_0"])
+    assert (tmp_path / "job_0_n_100_id_0" / survivor).exists(), why
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+# ------------------------------------------------- required root-level output
+
+
+REWARDS = "rewards_binder_generate_0.csv"
+
+
+def test_a_reward_csv_missing_from_a_reward_unaware_marker_blocks_the_skip(tmp_path):
+    """The upgrade state this exists for: a marker written when `outputs` held only
+    PDBs, claiming the same schema version as one written after reward CSVs joined
+    it. Its recorded files all survive, so every marker-derived check says complete
+    -- while the filter, which globs rewards_{config}_*.csv in the output root and
+    nowhere else, would silently evaluate the other shards."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_output_marker(tmp_path, outputs, schema=2)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True, (
+        "the marker's own records are intact, which is why asking it cannot settle this"
+    )
+
+    assert (
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is False
+    )
+    assert not (tmp_path / "job_0_n_100_id_0").exists(), "the shard is cleared, not just refused"
+
+
+def test_a_recorded_and_present_reward_csv_still_skips(tmp_path):
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+    assert (
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is True
+    )
+
+
+def test_a_zero_sample_shard_needs_no_reward_csv(tmp_path):
+    """save_rewards_to_csv runs only for a nonempty reward frame, so requiring one
+    of a shard that generated nothing would refuse a resume over a file that was
+    never meant to exist."""
+    write_output_marker(tmp_path, [], nsamples=0)
+    assert (
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, expected_root_outputs=[REWARDS]) is True
+    )
+
+
+def test_a_reward_csv_under_filtered_out_samples_does_not_count(tmp_path):
+    """The relocation fallback is right for sample directories -- the filter moves
+    those -- and wrong for root-level files, which it does not move and does not
+    look under. Accepting one there reports the shard complete while filtering
+    cannot see its rewards."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / "filtered_out_samples").mkdir()
+    (tmp_path / "filtered_out_samples" / REWARDS).write_text("pdb_path,total_reward\n")
+    write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_clearing_a_damaged_shard_removes_its_reward_csv(tmp_path):
+    """Clearing removed sample directories only, which cleared the whole shard
+    while every output lived inside one. Reward CSVs are root-level: the CSV
+    survived, generation repeated the GPU run, and writing over the file it had not
+    removed was where it failed."""
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+    assert not (tmp_path / REWARDS).exists(), "the root-level output is cleared with the rest of the shard"
+
+
+def test_a_root_output_that_survives_cleanup_aborts_and_keeps_the_marker(tmp_path, monkeypatch):
+    """The same rule a surviving directory gets. Regenerating would meet the file
+    it could not remove, and the marker is the only record of what the shard owns,
+    so it stays."""
+    import proteinfoundation.generate as gen
+
+    outputs = make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    marker = write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+    (tmp_path / "job_0_n_100_id_0" / "job_0_n_100_id_0.pdb").unlink()
+
+    real_remove = gen.os.remove  # captured, so the patch cannot call itself
+
+    def refuse_the_csv(path, *args, **kwargs):
+        if str(path).endswith(".csv"):
+            raise PermissionError(f"refusing {path}")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(gen.os, "remove", refuse_the_csv)
+
+    with pytest.raises(SystemExit, match="could not be cleared"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
+    assert (tmp_path / REWARDS).exists(), "the file that could not be removed is still there"
+    assert os.path.exists(marker), "the marker records what this shard owns; a failed clear must not take it"
+
+
+def test_the_outputs_schema_floor_survives_a_version_bump(tmp_path):
+    """A marker at the schema that introduced `outputs`, recording none beside a
+    positive sample count, contradicts itself and must still refuse. Bumping
+    MARKER_SCHEMA_VERSION to 3 would have made this fall through to the legacy
+    path, undoing the check a commit after it was added -- which is why the floor
+    is a separate constant."""
+    from proteinfoundation.generate import MARKER_SCHEMA_WITH_OUTPUTS
+
+    make_sample(tmp_path, "job_0_n_100_id_0", "job_0_n_100_id_0.pdb")
+    write_marker(
+        tmp_path,
+        "a" * 64,
+        marker_schema_version=MARKER_SCHEMA_WITH_OUTPUTS,
+        nsamples=16,
+        sample_dirs=["job_0_n_100_id_0"],
+    )
+    with pytest.raises(SystemExit, match="records no output files"):
+        shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True)
