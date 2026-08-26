@@ -15,6 +15,7 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime
+from typing import NamedTuple
 
 import biotite
 import hydra
@@ -405,7 +406,64 @@ def write_shard_marker(
 FILTERED_OUT_DIRNAME = "filtered_out_samples"
 
 
-def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
+class ShardOutputContract(NamedTuple):
+    """What a shard of the *current* config must have left behind.
+
+    Read from the config, never from the marker. A marker answers "did what I
+    recorded survive"; this answers "was what I recorded everything", and a marker
+    written before a file was required cannot -- it is not silent about that file,
+    it is wrong about it, and looks identical to one written after.
+
+    Args:
+        sample_files: templates relative to each sample directory, ``{dir}`` being
+            the directory's own name. Ligand generation writes two files per
+            sample, a complex and a binder; every other path writes one.
+        root_outputs: files at the output root, relative to it. Reward CSVs.
+    """
+
+    sample_files: tuple[str, ...] = ("{dir}.pdb",)
+    root_outputs: tuple[str, ...] = ()
+
+    def files_for(self, dir_name: str) -> list[str]:
+        return [template.format(dir=dir_name) for template in self.sample_files]
+
+
+def generation_save_branch(ligand_cond: bool, motif_cond: bool) -> str:
+    """Which save path this config takes. One rule, so resume cannot disagree.
+
+    The dispatch in ``main`` is ``if ligand_cond ... elif motif_cond ... else``,
+    and those conditions are not exclusive: the shipped AME config sets both
+    MotifFeatures and LigandFeatures (``configs/pipeline/ame/ame_generate.yaml``),
+    so an AME run is a ligand save with a motif dataset. A resume check that asked
+    "motif?" first therefore classified every AME shard as motif -- which writes no
+    rewards -- while saving took the ligand branch, which writes one per shard.
+
+    Both sites read the branch from here now. Getting the precedence wrong is the
+    kind of mistake that reads as correct at each site on its own, so the fix is
+    to have one site.
+    """
+    if ligand_cond:
+        return "ligand"
+    if motif_cond:
+        return "motif"
+    return "standard"
+
+
+def shard_output_contract(branch: str, config_name: str, job_id: int) -> ShardOutputContract:
+    """The files a shard on *branch* must produce.
+
+    Motif generation writes no rewards; the other two write one CSV per nonempty
+    shard, which the filter finds by globbing the output root. Ligand generation
+    writes ``{dir}.pdb`` (the protein-ligand complex) and ``{dir}_binder.pdb`` (the
+    design) into each sample directory; the others write ``{dir}.pdb`` alone.
+    """
+    return ShardOutputContract(
+        sample_files=("{dir}.pdb", "{dir}_binder.pdb") if branch == "ligand" else ("{dir}.pdb",),
+        root_outputs=() if branch == "motif" else (f"rewards_{config_name}_{job_id}.csv",),
+    )
+
+
+def missing_shard_dirs(root_path: str, marker: dict, contract: ShardOutputContract | None = None) -> list[str] | None:
     """Recorded sample directories that are no longer on disk.
 
     Returns None for a marker that predates ``sample_dirs``, meaning "cannot
@@ -420,8 +478,10 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
         return None
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
 
+    expected = contract or ShardOutputContract()
+
     def intact(base: str, name: str) -> bool:
-        """Present *and* still holding the design it is named for.
+        """Present *and* still holding every file the current config requires.
 
         All three save paths write ``{dir}/{dir}.pdb`` -- each builds the filename
         from the directory stem it just created -- so the expected name *is*
@@ -435,15 +495,14 @@ def missing_shard_dirs(root_path: str, marker: dict) -> list[str] | None:
         design it was extracted from and then answered for it -- while evaluation
         itself looks for the base PDB and skips the design when that is gone.
 
-        One case stays open, and only for markers this old: a ligand sample whose
-        binder PDB was deleted while its complex survived still reads as intact,
-        because a marker without ``outputs`` does not record whether the run was a
-        ligand run, and ``{dir}_binder.pdb`` is a required output there and a
-        derived sidecar everywhere else. Markers from MARKER_SCHEMA_WITH_OUTPUTS
-        on name both files, so that gap closes with the campaign rather than
-        persisting.
+        Which files those are comes from the contract rather than from the marker.
+        A ligand sample needs its binder as well as its complex, and a marker with
+        no ``outputs`` does not record that it was a ligand run -- so for a while
+        this required only ``{dir}.pdb`` and a deleted binder read as intact. The
+        marker cannot answer it, but the config can, and the digest matching is
+        what makes the current config the right thing to ask.
         """
-        return is_usable_output(os.path.join(base, name, f"{name}.pdb"))
+        return all(is_usable_output(os.path.join(base, name, f)) for f in expected.files_for(name))
 
     return [name for name in names if not any(intact(base, name) for base in (root_path, filtered_root))]
 
@@ -595,7 +654,9 @@ def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     return missing
 
 
-def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
+def clear_shard_output(
+    root_path: str, marker: dict, contract: ShardOutputContract | None = None
+) -> tuple[int, list[str]]:
     """Delete the directories a damaged shard recorded, before regenerating it.
 
     Only reached when the digest matches, i.e. we are about to redo *exactly*
@@ -623,7 +684,14 @@ def clear_shard_output(root_path: str, marker: dict) -> tuple[int, list[str]]:
     must refuse to regenerate while anything remains.
     """
     names = marker.get("sample_dirs") or []
-    root_files = root_level_outputs(marker)
+    # Ownership is what the marker recorded *plus* what the contract requires. A
+    # reward-unaware marker does not list its CSV, so clearing from the marker
+    # alone left the very file whose absence triggered the clear -- and, since it
+    # was equally absent from the remaining check, reported success. Generation
+    # then repeated the run and failed writing over it.
+    root_files = list(
+        dict.fromkeys(root_level_outputs(marker) + list((contract or ShardOutputContract()).root_outputs))
+    )
     filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
     removed = 0
     for name in names:
@@ -683,7 +751,7 @@ def shard_already_complete(
     digest: str,
     skip_enabled: bool,
     legacy_digests: set[str] | None = None,
-    expected_root_outputs: list[str] | None = None,
+    contract: ShardOutputContract | None = None,
 ) -> bool:
     """Whether this shard can be skipped. Aborts on a config mismatch.
 
@@ -701,14 +769,15 @@ def shard_already_complete(
     clear the directory), and it is the caller who knows which they meant.
 
     Args:
-        expected_root_outputs: Root-level files the *current* config would produce
-            for this shard, asked of the config rather than read from the marker.
-            A marker written before reward CSVs joined ``outputs`` records intact
-            PDBs and says nothing about the CSV, and it claims the same schema
-            version as one written after, so the marker cannot be the source of
-            this answer. Ignored for a shard the marker says produced nothing,
-            which writes no rewards either.
+        contract: What a shard of the current config must have produced --
+            per-sample files and root-level files. Asked of the config because the
+            marker cannot answer it: one written before reward CSVs joined
+            ``outputs`` records intact PDBs, says nothing about the CSV, and
+            claims the same schema version as one written after. Root outputs are
+            ignored for a shard the marker says produced nothing, which writes no
+            rewards either.
     """
+    expected = contract or ShardOutputContract()
     marker_path = shard_marker_path(root_path, job_id)
     if not os.path.exists(marker_path):
         orphans = existing_shard_dirs(root_path, job_id)
@@ -807,7 +876,7 @@ def shard_already_complete(
             f"Repair or delete {marker_path}, use a new generation.run_name, or clear {root_path}."
         )
     if missing is None:
-        missing = missing_shard_dirs(root_path, marker)
+        missing = missing_shard_dirs(root_path, marker, expected)
         level = "sample directory"
         if missing is not None:
             logger.debug(
@@ -822,11 +891,11 @@ def shard_already_complete(
     # generation would skip it and filtering would quietly evaluate the shards
     # whose CSV remained. Skipped where the marker already records the file --
     # that is the current schema, and it has been checked at file level already.
-    if expected_root_outputs and marker.get("nsamples", 0) > 0:
+    if expected.root_outputs and marker.get("nsamples", 0) > 0:
         recorded_outputs = set(marker.get("outputs") or [])
         missing_required = [
             relative
-            for relative in expected_root_outputs
+            for relative in expected.root_outputs
             if relative not in recorded_outputs and not is_usable_output(os.path.join(root_path, relative))
         ]
         if missing_required:
@@ -835,7 +904,7 @@ def shard_already_complete(
 
     if missing:
         shown = ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else "")
-        removed, remaining = clear_shard_output(root_path, marker)
+        removed, remaining = clear_shard_output(root_path, marker, expected)
         _abort_if_output_remains(root_path, job_id, remaining, marker_path)
         try:
             os.remove(marker_path)
@@ -879,12 +948,12 @@ def shard_already_complete(
                 f"Use a new generation.run_name, or clear {root_path} first. Leaving "
                 f"skip_completed_shards at its default skips this shard instead, which writes nothing."
             )
-        removed, remaining = clear_shard_output(root_path, marker)
+        removed, remaining = clear_shard_output(root_path, marker, expected)
         _abort_if_output_remains(root_path, job_id, remaining, marker_path)
         logger.warning(
             f"Shard {job_id} already completed with this exact config "
             f"({marker.get('nsamples', '?')} samples), and skip_completed_shards is false. "
-            f"Removed {removed} recorded sample director{'y' if removed == 1 else 'ies'} so the shard "
+            f"Removed {removed} recorded output{'' if removed == 1 else 's'} so the shard "
             f"is regenerated as a whole rather than written over a partial earlier attempt. "
             f"Unset generation.skip_completed_shards=false to stop forcing this."
         )
@@ -1220,6 +1289,10 @@ def main(cfg):
     target_cond = "TargetFeatures" in conditional_features_types
     motif_cond = "MotifFeatures" in conditional_features_types
     fold_cond = "CathCodes" in conditional_features_types
+    # Which save path this run will take, decided once. The conditions overlap --
+    # AME sets both MotifFeatures and LigandFeatures -- so every site that needs to
+    # know reads it from here rather than re-deriving it in its own order.
+    save_branch = generation_save_branch(ligand_cond, motif_cond)
     cath_codes = (
         cfg.generation.dataloader.dataset.conditional_features[conditional_features_types.index("CathCodes")].cath_codes
         if fold_cond
@@ -1260,13 +1333,11 @@ def main(cfg):
         # Lets a marker written before the digest was versioned be recognised as
         # the same request rather than refused.
         legacy_digests=digest_v1_candidates(cfg_gen),
-        # The filter finds rewards by globbing rewards_{config_name}_*.csv in the
-        # output root and nowhere else (filter.py:113-117), so a shard whose CSV
-        # is gone must not be skipped however intact its designs are. Motif
-        # generation writes no rewards; the ligand and standard branches each
-        # write one per shard. Whether the shard produced anything at all is
-        # settled inside, from the marker's own sample count.
-        expected_root_outputs=[] if motif_cond else [f"rewards_{config_name}_{job_id}.csv"],
+        # What a shard of *this* config must have produced, which the marker on
+        # disk may predate and so cannot be asked. Derived from the same branch
+        # rule the save dispatch uses, because the conditions are not exclusive
+        # and asking them in the other order silently misfiles every AME run.
+        contract=shard_output_contract(save_branch, config_name, job_id),
     ):
         sys.exit(0)
 
@@ -1352,7 +1423,7 @@ def main(cfg):
     # evaluates fewer designs than generation claims. So they are shard output,
     # not a side effect, and belong in the marker like any other file.
     reward_csv_paths: list[str] = []
-    if ligand_cond:
+    if save_branch == "ligand":
         complex_arrays = []
         for batch_idx, batch_pred in enumerate(predictions):
             complex_sublist = []
@@ -1408,7 +1479,7 @@ def main(cfg):
                     job_id=job_id,
                 )
             )
-    elif motif_cond:
+    elif save_branch == "motif":
         pdb_paths = save_motif_predictions(
             root_path,
             predictions,
