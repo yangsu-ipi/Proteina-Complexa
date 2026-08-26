@@ -298,7 +298,8 @@ next run compares digests:
 
 | Marker state | Behaviour (default `skip_completed_shards: true`) |
 |---|---|
-| absent | generate, silently |
+| absent, output root empty for this job | generate, silently |
+| **absent, but this job's directories exist** | **abort** — an interrupted run, not a new one |
 | digest matches, directories intact | **skip the shard** |
 | digest matches, directories missing | clear what survived, regenerate |
 | **digest differs** | **abort** — a different request already owns this directory |
@@ -324,6 +325,19 @@ are still on disk *after* the attempt, not which deletions raised, because a del
 reports success and leaves the directory is the case that matters. If anything remains the
 run aborts and the **marker is kept** — it is the only record of which directories belong to
 that shard, so deleting it after a failed clear would remove the means of recovery.
+
+An absent marker does **not** mean an empty directory. Sample directories are created inside
+the save loop, one per design, while the marker is written only after every design, reward
+and timing record has been handled — so a kill between those points leaves populated output
+with no marker at all. Before treating a missing marker as a new run, generation looks for
+`job_{job_id}_n_*` directories under the output root and under `filtered_out_samples/`, and
+refuses if any exist. The `_n_` separator keeps the prefix unambiguous, so job 1 does not
+match job 10, and shards generated in parallel do not block each other.
+
+Found by name rather than by an in-progress marker written before the save loop. The latter
+would make the question answerable directly instead of inferred, but only for runs started
+after it exists — which leaves exactly the interrupted campaigns this is meant to catch
+uncovered.
 
 `sample_dirs` was added (`c09a82c`) after markers themselves (`d40066a`), so a campaign
 finished between those commits has a valid digest-matching marker that names nothing.
