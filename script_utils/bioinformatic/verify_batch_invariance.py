@@ -48,13 +48,19 @@ class _CapturedError(Exception):
     """Raised inside the call_nn hook to stop sampling at the first batch."""
 
 
-def slice_batch(obj, idx, n_res=None, bsz=None):
+def slice_batch(obj, idx, n_res=None, bsz=None, width=None):
     """One sample from a collated batch, optionally trimmed to n_res residues.
 
     Recursive because the batch nests -- ``x_recycle`` is a dict of tensors. The
-    residue axis is identified by size rather than by name: any axis after the
-    batch that matches the batch's padded width is a residue axis, which covers
-    [b, n, ...] and pair features [b, n, n, ...] without a per-key table.
+    residue axis is identified by size: an axis matching *width*, the binder's
+    padded width, is a residue axis. That covers [b, n, ...] and pair features
+    [b, n, n, ...] without a per-key table.
+
+    ``width`` must be the batch's, not each tensor's own ``shape[1]``. Using the
+    latter trimmed every length axis to the binder's length -- including the
+    target, 136 residues in the CBLN1 campaign, cut down to 49. The model then
+    answered a question about a truncated protein, and the order-1 difference that
+    produced looked exactly like the masking leak this script exists to detect.
 
     A list whose length is the batch size is per-sample metadata -- generation
     indexes ``metadata_tag`` and ``sample_type`` that way -- so one element is
@@ -63,16 +69,15 @@ def slice_batch(obj, idx, n_res=None, bsz=None):
     different sample. Any other list is a structure to recurse into.
     """
     if isinstance(obj, dict):
-        return {k: slice_batch(v, idx, n_res, bsz) for k, v in obj.items()}
+        return {k: slice_batch(v, idx, n_res, bsz, width) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         if bsz is not None and len(obj) == bsz:
             return type(obj)([obj[idx]])
-        return type(obj)(slice_batch(v, idx, n_res, bsz) for v in obj)
+        return type(obj)(slice_batch(v, idx, n_res, bsz, width) for v in obj)
     if not torch.is_tensor(obj) or obj.dim() == 0:
         return obj
     out = obj[idx : idx + 1]
-    if n_res is not None:
-        width = obj.shape[1] if obj.dim() > 1 else None
+    if n_res is not None and width is not None:
         for axis in range(1, out.dim()):
             if out.shape[axis] == width:
                 out = out.narrow(axis, 0, n_res)
@@ -110,6 +115,9 @@ def main() -> int:
     ap.add_argument("--config-name", default="pipeline")
     ap.add_argument(
         "--tolerance", type=float, default=10.0, help="multiple of the noise floor that still counts as noise"
+    )
+    ap.add_argument(
+        "--rel-tolerance", type=float, default=1e-5, help="fraction of the output scale that still counts as noise"
     )
     ap.add_argument("overrides", nargs="*", help="hydra overrides, e.g. ++job_id=0")
     args = ap.parse_args()
@@ -177,19 +185,30 @@ def main() -> int:
         floor = 0.0
         for i in range(b):
             floor = max(
-                floor, max_abs_diff(slice_batch(out_full_a, i, bsz=b), slice_batch(out_full_b, i, bsz=b), lengths[i])
+                floor,
+                max_abs_diff(
+                    slice_batch(out_full_a, i, bsz=b, width=width),
+                    slice_batch(out_full_b, i, bsz=b, width=width),
+                    lengths[i],
+                ),
             )
         print(f"\nnoise floor (same batch, twice): {floor:.3e}")
-        limit = max(floor * args.tolerance, 1e-6)
+        scale = max((t.float().abs().max().item() for t in flatten_out(out_full_a)), default=1.0)
+        # The floor is exactly 0 when kernels are deterministic, so scaling it alone
+        # gives 0 and every reduction-order wobble reads as a leak. Changing the batch
+        # SHAPE changes GEMM reduction order even when nothing leaks; that lands near
+        # 1e-6 relative, well below a real leak, which scales with its cause.
+        limit = max(floor * args.tolerance, args.rel_tolerance * scale)
+        print(f"output scale: {scale:.3e}; treating up to {limit:.3e} as arithmetic, not leakage")
 
         print(f"\n{'design':>6}  {'len':>4}  {'alone':>12}  {'padded':>12}   verdict")
         failures = []
         for i in range(b):
-            alone_in = slice_batch(full, i, bsz=b)
-            d_alone = max_abs_diff(slice_batch(out_full_a, i, bsz=b), model.call_nn(alone_in), lengths[i])
+            alone_in = slice_batch(full, i, bsz=b, width=width)
+            d_alone = max_abs_diff(slice_batch(out_full_a, i, bsz=b, width=width), model.call_nn(alone_in), lengths[i])
 
-            trimmed = slice_batch(full, i, n_res=lengths[i], bsz=b)
-            wide = slice_batch(full, i, n_res=None, bsz=b)
+            trimmed = slice_batch(full, i, n_res=lengths[i], bsz=b, width=width)
+            wide = slice_batch(full, i, n_res=None, bsz=b, width=width)
             d_pad = max_abs_diff(model.call_nn(trimmed), model.call_nn(wide), lengths[i])
 
             ok = d_alone <= limit and d_pad <= limit
