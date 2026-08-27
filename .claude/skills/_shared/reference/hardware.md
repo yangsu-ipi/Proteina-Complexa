@@ -139,8 +139,39 @@ cannot predict the split so both sides should float. Three reasons:
 A wrong fraction fails fast and deterministically, which is the failure you want.
 
 Use `PREALLOCATE=false` when the two genuinely peak at different times and no
-fraction fits both, and pair it with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-so torch's pool can be given back rather than fragmenting against JAX.
+fraction fits both.
+
+### Can they hand memory back between turns?
+
+Generation alternates — a diffusion step, then AF2 scoring — so it is fair to ask
+whether each side can return what it is not using. Partly, and less than it
+sounds, because the two costs are different:
+
+- **Weights stay resident either way.** `self.reward_model` is cached on the
+  LightningModule for the whole predict run, and `mk_afdesign_model` holds the AF2
+  parameters inside it; the diffusion model is resident throughout by definition.
+  Only *activations* are recoverable, so the floor is both sets of weights plus two
+  CUDA contexts no matter what these settings say.
+- **JAX**: `XLA_PYTHON_CLIENT_ALLOCATOR=platform` is the only setting that truly
+  returns buffers — it swaps the BFC pool for direct `cudaMalloc`/`cudaFree`. BFC
+  grows and never shrinks, so `PREALLOCATE=false` alone caps the *start*, not the
+  high-water mark. `platform` is documented as a debugging aid and allocation is
+  markedly slower; treat it as a last resort, not a default.
+- **`jax.clear_caches()` does not do this.** It clears *compilation* caches. The
+  AF2 reward already calls it twice in `_cleanup_jax_state`
+  (`alphafold2_reward.py:378-382`, under a TODO), and it frees no device memory.
+- **PyTorch**: `torch.cuda.empty_cache()` is the mechanism that returns cached
+  blocks to the driver — `tmol_reward.py:570` already does this, the AF2 path does
+  not. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` addresses
+  **fragmentation**, not release: it lets a segment grow and shrink inside one
+  virtual reservation. For proactive reclaim use
+  `garbage_collection_threshold:0.8` alongside it.
+
+So the honest ceiling on alternating-release is one side's activation peak, and
+the price is slower allocation on the JAX side. Measure before paying it: run once
+with `PREALLOCATE=false` on a pinned card and watch
+`nvidia-smi --query-gpu=memory.used --format=csv -l 5`. That gives both real peaks
+in a single run, which is what a fraction should be set from.
 
 Pick the fraction from a real run rather than guessing: the OOM message reports
 torch's own allocation (`1.87` and `3.12 GiB` on the CBLN1 smoke test), so
