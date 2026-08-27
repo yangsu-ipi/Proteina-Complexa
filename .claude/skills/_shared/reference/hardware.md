@@ -153,19 +153,36 @@ the moment `batch_size`, `nres` or the target changes, and it goes stale silentl
 | Small card, or a long target | Lower `++generation.dataloader.batch_size` first — the biggest lever |
 | Still tight | Then measure, and set a fraction from it |
 
-**This knob only affects generation.** JAX exists in that stage and nowhere else:
-`AF2RewardModel` is built in `predict_step`. `complexa evaluate` runs as a separate
-process with no JAX in it, so its budget is torch alone and `MEM_FRACTION` does
-nothing there.
+**Both stages need it, and evaluation needs it more.** Generation has JAX through
+`AF2RewardModel` in `predict_step`. Evaluation has it too whenever
+`metric.binder_folding_method: colabdesign` — ColabDesign *is* AF2 *is* JAX — so
+"evaluate is torch-only" is wrong, and it is wrong in the direction that hurts.
 
-Do not read generation's numbers as the pipeline's. The `1.87`/`3.12 GiB` above is
-the **diffusion model**, measured on a run that died early. Evaluation is a
-different and much larger budget: ESMC 6B is ~12 GB of weights at bfloat16 and
-about twice that if it loads in fp32, plus ESMFold2, plus whatever the folding
-backend needs. Those figures are unverified — no ESMFold2 or ESMC path has run
-against real weights yet, and `esm_eval.py:542` calls `from_pretrained` without a
-`torch_dtype`, so which of the two ESMC sizes applies is an open question worth
-answering from the first real run.
+Measured on the CBLN1 smoke test, in the evaluation process:
+
+```
+this process has 79.23 GiB memory in use.
+Of the allocated memory 18.99 GiB is allocated by PyTorch
+```
+
+~60 GiB of an 80 GB card is not PyTorch. That is JAX's default 75%
+(59.4 GiB), and it left ESMC 6B and ESMFold2 to share what remained. The tail is
+where it gets expensive to read: ESMFold2's advisory refolding hit
+`CUDA out of memory. Tried to allocate 14.00 MiB` and was caught, so it logged
+`Advisory backend 'esmfold2' scored 0/1 binders` and carried on with **no
+advisory numbers at all**; then SolubleMPNN, which runs as a *subprocess* and
+needs its own CUDA context on the same card, could not start. One cause, three
+symptoms, none of which named memory except the first.
+
+`0.5` is a reasonable starting fraction for evaluation: JAX gets ~40 GB, leaving
+~40 for the ~19 GB of torch weights plus room for the MPNN subprocess. It is also
+the first configuration under which AF2's *real* footprint becomes observable,
+since preallocation has masked it in every run so far.
+
+The torch side is 18.99 GiB with ESMC 6B and ESMFold2 resident. Which of the two
+possible ESMC sizes that includes is still open — `esm_eval.py:542` calls
+`from_pretrained` without a `torch_dtype` while the code elsewhere says ESMC runs
+in bfloat16, a factor of two on a 6B model.
 
 ### What retries on OOM, and what does not
 
