@@ -83,6 +83,11 @@ PYEOF
 #   colabdesign at module load) AND for the reward-guided search. torch cu128 + jax 0.10 coexist ONLY
 #   with cudnn 9.24: jax needs it, torch cu128 runs fine on it (torch's ==9.7.1.26 pin is stricter than
 #   reality). VALIDATED: reward-guided binder design produces real AF2 scores on Blackwell.
+#   pip WARNS about the torch conflict on this line. Leave it. Both halves were measured on the
+#   CBLN1 A100 box: torch reports cudnn 92400 and runs a conv, and jax compiles one too. Downgrading
+#   to satisfy the warning is what broke that box -- jaxlib 0.10.2 is built against 9.8.0 and needs
+#   the minor equal or higher, so torch's 9.7.1.26 misses by one and every jax GPU compile dies with
+#   `RET_CHECK ... dnn_support != nullptr`, naming neither cudnn nor this file.
 #   PINNED, and in ONE resolve so pip sees every constraint at once. Unpinned, `pip install flax`
 #   alone drags jax off 0.10.2: current flax declares jax>=0.11.1 in its CORE deps. Newest versions
 #   whose declared jax floor still admits 0.10.2 -- flax 0.12.0 (>=0.7.1), dm-haiku 0.0.16 (0.0.17
