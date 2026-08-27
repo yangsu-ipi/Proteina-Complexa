@@ -195,6 +195,10 @@ bad = []
 try:
     cudnn = md.version("nvidia-cudnn-cu12")
     if cudnn != EXPECT_CUDNN:
+        # jaxlib 0.10.2 is built against cudnn 9.8.0 and requires a matching major with an
+        # equal-or-higher minor, so torch's own 9.7.1.26 is below the floor by one minor
+        # version. Observed on the CBLN1 box: "Loaded runtime CuDNN library: 9.7.1 but source
+        # was compiled with: 9.8.0", then RET_CHECK dnn_support != nullptr.
         bad.append(f"nvidia-cudnn-cu12 is {cudnn}, not {EXPECT_CUDNN} -- jax will fail to compile")
 except md.PackageNotFoundError:
     bad.append("nvidia-cudnn-cu12 is gone -- jax has no cudnn to compile against")
@@ -206,9 +210,9 @@ try:
     if not gpus:
         print("  [6e] no GPU visible; cudnn version checked, XLA compile not exercised")
     else:
-        # A matmul would go through cuBLAS and pass with no cudnn at all. A convolution is
-        # what forces XLA to ask for a DNN handle, which is the exact call that returns null
-        # when the cudnn version is wrong.
+        # Any jitted op is enough: gpu_compiler.cc checks dnn_support while compiling, so on
+        # the CBLN1 box a bare jnp.ones() raised this. A convolution is kept because it is the
+        # one op that also exercises the handle after compilation, and costs nothing extra.
         import jax.numpy as jnp
         x = jnp.ones((1, 4, 4, 1))
         k = jnp.ones((2, 2, 1, 1))
