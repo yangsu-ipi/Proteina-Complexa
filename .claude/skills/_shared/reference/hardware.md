@@ -175,15 +175,34 @@ answering from the first real run.
 | ESMFold2 `fold_batch` | length-buckets to a token budget and retries — upstream `esm`, not this repo, and unverified |
 | Generation | nothing catches it; the shard dies |
 
-The asymmetry is a property of the work, not an oversight. Scoring is
-batch-invariant — the log-probs for a sequence do not depend on what it was
-batched with — so halving and retrying returns identical numbers. Sampling is not:
-batch composition moves the RNG stream, so a generation retry at a smaller batch
-would produce *different designs* than the run that OOMed, under the same config
-and seed. Silently changing what you generated is worse than stopping.
+Scoring is batch-invariant — a sequence's log-probs do not depend on what it was
+batched with — so halving and retrying returns identical numbers, and the retry is
+free of consequences.
 
-So the generation lever is `batch_size` in the config, set before the run, and an
-OOM there is a signal to lower it rather than something to recover from in place.
+Generation is different, but **not because different designs would be wrong**.
+Sampling is stochastic; if batching is independent, a smaller batch draws from the
+same distribution and which particular designs come out does not matter
+scientifically. The objection is bookkeeping, and it is specific:
+
+- **The digest would describe a run that did not happen.**
+  `generation_config_digest` hashes the whole `generation` subtree, `batch_size`
+  included, and the marker records that digest. An in-process retry changes the
+  effective batch without changing the config, so the shard would carry a marker
+  claiming a batch size it did not use — and nothing anywhere records the
+  effective one. Resume, skip and the config-mismatch abort all rest on that
+  digest meaning what produced the output.
+- **A mid-shard retry makes it worse.** Some designs at 8, the rest at 4, one
+  number in the record. There is no single value that would be true.
+- **Distribution-invariance is an assumption, not a guarantee.** It holds when
+  batch members are independent and masking is exact. Binder lengths here vary
+  (`nres: 40-70`), so batches are padded to their longest member — which is
+  precisely where a masking flaw would make batch composition systematic rather
+  than incidental. Worth verifying before relying on it.
+
+So a generation retry is defensible engineering, not a scientific error, and the
+thing that would make it safe is recording the effective batch size per shard
+rather than inheriting the configured one. Until that exists, the lever is
+`batch_size` in the config, set before the run.
 
 ### Can they hand memory back between turns?
 
