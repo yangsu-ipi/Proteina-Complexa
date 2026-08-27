@@ -141,6 +141,50 @@ A wrong fraction fails fast and deterministically, which is the failure you want
 Use `PREALLOCATE=false` when the two genuinely peak at different times and no
 fraction fits both.
 
+### Choosing MEM_FRACTION
+
+Coarse beats precise. The knob exists to stop JAX crowding torch out of a shared
+card, not to pack the card tightly, and a tight number is fragile: it goes stale
+the moment `batch_size`, `nres` or the target changes, and it goes stale silently.
+
+| Situation | Do |
+|---|---|
+| 80 GB card, complex ≲ 400 residues | Pin one shard per GPU, leave the default. `0.6` if you want a margin. |
+| Small card, or a long target | Lower `++generation.dataloader.batch_size` first — the biggest lever |
+| Still tight | Then measure, and set a fraction from it |
+
+**This knob only affects generation.** JAX exists in that stage and nowhere else:
+`AF2RewardModel` is built in `predict_step`. `complexa evaluate` runs as a separate
+process with no JAX in it, so its budget is torch alone and `MEM_FRACTION` does
+nothing there.
+
+Do not read generation's numbers as the pipeline's. The `1.87`/`3.12 GiB` above is
+the **diffusion model**, measured on a run that died early. Evaluation is a
+different and much larger budget: ESMC 6B is ~12 GB of weights at bfloat16 and
+about twice that if it loads in fp32, plus ESMFold2, plus whatever the folding
+backend needs. Those figures are unverified — no ESMFold2 or ESMC path has run
+against real weights yet, and `esm_eval.py:542` calls `from_pretrained` without a
+`torch_dtype`, so which of the two ESMC sizes applies is an open question worth
+answering from the first real run.
+
+### What retries on OOM, and what does not
+
+| Path | On OOM |
+|---|---|
+| ESM/ESMC scoring (`esm_eval.py:389`) | halves the batch, `empty_cache()`, retries; raises at 1 |
+| ESMFold2 `fold_batch` | length-buckets to a token budget and retries — upstream `esm`, not this repo, and unverified |
+| Generation | nothing catches it; the shard dies |
+
+The asymmetry is a property of the work, not an oversight. Scoring is
+batch-invariant — the log-probs for a sequence do not depend on what it was
+batched with — so halving and retrying returns identical numbers. Sampling is not:
+batch composition moves the RNG stream, so a generation retry at a smaller batch
+would produce *different designs* than the run that OOMed, under the same config
+and seed. Silently changing what you generated is worse than stopping.
+
+So the generation lever is `batch_size` in the config, set before the run, and an
+OOM there is a signal to lower it rather than something to recover from in place.
+
 ### Can they hand memory back between turns?
 
 Generation alternates — a diffusion step, then AF2 scoring — so it is fair to ask
