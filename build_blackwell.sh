@@ -83,6 +83,11 @@ PYEOF
 #   colabdesign at module load) AND for the reward-guided search. torch cu128 + jax 0.10 coexist ONLY
 #   with cudnn 9.24: jax needs it, torch cu128 runs fine on it (torch's ==9.7.1.26 pin is stricter than
 #   reality). VALIDATED: reward-guided binder design produces real AF2 scores on Blackwell.
+#   pip WARNS about the torch conflict on this line. Leave it. Both halves were measured on the
+#   CBLN1 A100 box: torch reports cudnn 92400 and runs a conv, and jax compiles one too. Downgrading
+#   to satisfy the warning is what broke that box -- jaxlib 0.10.2 is built against 9.8.0 and needs
+#   the minor equal or higher, so torch's 9.7.1.26 misses by one and every jax GPU compile dies with
+#   `RET_CHECK ... dnn_support != nullptr`, naming neither cudnn nor this file.
 #   PINNED, and in ONE resolve so pip sees every constraint at once. Unpinned, `pip install flax`
 #   alone drags jax off 0.10.2: current flax declares jax>=0.11.1 in its CORE deps. Newest versions
 #   whose declared jax floor still admits 0.10.2 -- flax 0.12.0 (>=0.7.1), dm-haiku 0.0.16 (0.0.17
@@ -148,7 +153,14 @@ if [ "$WITH_ESMFOLD2" != "0" ]; then
   CONS="$ENV_DIR/esmfold2-constraints.txt"
   "$PY" - > "$CONS" <<'PYEOF'
 import importlib.metadata as md
-for pkg in ["torch", "numpy", "scipy", "numba", "einops", "biotite", "jax", "jaxlib"]:
+for pkg in ["torch", "numpy", "scipy", "numba", "einops", "biotite", "jax", "jaxlib",
+            # The one [6b] calls load-bearing: torch cu128 and jax 0.10 coexist ONLY on
+            # cudnn 9.24, and torch's own metadata asks for 9.7.1.26. Freezing jax without
+            # freezing the cudnn jax needs is half a constraint -- anything below that
+            # re-resolves torch's dependency set can pull 9.7 back, and jax then fails at
+            # XLA compile time with `RET_CHECK ... dnn_support != nullptr`, which names
+            # neither cudnn nor this file.
+            "nvidia-cudnn-cu12"]:
     try:
         print(f"{pkg}=={md.version(pkg)}")
     except md.PackageNotFoundError:
@@ -175,6 +187,51 @@ PYEOF
   # speedup at L~=768 (Linux-only wheels).
   "$PIP" install -c "$CONS" accelerate freesasa rdkit msgpack-numpy brotli attrs cloudpathlib \
     httpx tenacity zstd ipywidgets ipython py3dmol pydssp boto3 pygtrie dna_features_viewer
+  # [6b]'s jax verification ran BEFORE this step, so nothing here has yet re-checked that jax
+  # still works -- a check that runs before the thing that can break it. AF2 reward guidance is
+  # used by generation, not just evaluation, so a jax broken here takes the whole pipeline down
+  # at the first campaign rather than at build time.
+  "$PY" - <<'PYEOF'
+import importlib.metadata as md
+import sys
+
+EXPECT_CUDNN = "9.24.0.43"   # [6b]
+bad = []
+try:
+    cudnn = md.version("nvidia-cudnn-cu12")
+    if cudnn != EXPECT_CUDNN:
+        # jaxlib 0.10.2 is built against cudnn 9.8.0 and requires a matching major with an
+        # equal-or-higher minor, so torch's own 9.7.1.26 is below the floor by one minor
+        # version. Observed on the CBLN1 box: "Loaded runtime CuDNN library: 9.7.1 but source
+        # was compiled with: 9.8.0", then RET_CHECK dnn_support != nullptr.
+        bad.append(f"nvidia-cudnn-cu12 is {cudnn}, not {EXPECT_CUDNN} -- jax will fail to compile")
+except md.PackageNotFoundError:
+    bad.append("nvidia-cudnn-cu12 is gone -- jax has no cudnn to compile against")
+try:
+    import jax
+    if jax.__version__ != "0.10.2":
+        bad.append(f"jax drifted to {jax.__version__}")
+    gpus = [d for d in jax.devices() if d.platform == "gpu"]
+    if not gpus:
+        print("  [6e] no GPU visible; cudnn version checked, XLA compile not exercised")
+    else:
+        # Any jitted op is enough: gpu_compiler.cc checks dnn_support while compiling, so on
+        # the CBLN1 box a bare jnp.ones() raised this. A convolution is kept because it is the
+        # one op that also exercises the handle after compilation, and costs nothing extra.
+        import jax.numpy as jnp
+        x = jnp.ones((1, 4, 4, 1))
+        k = jnp.ones((2, 2, 1, 1))
+        jax.jit(lambda a, b: jax.lax.conv_general_dilated(
+            a, b, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC")))(x, k).block_until_ready()
+        print(f"  [6e] jax {jax.__version__} still compiles a convolution on {gpus[0].device_kind}")
+except Exception as e:
+    bad.append(f"jax: {type(e).__name__}: {e}")
+if bad:
+    print("FAILED (the ESMC/ESMFold2 install disturbed the jax stack):", *bad, sep="\n  ")
+    print("  Reinstall the [6b] line, or rebuild with WITH_ESMFOLD2=0.")
+    sys.exit(1)
+PYEOF
+
   # Prove the exact symbols this repo imports, not just that the packages exist. esm_eval,
   # folding_models and consensus_folding each reach a different one of these, and a missing
   # re-export would otherwise surface mid-campaign.
