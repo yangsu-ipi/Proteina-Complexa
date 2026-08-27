@@ -284,13 +284,39 @@ actively dangerous:
   directories, so five names collided and were replaced in place
   (`os.makedirs(..., exist_ok=True)` plus a `write_prot_to_pdb(..., overwrite=True)`). So a
   retry both accumulates orphans *and* destroys some of the previous attempt's structures, with
-  no record of which. That is the stronger reason to clear the directory rather than retry over
-  it: the counts you can detect afterwards, the overwritten designs you cannot.
+  no record of which. That was the stronger reason to clear the directory rather than retry
+  over it: the counts you can detect afterwards, the overwritten designs you cannot. It is
+  also why the marker logic below exists — and once it did, "clear the directory" stopped
+  being the answer. See **Do not guard a runner on the output directory existing**.
 
 This used to be unguarded. `generate.py` had an early-exit keyed on
 `results_{config_name}_{job_id}.csv`, a filename nothing in the codebase writes — evaluate
 writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:871-948`) — so
 the guard was dead and generate always restarted from scratch.
+
+### Do not guard a runner on the output directory existing
+
+Campaign runners are generated from this file, and an earlier version of it said, in bold, to
+clear the run directory before re-running generate over it. That advice predates the
+completion marker and is now actively wrong: a runner that does
+
+```bash
+[[ ! -e "$INF" ]] || { echo "refusing to generate over $INF" >&2; exit 2; }
+```
+
+**disables resume.** It cannot tell a completed shard from a damaged one or from a different
+config, so it refuses all three — including the case resume exists for, where the digest
+matches and there is nothing to do but skip. It also replaces per-shard reasoning with a
+whole-campaign veto, so one bad shard blocks fifteen good ones.
+
+Let generation decide. It already distinguishes every case, per shard, and every branch either
+skips safely or aborts with a message naming the recovery (see the table above). A runner's job
+is to pass `--job-id` and get out of the way.
+
+Two things a runner *may* usefully do: fail fast when the config digest will obviously mismatch
+(a deliberate config change), and make its own auxiliary steps **idempotent** rather than
+fatal — a trim or move step that refuses because its destination already exists turns a
+resumable run into a manual cleanup, which is the same mistake one layer up.
 
 It now keys on a **completion marker** instead. A finished shard writes
 `shard_{job_id}_complete.json` recording a SHA-256 of its `generation` config subtree, and the
@@ -611,8 +637,7 @@ The remaining limitation is provenance. A skipped shard was produced by a differ
 than the one writing the manifest, so "seed S produced these N designs" spans two runs; the
 digest proves they were the same *request*, not the same RNG stream.
 
-**So clear the run directory before re-running generate over it**, or retry at shard
-granularity. The
+Retry at shard granularity rather than clearing. The
 standalone step commands take `--job-id` (`add_job_args`, applied to `generate_parser` but not
 `design_parser`), so when a multi-GPU generate loses one shard you can re-run just that shard:
 

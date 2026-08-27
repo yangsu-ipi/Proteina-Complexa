@@ -262,6 +262,13 @@ aborts rather than regenerating, because the directory names are deterministic a
 counters restart, so continuing would overwrite the earlier run's structures. Pick a new
 `generation.run_name` or clear the directory — the message says which.
 
+That is a *changed config* only. **Do not put an output-directory-existence guard in a
+campaign runner or job script**: generation already distinguishes skip, clear-and-regenerate,
+and abort per shard, and a runner that refuses whenever the directory exists disables resume
+for the case resume is for. Make a runner's own auxiliary steps (trimming, moving) idempotent
+rather than fatal for the same reason. See "Do not guard a runner on the output directory
+existing" in [`campaign-gating.md`](../../../docs/binder-target-setup/campaign-gating.md).
+
 ## Step 6: Emit manifest
 
 ```bash
