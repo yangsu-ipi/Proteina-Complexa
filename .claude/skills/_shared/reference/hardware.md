@@ -95,3 +95,46 @@ Try these in order — cheapest mitigations first:
   loading the wrong arch wastes ~10–20% VRAM (empirical).
 - Multi-GPU host: set `CUDA_VISIBLE_DEVICES=<idx>` to pin the run to a single
   card and avoid PyTorch placing tensors on a busy peer GPU.
+
+## JAX preallocates most of the card, and it does it per visible GPU
+
+The AF2 reward is JAX, and JAX takes **75% of every visible GPU on first use** —
+not what the reward needs, 75%. On an 80 GB card that is ~60 GB reserved before
+PyTorch asks for anything, and the diffusion model then fails to find tens of
+megabytes. The error names PyTorch, because PyTorch is what asked last:
+
+```
+CUDA out of memory. Tried to allocate 72.00 MiB. GPU 0 has a total capacity of
+79.25 GiB of which 54.38 MiB is free. Process N has 61.59 GiB memory in use.
+```
+
+`61.59 GiB` in a process whose PyTorch allocation is `1.87 GiB` is the signature.
+Two knobs, either of which is enough on a dedicated card:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false      # allocate on demand
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.35      # or just take less
+```
+
+**Per visible GPU** is the part that surprises. `AF2RewardModel` selects one
+device (`device_id`, defaulting to `torch.cuda.current_device()`), but the
+preallocation happens when the JAX backend initialises, across everything
+`CUDA_VISIBLE_DEVICES` exposes — so a process that only ever uses card 1 has
+still reserved 60 GB on card 0.
+
+## Shards driven individually are pinned by nothing
+
+The `gen_njobs` path pins each job to a GPU by index. Driving shards yourself —
+separate processes with `++job_id=N`, which is what campaign runners do for
+resume granularity — does not, and neither does `srun --gres=gpu:1` on every
+cluster: where GRES cgroups are not enforced, each step still sees every GPU and
+every step picks device 0. Two shards then land on one card while its peer sits
+idle. Pin them explicitly rather than trusting the scheduler:
+
+```bash
+CUDA_VISIBLE_DEVICES="$shard" srun ... python -m proteinfoundation.generate "++job_id=$shard"
+```
+
+Check it in the log rather than assuming: Lightning prints
+`LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0,1]`, and two shards both reporting
+`[0,1]` means neither was pinned.
