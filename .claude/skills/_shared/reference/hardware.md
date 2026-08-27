@@ -109,12 +109,42 @@ CUDA out of memory. Tried to allocate 72.00 MiB. GPU 0 has a total capacity of
 ```
 
 `61.59 GiB` in a process whose PyTorch allocation is `1.87 GiB` is the signature.
-Two knobs, either of which is enough on a dedicated card:
+Note *whose*: JAX and PyTorch live in the **same** process here — `AF2RewardModel`
+is constructed inside `generate.py`'s `predict_step` — so this is not two
+processes to separate, it is one card to divide.
+
+### Which knob
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false      # allocate on demand
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.35      # or just take less
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6       # bound JAX, leave the rest to torch
+XLA_PYTHON_CLIENT_PREALLOCATE=false      # or allocate on demand
 ```
+
+**Prefer bounding to on-demand**, which is the opposite of the intuition that you
+cannot predict the split so both sides should float. Three reasons:
+
+- **AF2 is the predictable half.** Its graph is fixed and its footprint is a
+  function of target length, binder length and `num_recycles`, all pinned by
+  config. The torch side is what varies — `batch_size`, and binder lengths drawn
+  from `nres`. So bound the stable one and let the variable one take the
+  remainder, rather than leaving both to negotiate at runtime.
+- **PyTorch's caching allocator does not give memory back.** Freed tensors stay in
+  its reserved pool. Under on-demand JAX, whichever side asks first during a long
+  run keeps what it took, and JAX can be starved at hour three of a campaign
+  rather than in the first minute.
+- **Beam search interleaves them tightly.** Diffusion steps and AF2 scoring
+  alternate at every `step_checkpoints` entry, which is the worst case for two
+  on-demand allocators sharing one device.
+
+A wrong fraction fails fast and deterministically, which is the failure you want.
+
+Use `PREALLOCATE=false` when the two genuinely peak at different times and no
+fraction fits both, and pair it with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+so torch's pool can be given back rather than fragmenting against JAX.
+
+Pick the fraction from a real run rather than guessing: the OOM message reports
+torch's own allocation (`1.87` and `3.12 GiB` on the CBLN1 smoke test), so
+`1 - (torch_peak + headroom) / total` is a measurement, not an estimate.
 
 **Per visible GPU** is the part that surprises. `AF2RewardModel` selects one
 device (`device_id`, defaulting to `torch.cuda.current_device()`), but the
