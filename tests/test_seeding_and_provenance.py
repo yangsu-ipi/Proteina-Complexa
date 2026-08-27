@@ -179,3 +179,65 @@ def test_ligand_targets_force_ligand_mpnn_and_say_so(configured, is_ligand, expe
 def test_an_unknown_inverse_folder_raises():
     with pytest.raises(ValueError, match="not supported"):
         resolve_inverse_folding_model("esm_if", False)
+
+
+# ------------------------------------------- MPNN failures must say what failed
+
+
+def mpnn_failure():
+    """The helper, without importing the module's heavy dependencies."""
+    import pathlib
+    import subprocess as sp
+
+    src = pathlib.Path("src/proteinfoundation/metrics/inverse_folding_models.py").read_text()
+    i = src.index("def _mpnn_failure(")
+    ns = {"subprocess": sp}
+    exec(src[i : src.index("\ndef ", i + 10)], ns)
+    return ns["_mpnn_failure"]
+
+
+def test_the_command_is_no_longer_silenced_before_it_can_be_read():
+    """`capture_output=True` pipes both streams, and the command then appended
+    `> /dev/null 2>&1`, which discarded them first. Every failure arrived as
+    "SolubleMPNN command failed: " with nothing after the colon -- which is exactly
+    what the CBLN1 smoke test produced."""
+    import pathlib
+
+    src = pathlib.Path("src/proteinfoundation/metrics/inverse_folding_models.py").read_text()
+    # The code pattern, not any mention: the docstring explaining this bug names
+    # /dev/null too, and a test that cannot survive its own fix being documented
+    # is a test that will be deleted rather than kept.
+    assert '+= " > /dev/null' not in src, "a redirect here destroys the diagnostic the error message asks for"
+    assert "2>&1" not in src.replace("``> /dev/null 2>&1``", ""), "no stream may be discarded before capture_output"
+
+
+def test_a_failure_reports_both_streams_and_the_command():
+    import subprocess as sp
+
+    text = str(
+        mpnn_failure()(
+            "SolubleMPNN",
+            "python run.py --model_type soluble_mpnn",
+            sp.CalledProcessError(1, "c", output="on stdout", stderr="on stderr"),
+        )
+    )
+    assert "exit 1" in text
+    assert "on stderr" in text
+    assert "on stdout" in text, "these tools disagree about where errors go, so both are reported"
+    assert "--model_type soluble_mpnn" in text, "the command is built from config and is usually the answer"
+
+
+def test_a_silent_failure_says_so_rather_than_trailing_off():
+    import subprocess as sp
+
+    text = str(mpnn_failure()("LigandMPNN", "python run.py", sp.CalledProcessError(1, "c", output=None, stderr=None)))
+    assert "no output on either stream" in text, "silence must be reported as silence, not as an empty message"
+
+
+def test_long_output_is_tailed_not_dropped():
+    import subprocess as sp
+
+    err = "\n".join(f"line {i}" for i in range(2000))
+    text = str(mpnn_failure()("ProteinMPNN", "python run.py", sp.CalledProcessError(1, "c", output="", stderr=err)))
+    assert "line 1999" in text, "the end of a traceback is the part that names the error"
+    assert len(text) < 6000
