@@ -193,16 +193,28 @@ scientifically. The objection is bookkeeping, and it is specific:
   digest meaning what produced the output.
 - **A mid-shard retry makes it worse.** Some designs at 8, the rest at 4, one
   number in the record. There is no single value that would be true.
-- **Distribution-invariance is an assumption, not a guarantee.** It holds when
-  batch members are independent and masking is exact. Binder lengths here vary
-  (`nres: 40-70`), so batches are padded to their longest member — which is
-  precisely where a masking flaw would make batch composition systematic rather
-  than incidental. Worth verifying before relying on it.
+- **Distribution-invariance was the open assumption. It has now been measured**, on
+  the CBLN1 binder model at the padded widths it actually generates at
+  (`script_utils/bioinformatic/verify_batch_invariance.py`). A design's denoising
+  output does not depend on what it shares a batch with: differences are
+  1–3e-6 against an output scale of 4.08, i.e. ~5e-7 relative, in both directions
+  tested — other designs present, and padding width. That is GEMM reduction-order
+  noise from changing the batch shape, not leakage; the same batch run twice is
+  bit-exact (`0.000e+00`), so the floor is real rather than assumed.
 
-So a generation retry is defensible engineering, not a scientific error, and the
-thing that would make it safe is recording the effective batch size per shard
-rather than inheriting the configured one. Until that exists, the lever is
-`batch_size` in the config, set before the run.
+So batch size is parallelism for this model, and a smaller batch samples the same
+distribution. A generation retry is not a scientific error, and what stands in its
+way is only bookkeeping — and that is not a small obstacle, because the batch can
+drop *mid-shard*: some designs at 8, the rest at 4, with no single value that any
+per-shard field could truthfully hold. An honest record would have to be
+per-design. Until that exists the lever remains `batch_size` in the config, set
+before the run.
+
+Scope of the measurement: one timestep, one batch composition, this model and
+target. A masking flaw would not normally be timestep-specific, but the run
+verifies the forward pass rather than a whole 400-step trajectory. It is evidence,
+not a proof, and re-running it after a model or feature-factory change costs a
+minute.
 
 ### Can they hand memory back between turns?
 
