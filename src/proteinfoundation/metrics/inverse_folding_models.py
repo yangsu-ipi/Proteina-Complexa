@@ -202,6 +202,31 @@ def write_fix_pos_file(fix_pos: list[str], all_chains: list[str], out_dir_root: 
 ## ## ## ## ## ## ## ## ## ## ## ##
 
 
+def _mpnn_failure(tool: str, command: str, exc: subprocess.CalledProcessError) -> RuntimeError:
+    """A failure message that carries what actually failed.
+
+    These handlers used to report ``e.stderr`` alone, and the command they ran
+    ended in ``> /dev/null 2>&1`` -- so the shell discarded stdout and stderr
+    before ``capture_output=True`` could pipe them, and every failure surfaced as
+    "SolubleMPNN command failed: " with nothing after the colon. The redirect was
+    redundant as well as harmful: capture_output already keeps the console clean.
+
+    Both streams are reported because these tools do not agree on where errors
+    go -- a missing checkpoint arrives on one, a Python traceback on the other --
+    and the command itself is included because it is built from several config
+    values and is usually where the answer is.
+    """
+    parts = [f"{tool} failed (exit {exc.returncode})"]
+    for label, stream in (("stderr", exc.stderr), ("stdout", exc.stdout)):
+        text = (stream or "").strip()
+        if text:
+            parts.append(f"--- {label} ---\n{text[-4000:]}")
+    if not exc.stderr and not exc.stdout:
+        parts.append("(the command produced no output on either stream)")
+    parts.append(f"--- command ---\n{' '.join(command.split())}")
+    return RuntimeError("\n".join(parts))
+
+
 def run_proteinmpnn(
     pdb_file_path: str,
     out_dir_root: str,
@@ -269,8 +294,6 @@ def run_proteinmpnn(
         base_command += " --ca_only"
     if seed is not None:
         base_command += f" --seed {seed}"
-    if not verbose:
-        base_command += " > /dev/null 2>&1"
 
     if fix_pos:
         fixed_positions_path = write_fix_pos_file(fix_pos, all_chains, out_dir_root, pdb_file_path)
@@ -284,11 +307,12 @@ def run_proteinmpnn(
             logger.error(f"ProteinMPNN command failed with error: {result.stderr}")
             raise RuntimeError(f"ProteinMPNN command failed: {result.stderr}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"ProteinMPNN command failed with error: {e.stderr}")
-        raise RuntimeError(f"ProteinMPNN command failed: {e.stderr}")
+        failure = _mpnn_failure("ProteinMPNN", command, e)
+        logger.error(str(failure))
+        raise failure from e
     except Exception as e:
         logger.error(f"Unexpected error running ProteinMPNN: {e!s}")
-        raise RuntimeError(f"Unexpected error running ProteinMPNN: {e!s}")
+        raise RuntimeError(f"Unexpected error running ProteinMPNN: {e!s}") from e
 
     redesigned_seqs_info = extract_gen_seqs_proteinmpnn(os.path.join(out_dir_root, "seqs", name + ".fa"))
 
@@ -375,8 +399,6 @@ def run_ligandmpnn(
         command = base_command + f' --fixed_residues "{fixed_residues}"'
     else:
         command = base_command
-    if not verbose:
-        command += " > /dev/null 2>&1"
 
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
@@ -384,11 +406,12 @@ def run_ligandmpnn(
             logger.error(f"LigandMPNN command failed with error: {result.stderr}")
             raise RuntimeError(f"LigandMPNN command failed: {result.stderr}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"LigandMPNN command failed with error: {e.stderr}")
-        raise RuntimeError(f"LigandMPNN command failed: {e.stderr}")
+        failure = _mpnn_failure("LigandMPNN", command, e)
+        logger.error(str(failure))
+        raise failure from e
     except Exception as e:
         logger.error(f"Unexpected error running LigandMPNN: {e!s}")
-        raise RuntimeError(f"Unexpected error running LigandMPNN: {e!s}")
+        raise RuntimeError(f"Unexpected error running LigandMPNN: {e!s}") from e
 
     # Maybe not need this?
     backbone_name = os.path.join(out_dir_root, "backbones", name + "_1.pdb")
@@ -485,8 +508,6 @@ def run_solublempnn(
         command = base_command + f' --fixed_residues "{fixed_residues}"'
     else:
         command = base_command
-    if not verbose:
-        command += " > /dev/null 2>&1"
 
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
@@ -494,11 +515,12 @@ def run_solublempnn(
             logger.error(f"SolubleMPNN command failed with error: {result.stderr}")
             raise RuntimeError(f"SolubleMPNN command failed: {result.stderr}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"SolubleMPNN command failed with error: {e.stderr}")
-        raise RuntimeError(f"SolubleMPNN command failed: {e.stderr}")
+        failure = _mpnn_failure("SolubleMPNN", command, e)
+        logger.error(str(failure))
+        raise failure from e
     except Exception as e:
         logger.error(f"Unexpected error running SolubleMPNN: {e!s}")
-        raise RuntimeError(f"Unexpected error running SolubleMPNN: {e!s}")
+        raise RuntimeError(f"Unexpected error running SolubleMPNN: {e!s}") from e
 
     # Extract redesigned sequences from SolubleMPNN output
     backbone_name = os.path.join(out_dir_root, "backbones", name + "_1.pdb")
