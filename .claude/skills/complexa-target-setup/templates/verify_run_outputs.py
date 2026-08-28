@@ -62,6 +62,6 @@ def main():
     if a.redesign_model and any(r.get("redesign_model") not in (a.redesign_model,"") for r in data):
         raise SystemExit(f"unexpected redesign model (expected {a.redesign_model})")
     if not list((a.evaluation_dir/"filter_results").glob("res_filter_*_pass_*.csv")):raise SystemExit("missing success output")
-    report={"status":"passed","raw_generation_rows":raw,"retained_before_global_dedup":retained,"live_after_global_dedup":len(live),"evaluated":evaluated,"combined_rows":len(data),"tracks":sorted(ran),"required_columns":list(required)}
+    report={"status":"passed","raw_generation_rows":raw,"retained_before_global_dedup":retained,"live_after_global_dedup":len(live),"evaluated":evaluated,"combined_rows":len(data),"tracks":sorted(ran),"required_columns":list(a.require_column)}
     a.output.write_text(json.dumps(report,indent=2)+"\n");print("PASS:",report);return 0
 if __name__=="__main__":raise SystemExit(main())
