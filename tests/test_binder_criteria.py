@@ -235,3 +235,36 @@ def test_startup_check_reports_criteria_this_run_cannot_evaluate(caplog, compute
 def test_math_isfinite_is_what_the_vector_relies_on():
     """Guards the assumption behind the NaN cases above."""
     assert not math.isfinite(float("nan")) and not math.isfinite(float("inf"))
+
+
+# ------------------ the apo criterion needs its column before the verdict
+
+
+def test_a_missing_apo_column_yields_no_verdict():
+    """per_sequence_pass returns None when any criterion's column is absent --
+    unjudged, not failed. That is correct, and it is why ORDER matters: the apo
+    criterion is part of the gate, so computing the verdict before the apo block
+    filled the row meant no verdict was ever written."""
+    from proteinfoundation.evaluation.binder_eval_utils import per_sequence_pass
+
+    thresholds = {
+        "i_pAE": {"threshold": 7.0, "op": "<=", "scale": 31.0, "column_prefix": "complex"},
+        "scRMSD_ca_{model}": {"threshold": 2.0, "op": "<", "scale": 1.0, "column_prefix": "apo"},
+    }
+    without_apo = {"mpnn_complex_i_pAE_all": [0.1, 0.2]}
+    assert per_sequence_pass(without_apo, "mpnn", thresholds) is None
+
+    with_apo = {**without_apo, "mpnn_apo_scRMSD_ca_esmfold2_all": [0.35, 2.6]}
+    assert per_sequence_pass(with_apo, "mpnn", thresholds) == [1, 0], "apo gates the second sequence out"
+
+
+def test_the_verdict_is_computed_after_the_apo_columns_exist():
+    """A source-order check, because the failure it guards is invisible in output:
+    the run completes, the apo numbers are all correct, and the pass columns are
+    simply absent. Nothing errors."""
+    import pathlib
+
+    src = pathlib.Path("src/proteinfoundation/evaluation/binder_eval.py").read_text()
+    assert src.index("apo_values = apo_refold(") < src.index("pass_vector = per_sequence_pass("), (
+        "the apo criterion's column must be on the row before the verdict is taken"
+    )
