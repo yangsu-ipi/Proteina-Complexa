@@ -262,6 +262,33 @@ aborts rather than regenerating, because the directory names are deterministic a
 counters restart, so continuing would overwrite the earlier run's structures. Pick a new
 `generation.run_name` or clear the directory — the message says which.
 
+### Copy the campaign scripts; do not reinvent them
+
+`templates/` in this skill holds scripts validated by a campaign that ran end to end
+(CBLN1/5KC5, 2026-08-28). Copy them into `<campaign>/scripts/` **unchanged** and pass the
+campaign's choices as arguments.
+
+| template | what it does | campaign inputs |
+|---|---|---|
+| `trim_shards.py` | keeps exactly N designs **per shard** — Complexa's own filter keeps top-N *globally*, so this fills a real gap | `--per-shard`, `--shards` |
+| `check_preflight.py` | applies config-aware gates to a preflight report | `--require-hf-repo`, `--min-vram-gb` |
+| `verify_run_outputs.py` | reconciles generated / retained / evaluated counts | `--shards`, `--trim-report`, `--require-column` |
+| `refresh_checksums.py` | hashes the package, skipping run output | none |
+
+They are exercised by `tests/test_campaign_templates.py`, which runs each one. That is the
+point: a template is copied verbatim into every future campaign, so a wrong one is worse than
+wrong prose — and unlike prose, a script can be run. **If you edit a template for one
+campaign, that is a bug in the template**; add an argument so the next campaign inherits the
+fix instead.
+
+Each carries the mistake it encodes a fix for. `trim_shards.py` counted designs in the output
+root alone and stopped a campaign whose generation had correctly skipped; `check_preflight.py`
+demanded ESMFold2 of every campaign; `verify_run_outputs.py` assumed exactly two shards.
+
+Still to write per campaign: `run_campaign.sh`, the `.sbatch` files, and target preparation
+(`prepare_*.py`) — the first two are close to generic and will be templated once a second
+campaign shows what actually varies; PDB prep is genuinely target-specific.
+
 ### Where designs live, and why a script must not assume
 
 Any script that counts, locates, trims or validates generated designs has to know this,
