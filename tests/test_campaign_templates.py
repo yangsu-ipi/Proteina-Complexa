@@ -318,3 +318,27 @@ echo "${{required_env[*]:-}}"'''
         assert named == ["LEGACY_CAMPAIGN_DIR"], f"expected only the unset no-default var, got {named}"
     finally:
         probe.unlink(missing_ok=True)
+
+
+def test_the_prepare_hook_survives_an_older_campaign_env():
+    """A campaign.env predating PREPARE_STEPS leaves it unset, and the runner uses
+    `set -u`. The guard must tolerate unset, empty, and populated alike."""
+    guard = "if [[ ${PREPARE_STEPS+set} == set ]] && ((${#PREPARE_STEPS[@]})); then echo RUN; else echo SKIP; fi"
+    for setup, expected in [("true", "SKIP"), ("PREPARE_STEPS=()", "SKIP"), ("PREPARE_STEPS=(a b)", "RUN")]:
+        # `true` rather than "" for the unset case: an empty fragment leaves a
+        # doubled semicolon, which is a shell syntax error and not the thing under test.
+        r = subprocess.run(["bash", "-c", f"set -euo pipefail; {setup}; {guard}"], capture_output=True, text=True)
+        assert r.returncode == 0, f"{setup!r} broke under set -u: {r.stderr}"
+        assert r.stdout.strip() == expected, f"{setup!r} -> {r.stdout.strip()}, wanted {expected}"
+
+
+def test_the_runner_actually_uses_that_guard():
+    """The test above is only worth anything if it guards the shipped code."""
+    assert "${PREPARE_STEPS+set} == set" in RUNNER.read_text()
+
+
+def test_preparation_runs_before_anything_validates():
+    """An MSA that a later step reads has to exist by then."""
+    text = RUNNER.read_text()
+    assert text.index("PREPARE_STEPS") < text.index("validate_resolved_config.py")
+    assert text.index("PREPARE_STEPS") < text.index("required_env=()")
