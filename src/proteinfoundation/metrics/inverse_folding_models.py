@@ -202,6 +202,34 @@ def write_fix_pos_file(fix_pos: list[str], all_chains: list[str], out_dir_root: 
 ## ## ## ## ## ## ## ## ## ## ## ##
 
 
+def release_gpu_for_subprocess(tool: str) -> None:
+    """Hand back cached VRAM before spawning an MPNN subprocess.
+
+    These runners shell out, so the child needs a CUDA context of its own -- about
+    500 MiB before it loads anything -- and it must come from the *driver*, not
+    from this process's allocator pool. PyTorch never returns freed blocks on its
+    own, so a parent holding ESMC, ESMFold2 and JAX can sit on a full card while
+    having plenty spare internally, and the child fails at
+    ``torch.load(..., map_location='cuda')`` with "CUDA error: out of memory" --
+    which is what the CBLN1 smoke test did, with 443 MiB free on an 80 GB card.
+
+    Only cached-but-unallocated blocks come back; live tensors do not. So this is
+    a real improvement and not a guarantee, and when it is not enough the lever is
+    XLA_PYTHON_CLIENT_MEM_FRACTION -- JAX's preallocation is the larger and more
+    compressible half.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            before = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+            torch.cuda.empty_cache()
+            if before > 0:
+                logger.debug(f"Released {before / 1024**3:.2f} GiB of cached VRAM before running {tool}")
+    except Exception as exc:  # never let a cleanup convenience break the run
+        logger.debug(f"Could not release cached VRAM before {tool}: {exc}")
+
+
 def _mpnn_failure(tool: str, command: str, exc: subprocess.CalledProcessError) -> RuntimeError:
     """A failure message that carries what actually failed.
 
@@ -301,6 +329,7 @@ def run_proteinmpnn(
     else:
         command = base_command
 
+    release_gpu_for_subprocess("ProteinMPNN")
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         if result.returncode != 0:
@@ -400,6 +429,7 @@ def run_ligandmpnn(
     else:
         command = base_command
 
+    release_gpu_for_subprocess("LigandMPNN")
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         if result.returncode != 0:
@@ -509,6 +539,7 @@ def run_solublempnn(
     else:
         command = base_command
 
+    release_gpu_for_subprocess("SolubleMPNN")
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         if result.returncode != 0:
