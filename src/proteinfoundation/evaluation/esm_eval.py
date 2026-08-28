@@ -456,7 +456,36 @@ def compute_pseudo_perplexity_batched(
 # =============================================================================
 
 
-def load_masked_lm(model_name: str, **kwargs):
+def resolve_esm_dtype(model_name: str, configured: str = "auto"):
+    """Which dtype to materialise ESM weights in.
+
+    ``"auto"`` here does NOT mean transformers' ``"auto"``. That one follows the
+    checkpoint's declared ``torch_dtype``, and biohub/ESMC-6B declares none -- so it
+    materialised float32 and the CBLN1 smoke test logged
+    ``6.35B parameters, torch.float32, 23.7 GiB of weights``, roughly twice what
+    the model computes in.
+
+    ESMC is scored in bfloat16 by this module either way (see the softmax in
+    ``_score_chunk``, taken in float32 precisely because the logits are not), so
+    float32 *weights* buy no precision that survives to the number we keep. They
+    cost ~12 GiB on a card that also holds ESMFold2 and, when the folding backend
+    is colabdesign, JAX's preallocation -- which is what pushed both ESMFold2's
+    advisory refolding and the ProteinMPNN subprocess out of memory.
+
+    So ESMC defaults to bfloat16 and everything else to the checkpoint's own dtype:
+    ESM2 650M is small enough that its footprint has never been the constraint, and
+    silently halving its precision would change published numbers for no gain.
+    ``float32`` or ``bfloat16`` may be set explicitly via ``metric.esm_dtype``.
+    """
+    if configured and configured != "auto":
+        resolved = getattr(torch, configured, None)
+        if resolved is None:
+            raise ValueError(f"metric.esm_dtype={configured!r} is not a torch dtype (try bfloat16, float16, float32)")
+        return resolved
+    return torch.bfloat16 if "esmc" in model_name.lower() else "auto"
+
+
+def load_masked_lm(model_name: str, dtype="auto", **kwargs):
     """``AutoModelForMaskedLM.from_pretrained`` that keeps the checkpoint's dtype.
 
     Without an explicit dtype, transformers materialises weights in float32 whatever
@@ -476,9 +505,9 @@ def load_masked_lm(model_name: str, **kwargs):
     # The module-level symbol, not a local import: it doubles as the ESM_AVAILABLE
     # probe, and re-importing here would leave that import unused and removable.
     try:
-        return AutoModelForMaskedLM.from_pretrained(model_name, dtype="auto", **kwargs)
+        return AutoModelForMaskedLM.from_pretrained(model_name, dtype=dtype, **kwargs)
     except TypeError:
-        return AutoModelForMaskedLM.from_pretrained(model_name, torch_dtype="auto", **kwargs)
+        return AutoModelForMaskedLM.from_pretrained(model_name, torch_dtype=dtype, **kwargs)
 
 
 def log_model_footprint(model, model_name: str) -> None:
@@ -550,7 +579,9 @@ def _resolve_cache_dir() -> str | None:
 # =============================================================================
 
 
-def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: str = BACKEND_ESM2) -> EsmBackend:
+def _load_hf_masked_lm(
+    model_name: str, device: str, force_offline: bool, kind: str = BACKEND_ESM2, dtype="auto"
+) -> EsmBackend:
     """Load a HuggingFace masked LM from ESM_DIR, then the HF cache.
 
     Serves both ``esm2`` and ``esmc``: Biohub's transformers fork registers
@@ -579,7 +610,7 @@ def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: 
                 cache_dir=loc,
                 local_files_only=True,
             )
-            model = load_masked_lm(model_name, cache_dir=loc, local_files_only=True)
+            model = load_masked_lm(model_name, dtype=dtype, cache_dir=loc, local_files_only=True)
             logger.info(f"Loaded ESM model from {label} (offline)")
             log_model_footprint(model, model_name)
             break
@@ -608,7 +639,7 @@ def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: 
         # If not forcing offline, download to cache_dir (not ESM_DIR)
         logger.info(f"Downloading ESM model from HuggingFace to {cache_dir}...")
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-        model = load_masked_lm(model_name, cache_dir=cache_dir)
+        model = load_masked_lm(model_name, dtype=dtype, cache_dir=cache_dir)
         log_model_footprint(model, model_name)
 
     model = model.to(device)
@@ -707,6 +738,7 @@ def get_esm_backend(
     backend: str = "auto",
     device: str | None = None,
     force_offline: bool = True,
+    dtype: str = "auto",
 ) -> EsmBackend:
     """Get or load a scoring backend (cached globally).
 
@@ -718,6 +750,8 @@ def get_esm_backend(
         backend: ``auto``, ``esm2``, or ``esmc``.
         device: Device to load on (default: auto-detect cuda/cpu).
         force_offline: If True, load from local caches only and never download.
+        dtype: ``auto`` (bfloat16 for ESMC, the checkpoint's own dtype otherwise),
+            or an explicit torch dtype name. See :func:`resolve_esm_dtype`.
 
     Returns:
         A loaded :class:`EsmBackend` in eval mode.
@@ -748,7 +782,7 @@ def get_esm_backend(
     if kind == BACKEND_ESMC_PKG:
         loaded = _load_esmc_pkg(model_name, device)
     else:
-        loaded = _load_hf_masked_lm(model_name, device, force_offline, kind)
+        loaded = _load_hf_masked_lm(model_name, device, force_offline, kind, resolve_esm_dtype(model_name, dtype))
 
     _ESM_BACKEND_CACHE[key] = loaded
     logger.info(f"ESM backend loaded ({kind}:{model_name}) on {device} and cached for reuse")
@@ -858,6 +892,7 @@ def compute_esm_ppl_for_sequences(
     max_batch_tokens: int = DEFAULT_ESM_BATCH_TOKENS,
     cache_dir: str | None = None,
     reuse_cache: bool = True,
+    dtype: str = "auto",
 ) -> pd.DataFrame:
     """Compute ESM pseudo-perplexity for a list of sequences.
 
@@ -902,7 +937,7 @@ def compute_esm_ppl_for_sequences(
             + (f" ({n_reused} reused from cache)" if n_reused else "")
         )
         try:
-            esm_backend = get_esm_backend(model_name, backend=backend, force_offline=force_offline)
+            esm_backend = get_esm_backend(model_name, backend=backend, force_offline=force_offline, dtype=dtype)
         except (RuntimeError, ValueError) as e:
             logger.error(f"Failed to load ESM model: {e}")
             esm_backend = None

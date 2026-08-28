@@ -814,6 +814,10 @@ def compute_binder_metrics(
                         seqs,
                         model_name=esm_model,
                         backend=cfg_metric.get("esm_backend", "auto"),
+                        # bfloat16 for ESMC unless overridden: it is scored in
+                        # bfloat16 regardless, and float32 weights cost ~12 GiB on
+                        # a card that also holds ESMFold2 and JAX.
+                        dtype=cfg_metric.get("esm_dtype", "auto"),
                         max_batch_tokens=cfg_metric.get("esm_batch_tokens", DEFAULT_ESM_BATCH_TOKENS),
                         cache_dir=sample_root_path,
                         reuse_cache=cfg_metric.get("reuse_cached_esm", True),
