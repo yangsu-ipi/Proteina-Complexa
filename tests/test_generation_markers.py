@@ -16,6 +16,7 @@ Requires the full environment: generate.py imports torch and the atomworks stack
 
 import json
 import os
+import shutil
 
 import pytest
 
@@ -1170,3 +1171,55 @@ def test_a_contig_mode_shard_still_owns_and_clears_its_own_table(tmp_path):
 
     assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True, contract=MOTIF_CONTRACT) is False
     assert not (tmp_path / MOTIF_CSV).exists()
+
+
+# --------------------- designs set aside into nested buckets are not "gone"
+
+
+def nested_sample(tmp_path, bucket, dir_name="job_0_n_195_id_7"):
+    """A design that has been moved under filtered_out_samples, possibly grouped."""
+    home = tmp_path / "filtered_out_samples" / bucket / dir_name if bucket else tmp_path / dir_name
+    home.mkdir(parents=True)
+    (home / f"{dir_name}.pdb").write_text("ATOM\n")
+    return [f"{dir_name}/{dir_name}.pdb"]
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    ["", "filtered", "pre_filter_shard_trim", "global_sequence_duplicates", "pre_filter_shard_trim/deeper"],
+    ids=["in-place", "filter", "campaign-trim", "dedup", "two-levels"],
+)
+def test_a_set_aside_design_still_counts_wherever_it_was_grouped(tmp_path, bucket):
+    """The filter moves a design to filtered_out_samples/<name>, but campaign
+    post-processing groups them by reason -- the CBLN1 runner has
+    pre_filter_shard_trim/ and global_sequence_duplicates/. Checking only the
+    immediate children reported those gone, so every resume cleared the shard and
+    regenerated it, and the next filter pass moved the new copies right back.
+    Resume could never converge; the symptom was generation running every time
+    however complete the campaign was."""
+    bucket_path = bucket if bucket != "filtered" else ""
+    outputs = nested_sample(tmp_path, bucket_path if bucket else None)
+    write_output_marker(tmp_path, outputs, nsamples=1)
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is True
+
+
+def test_a_genuinely_deleted_design_is_still_detected(tmp_path):
+    """The reach must not become a licence to find anything: an output that is
+    nowhere under the root is still missing."""
+    outputs = nested_sample(tmp_path, "pre_filter_shard_trim")
+    write_output_marker(tmp_path, outputs, nsamples=1)
+    shutil.rmtree(tmp_path / "filtered_out_samples")
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+
+
+def test_clearing_reaches_a_design_in_a_nested_bucket(tmp_path):
+    """A copy left behind in a bucket would be re-filtered beside the regenerated
+    design and counted twice."""
+    outputs = nested_sample(tmp_path, "pre_filter_shard_trim")
+    (tmp_path / REWARDS).write_text("pdb_path,total_reward\n")
+    write_output_marker(tmp_path, outputs + [REWARDS], nsamples=1)
+    (tmp_path / REWARDS).unlink()
+
+    assert shard_already_complete(str(tmp_path), 0, "a" * 64, skip_enabled=True) is False
+    assert not (tmp_path / "filtered_out_samples" / "pre_filter_shard_trim" / "job_0_n_195_id_7").exists()

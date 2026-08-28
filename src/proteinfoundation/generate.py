@@ -570,11 +570,10 @@ def missing_shard_dirs(root_path: str, marker: dict, contract: ShardOutputContra
     names = marker.get("sample_dirs")
     if not isinstance(names, list) or not names:
         return None
-    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
-
+    relocated = relocated_sample_dirs(root_path)
     expected = contract or ShardOutputContract()
 
-    def intact(base: str, name: str) -> bool:
+    def intact(directory: str, name: str) -> bool:
         """Present *and* still holding every file the current config requires.
 
         All three save paths write ``{dir}/{dir}.pdb`` -- each builds the filename
@@ -596,9 +595,16 @@ def missing_shard_dirs(root_path: str, marker: dict, contract: ShardOutputContra
         marker cannot answer it, but the config can, and the digest matching is
         what makes the current config the right thing to ask.
         """
-        return all(is_usable_output(os.path.join(base, name, f)) for f in expected.files_for(name))
+        return all(is_usable_output(os.path.join(directory, f)) for f in expected.files_for(name))
 
-    return [name for name in names if not any(intact(base, name) for base in (root_path, filtered_root))]
+    def anywhere(name: str) -> bool:
+        """In place, or wherever the filter and campaign post-processing put it."""
+        places = [os.path.join(root_path, name)]
+        if name in relocated:
+            places.append(relocated[name])
+        return any(intact(place, name) for place in places)
+
+    return [name for name in names if not anywhere(name)]
 
 
 def shard_dir_prefix(job_id: int) -> str:
@@ -707,8 +713,39 @@ def root_level_outputs(marker: dict) -> list[str]:
     return [rel for rel in outputs if isinstance(rel, str) and rel and os.path.dirname(rel) == ""]
 
 
-def output_search_bases(root_path: str, relative: str, sample_dirs: set[str]) -> list[str]:
-    """Where a recorded output may legitimately be found.
+def relocated_sample_dirs(root_path: str) -> dict[str, str]:
+    """Every sample directory under ``filtered_out_samples/``, by name, at any depth.
+
+    The filter moves a design to ``filtered_out_samples/<name>``, but campaign
+    post-processing groups them: the CBLN1 runner has
+    ``filtered_out_samples/pre_filter_shard_trim/<name>`` and
+    ``.../global_sequence_duplicates/<name>``, which record *why* a design was set
+    aside and are a good thing to keep.
+
+    Checking only the immediate children missed those, so every resume reported
+    them gone, cleared the shard and regenerated it -- forever, since the next
+    filter pass moved the new ones right back. Resume never converged, and the
+    symptom was a campaign that always ran generation no matter how complete it
+    was.
+
+    Walked once and indexed rather than searched per output, so a campaign with
+    thousands of set-aside designs costs one traversal instead of one per file.
+    Shallowest wins on a duplicate name, which is the filter's own location.
+    """
+    index: dict[str, str] = {}
+    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
+    if not os.path.isdir(filtered_root):
+        return index
+    for dirpath, dirnames, _ in os.walk(filtered_root):
+        for name in dirnames:
+            index.setdefault(name, os.path.join(dirpath, name))
+    return index
+
+
+def output_search_bases(
+    root_path: str, relative: str, sample_dirs: set[str], relocated: dict[str, str] | None = None
+) -> list[str]:
+    """Every path a recorded output may legitimately be found at.
 
     The filter moves whole sample directories into ``filtered_out_samples/``, so
     an output *inside* one of them is this shard's output relocated, not missing.
@@ -720,9 +757,12 @@ def output_search_bases(root_path: str, relative: str, sample_dirs: set[str]) ->
     silently evaluated only the shards whose CSV was still in place.
     """
     head = relative.split(os.sep)[0]
+    candidates = [os.path.join(root_path, relative)]
     if head != relative and head in sample_dirs:
-        return [root_path, os.path.join(root_path, FILTERED_OUT_DIRNAME)]
-    return [root_path]
+        relocated = (relocated or {}).get(head)
+        if relocated:
+            candidates.append(os.path.join(relocated, relative.split(os.sep, 1)[1]))
+    return candidates
 
 
 def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
@@ -740,10 +780,10 @@ def missing_shard_outputs(root_path: str, marker: dict) -> list[str] | None:
     if not isinstance(outputs, list) or not outputs:
         return None
     sample_dirs = {name for name in (marker.get("sample_dirs") or []) if isinstance(name, str)}
+    relocated = relocated_sample_dirs(root_path)
     missing = []
     for relative in outputs:
-        bases = output_search_bases(root_path, relative, sample_dirs)
-        if not any(is_usable_output(os.path.join(base, relative)) for base in bases):
+        if not any(is_usable_output(p) for p in output_search_bases(root_path, relative, sample_dirs, relocated)):
             missing.append(relative)
     return missing
 
@@ -778,6 +818,7 @@ def clear_shard_output(
     must refuse to regenerate while anything remains.
     """
     names = marker.get("sample_dirs") or []
+    relocated = relocated_sample_dirs(root_path)
     # Ownership is what the marker recorded *plus* what the contract requires. A
     # reward-unaware marker does not list its CSV, so clearing from the marker
     # alone left the very file whose absence triggered the clear -- and, since it
@@ -786,12 +827,13 @@ def clear_shard_output(
     root_files = list(
         dict.fromkeys(root_level_outputs(marker) + list((contract or ShardOutputContract()).root_outputs))
     )
-    filtered_root = os.path.join(root_path, FILTERED_OUT_DIRNAME)
     removed = 0
     for name in names:
-        for base in (root_path, filtered_root):
-            path = os.path.join(base, name)
-            if os.path.isdir(path):
+        # In place, and wherever it was set aside -- a copy left in a
+        # filtered_out_samples bucket would be re-filtered beside the regenerated
+        # design and counted twice.
+        for path in (os.path.join(root_path, name), relocated.get(name)):
+            if path and os.path.isdir(path):
                 try:
                     shutil.rmtree(path)
                     removed += 1
@@ -806,10 +848,10 @@ def clear_shard_output(
             except OSError as exc:
                 logger.warning(f"Could not remove {path}: {exc}")
     remaining = [
-        os.path.join(base, name)
+        path
         for name in names
-        for base in (root_path, filtered_root)
-        if os.path.isdir(os.path.join(base, name))
+        for path in (os.path.join(root_path, name), relocated.get(name))
+        if path and os.path.isdir(path)
     ] + [
         os.path.join(root_path, relative)
         for relative in root_files
