@@ -364,7 +364,13 @@ check then reports the shard complete, with evaluation the place it surfaces. Li
 generation writes a protein-ligand complex PDB beside every binder, and those are recorded
 too: `nsamples` counts designs, `outputs` counts files. Relocation into
 `filtered_out_samples/` is not a loss for a file *inside* a sample directory — the filter
-moves those. It is not a fallback for root-level files, which nothing moves and which the
+moves those, **at any depth**. Campaign post-processing groups set-aside designs by reason
+(`pre_filter_shard_trim/`, `global_sequence_duplicates/` in the CBLN1 runner), and checking
+only the immediate children of `filtered_out_samples/` reported every grouped design gone. The
+shard was then cleared and regenerated, the next filter pass moved the new copies back into
+their buckets, and the run after that did it again: resume never converged, and the symptom
+was generation running every time however complete the campaign already was. The directory is
+walked once and indexed by name, so the cost is one traversal rather than one search per file. It is not a fallback for root-level files, which nothing moves and which the
 filter looks for in the output root and nowhere else; accepting a reward CSV there reported
 the shard complete while filtering could not see it.
 
