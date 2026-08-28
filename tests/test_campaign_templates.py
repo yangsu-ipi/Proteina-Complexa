@@ -342,3 +342,20 @@ def test_preparation_runs_before_anything_validates():
     text = RUNNER.read_text()
     assert text.index("PREPARE_STEPS") < text.index("validate_resolved_config.py")
     assert text.index("PREPARE_STEPS") < text.index("required_env=()")
+
+
+def test_the_templates_have_no_undefined_names():
+    """`verify_run_outputs.py` reached its final line -- after a full cold run --
+    and died on `NameError: required`, left behind when its hardcoded column list
+    became an argument. Compiling catches syntax; only a name check catches a
+    reference that no longer resolves on a path taken once per run.
+
+    ruff's F821 is exactly this check. The reason it did not fire is duller than a
+    missing tool: nothing ever ran ruff over this directory. It does now.
+    """
+    r = subprocess.run(
+        ["ruff", "check", "--select", "F821", "--no-cache", *[str(p) for p in sorted(TEMPLATES.glob("*.py"))]],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stdout
