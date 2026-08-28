@@ -742,23 +742,6 @@ def compute_binder_metrics(
                             if col not in all_columns:
                                 all_columns.append(col)
 
-                # Per-sequence verdict against the success criteria, positionally
-                # aligned with every other *_all column on this row, so
-                # {seq_type}_sequence_all[i] and its metrics and its refolded
-                # structure path all describe the sequence judged by
-                # {seq_type}_pass_all[i]. None when a criterion's column is
-                # missing -- unjudged, not failed.
-                pass_vector = per_sequence_pass(row_dict, seq_type, success_thresholds)
-                if pass_vector is not None:
-                    row_dict[f"{seq_type}_pass"] = pass_vector[best_idx] if best_idx < len(pass_vector) else None
-                    row_dict[f"{seq_type}_pass_all"] = pass_vector
-                    # Not gated on idx == 0: the criteria columns can be absent
-                    # for the first design and present later, and reindex would
-                    # then drop the column for every design that had it.
-                    for col in (f"{seq_type}_pass", f"{seq_type}_pass_all"):
-                        if col not in all_columns:
-                            all_columns.append(col)
-
                 # Apo refolding (optional, gates nothing yet).
                 #
                 # Placed after the holo verdict so the two sit together on the
@@ -808,6 +791,33 @@ def compute_binder_metrics(
                 # Not an optimisation to skip: a 6B scorer costs ~15s per
                 # 140-residue sequence, so a resumed evaluation would repay hours
                 # of scoring while the folding it accompanies is free.
+                # Per-sequence verdict against the success criteria, positionally
+                # aligned with every other *_all column on this row, so
+                # {seq_type}_sequence_all[i] and its metrics and its refolded
+                # structure path all describe the sequence judged by
+                # {seq_type}_pass_all[i]. None when a criterion's column is
+                # missing -- unjudged, not failed.
+                #
+                # AFTER the apo block, not before it. The apo criterion is part of
+                # the gate (DEFAULT_PROTEIN_BINDER_THRESHOLDS), so its column has to
+                # exist on the row before the verdict is taken. Computing the verdict
+                # first meant one criterion's column was always absent, so
+                # per_sequence_pass returned None every time and no {seq_type}_pass
+                # column was ever written -- a whole run of correct apo numbers with
+                # no verdict beside them. The original order was chosen for how the
+                # row reads, which stopped being the only consideration the moment
+                # apo became a criterion rather than a decoration.
+                pass_vector = per_sequence_pass(row_dict, seq_type, success_thresholds)
+                if pass_vector is not None:
+                    row_dict[f"{seq_type}_pass"] = pass_vector[best_idx] if best_idx < len(pass_vector) else None
+                    row_dict[f"{seq_type}_pass_all"] = pass_vector
+                    # Not gated on idx == 0: the criteria columns can be absent
+                    # for the first design and present later, and reindex would
+                    # then drop the column for every design that had it.
+                    for col in (f"{seq_type}_pass", f"{seq_type}_pass_all"):
+                        if col not in all_columns:
+                            all_columns.append(col)
+
                 if cfg_metric.get("compute_esm_metrics", False) and ESM_AVAILABLE and seqs:
                     esm_model = cfg_metric.get("esm_model", "facebook/esm2_t33_650M_UR50D")
                     esm_df = compute_esm_ppl_for_sequences(
