@@ -274,6 +274,14 @@ campaign's choices as arguments.
 | `check_preflight.py` | applies config-aware gates to a preflight report | `--require-hf-repo`, `--min-vram-gb` |
 | `verify_run_outputs.py` | reconciles generated / retained / evaluated counts | `--shards`, `--trim-report`, `--require-column` |
 | `refresh_checksums.py` | hashes the package, skipping run output | none |
+| `run_campaign.sh` | the whole stage sequence, GPU pinning, env setup | reads `campaign.env` |
+| `campaign.sbatch` | one per run kind | SBATCH header + last line |
+| `campaign.env.example` | **every** campaign-specific value | this is the file you edit |
+
+`PACKAGE.md` in the same directory gives the canonical package layout. Start from it rather
+than inventing a shape: the templates assume `scripts/`, `campaign.env`, and Complexa's
+`rewards_<config>_<shard>.csv` / `filtered_out_samples/` conventions, and a package built to
+a different shape gets none of their benefit.
 
 They are exercised by `tests/test_campaign_templates.py`, which runs each one. That is the
 point: a template is copied verbatim into every future campaign, so a wrong one is worse than
@@ -285,9 +293,10 @@ Each carries the mistake it encodes a fix for. `trim_shards.py` counted designs 
 root alone and stopped a campaign whose generation had correctly skipped; `check_preflight.py`
 demanded ESMFold2 of every campaign; `verify_run_outputs.py` assumed exactly two shards.
 
-Still to write per campaign: `run_campaign.sh`, the `.sbatch` files, and target preparation
-(`prepare_*.py`) — the first two are close to generic and will be templated once a second
-campaign shows what actually varies; PDB prep is genuinely target-specific.
+Still authored per campaign: `pipeline.yaml`, `validate_resolved_config.py`,
+`capture_metadata.py`, and target preparation (`prepare_*.py`). PDB prep is genuinely
+target-specific; the other three are candidates for templating once a second campaign shows
+what actually varies.
 
 ### Where designs live, and why a script must not assume
 
