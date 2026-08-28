@@ -49,6 +49,25 @@ and campaign post-processing may group them further (`pre_filter_shard_trim/`,
 *and* `filtered_out_samples/` recursively. A step that runs before `filter` still sees
 *post*-filter state on a resumed run.
 
+## Environment contract with `pipeline.yaml`
+
+`run_campaign.sh` exports exactly these for the config to resolve against:
+
+| variable | meaning |
+|---|---|
+| `CAMPAIGN_DIR` | the package root — **use this in `pipeline.yaml`**, not a campaign-specific name |
+| `COMPLEXA_REPO` | the Complexa checkout |
+| `COMMUNITY_MODELS_PATH` | community models, also symlinked into the package |
+| everything from `env.sh` | `CKPT_PATH`, `DATA_PATH`, … |
+
+So a config refers to its own package as `${oc.env:CAMPAIGN_DIR}`. A package carried
+over from an older layout may name it something campaign-specific
+(`${oc.env:CBLN1_CAMPAIGN_DIR}`), which resolves to nothing and surfaces as an
+omegaconf `KeyError` several frames deep, *after* the checkpoint has loaded. The
+runner now checks every no-default `${oc.env:VAR}` in the config before anything
+expensive starts and names what is missing. `${oc.env:VAR,fallback}` is not required
+and is not checked.
+
 ## Stage contract
 
 `run_campaign.sh <smoke|production> [all|generate|filter|evaluate|analyze]`

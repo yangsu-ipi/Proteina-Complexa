@@ -50,6 +50,21 @@ RESOLVED="$CAMPAIGN_DIR/metadata/resolved_config_${KIND}.yaml"
 TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND}.json"
 OVERRIDES=("++run_name=$RUN_NAME" "++generation.dataloader.dataset.nres.nsamples=$SEEDS" "++generation.filter.filter_samples_limit=$EXPECT")
 
+# pipeline.yaml resolves ${oc.env:VAR} when Hydra loads it, and an unset one
+# surfaces as an omegaconf KeyError several frames deep, AFTER the checkpoint has
+# loaded. Checking here turns that into one line before anything expensive starts.
+# Only the no-default form is required; ${oc.env:VAR,fallback} is not.
+required_env=()
+while read -r var; do
+  [[ -z "$var" ]] || [[ -n "${!var:-}" ]] || required_env+=("$var")
+done < <(grep -oE '\$\{oc\.env:[A-Z_][A-Z0-9_]*\}' "$CONFIG" | sed 's/.*oc\.env://; s/}//' | sort -u)
+if ((${#required_env[@]})); then
+  echo "$CONFIG needs environment variables that are not set: ${required_env[*]}" >&2
+  echo "The package root is exported as CAMPAIGN_DIR; a config carried over from an" >&2
+  echo "older package may still name it something campaign-specific." >&2
+  exit 2
+fi
+
 python scripts/validate_resolved_config.py --config "$CONFIG" --expected-seeds "$SEEDS" --expected-generated "$RAW" \
   --output "$RESOLVED" --override "${OVERRIDES[@]}"
 python "$COMPLEXA_REPO/docs/binder-target-setup/scripts/check_target_pdb.py" \
