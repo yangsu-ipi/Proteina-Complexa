@@ -1586,6 +1586,13 @@ the gate is **not doing work**:
 Both scRMSD criteria are inert on this sample. All discrimination came from `i_pAE` and
 `pLDDT` — 5/7 `self` and 2/14 `mpnn` sequences passed all four.
 
+**Replicated on a cold run.** A second campaign run with a fresh `run_name` — no
+generation marker, no fold caches, every model loaded from scratch — reproduces it:
+apo median 0.64 Å, max 1.89 Å, and again **0 of 10** sequences at or above 2.0.
+Target-aligned RMSD keeps its spread (median 2.03, max 15.68 Å) against a
+binder-aligned metric that stays under 1.2. Across both runs that is 0 of 24
+sequences failing the apo gate.
+
 **The sample is not neutral, and this is the main caveat.** These designs were beam-searched
 against an AF2 `i_pAE` reward and then filtered, so they are selected for exactly the
 property the gate tests. A threshold's job is to reject the population a *campaign* produces,
