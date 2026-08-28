@@ -1569,3 +1569,40 @@ metric:
 | `metric.compute_refolded_structure_metrics` | `false` | Compute interface metrics on refolded structure |
 | `metric.keep_folding_outputs` | `true` | Retain intermediate folding output files |
 | `metric.designability_num_seq` | `8` | Number of MPNN sequences for monomer designability |
+
+## First measurement of the apo gate (CBLN1/5KC5, 2026-08-28)
+
+The 2.0 Å apo threshold was a convention, picked before any apo number existed. The first
+complete run with real ESMFold2 weights gives one target's worth of evidence, and it says
+the gate is **not doing work**:
+
+| metric | n | min | median | max | fail its gate |
+|---|---|---|---|---|---|
+| `apo_scRMSD_ca_esmfold2` (self) | 7 | 0.35 | 0.57 | 0.66 | 0/7 at 2.0 |
+| `apo_scRMSD_ca_esmfold2` (mpnn) | 14 | 0.32 | 0.69 | 1.63 | 0/14 at 2.0 |
+| `binder_scRMSD_ca` (self) | 7 | 0.27 | 0.38 | 0.42 | 0/7 at 1.5 |
+| `binder_scRMSD_ca` (mpnn) | 14 | 0.26 | 0.45 | 1.12 | 0/14 at 1.5 |
+
+Both scRMSD criteria are inert on this sample. All discrimination came from `i_pAE` and
+`pLDDT` — 5/7 `self` and 2/14 `mpnn` sequences passed all four.
+
+**The sample is not neutral, and this is the main caveat.** These designs were beam-searched
+against an AF2 `i_pAE` reward and then filtered, so they are selected for exactly the
+property the gate tests. A threshold's job is to reject the population a *campaign* produces,
+not the survivors of one. Read this as "2.0 Å does not bind among good designs", not as
+"2.0 Å is wrong" — the way to learn the latter is to compute apo scRMSD on unfiltered
+generation output, including the designs the reward already rejected.
+
+### Target-aligned binder RMSD earns its place
+
+Emitted and ungated, and the only criterion-shaped number here with real dynamic range:
+0.68–1.76 Å (self) and 0.85–**20.52** Å (mpnn), against a binder-aligned spread of 0.26–1.12.
+
+The extreme is corroborated rather than an artifact: the sequence at 20.52 Å target-aligned
+has `complex_scRMSD_ca` 11.04 while its binder-only RMSD is 1.12. The binder folds; it is in
+the wrong place. That is precisely the failure binder-aligned RMSD cannot see, and it is why
+this column exists.
+
+It is **not** yet an argument for gating on it. Every sequence with a large target-aligned
+RMSD here already failed on `i_pAE`, so on this sample the column adds diagnosis, not
+selection. Whether it catches anything `i_pAE` misses needs a set where the two disagree.
