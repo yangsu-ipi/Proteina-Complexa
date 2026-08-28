@@ -179,10 +179,25 @@ symptoms, none of which named memory except the first.
 the first configuration under which AF2's *real* footprint becomes observable,
 since preallocation has masked it in every run so far.
 
-The torch side is 18.99 GiB with ESMC 6B and ESMFold2 resident. Which of the two
-possible ESMC sizes that includes is still open — `esm_eval.py:542` calls
-`from_pretrained` without a `torch_dtype` while the code elsewhere says ESMC runs
-in bfloat16, a factor of two on a 6B model.
+That open question about ESMC's size is now answered, and it was the larger one.
+Loading it without a dtype materialised float32 — measured, not inferred, once the
+loader started reporting what it loads:
+
+```
+biohub/ESMC-6B: 6.35B parameters, torch.float32, 23.7 GiB of weights
+```
+
+`metric.esm_dtype` now defaults ESMC to bfloat16 (`resolve_esm_dtype`), which is
+what it is scored in either way, and the same line then read
+`torch.bfloat16, 11.8 GiB`. Twelve GiB back, and ESMFold2's advisory refolding went
+from `scored 0/1` to `scored 1/1` and `2/2` on the next run.
+
+That did not end it: torch then grew to 38.11 GiB — ESMFold2 taking the space it
+had previously been denied — leaving 443 MiB on the card, and the ProteinMPNN
+*subprocess* needs ~500 MiB for a CUDA context before it loads anything. Hence
+`release_gpu_for_subprocess` (`inverse_folding_models.py`), and hence the advice to
+treat 0.5 as a starting point rather than a resting place: three components share
+this card and only JAX's share is set by a number you choose.
 
 ### What retries on OOM, and what does not
 
