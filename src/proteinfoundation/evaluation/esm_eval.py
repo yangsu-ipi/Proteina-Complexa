@@ -456,6 +456,46 @@ def compute_pseudo_perplexity_batched(
 # =============================================================================
 
 
+def load_masked_lm(model_name: str, **kwargs):
+    """``AutoModelForMaskedLM.from_pretrained`` that keeps the checkpoint's dtype.
+
+    Without an explicit dtype, transformers materialises weights in float32 whatever
+    the checkpoint stores. For ESMC 6B that is ~24 GB of parameters where the
+    bfloat16 the model actually computes in needs ~12 GB -- and the evaluation
+    process shares its card with JAX, so the difference decides whether ESMFold2's
+    advisory refolding fits. On the CBLN1 smoke test it did not: torch held
+    38.85 GiB of live tensors and a 38 MiB allocation failed.
+
+    ``"auto"`` rather than a hardcoded bfloat16, so a checkpoint that genuinely is
+    float32 stays float32 and only the ones that declare a smaller dtype shrink.
+
+    The keyword was renamed ``torch_dtype`` -> ``dtype`` in transformers 4.56.
+    This repo's pyproject admits >=4.57,<6 and the Biohub fork pins 4.57.6, so both
+    spellings are in range; the new one is tried first and the old is the fallback.
+    """
+    # The module-level symbol, not a local import: it doubles as the ESM_AVAILABLE
+    # probe, and re-importing here would leave that import unused and removable.
+    try:
+        return AutoModelForMaskedLM.from_pretrained(model_name, dtype="auto", **kwargs)
+    except TypeError:
+        return AutoModelForMaskedLM.from_pretrained(model_name, torch_dtype="auto", **kwargs)
+
+
+def log_model_footprint(model, model_name: str) -> None:
+    """Say what was actually loaded, so a dtype surprise is visible on the next run.
+
+    Reading this off the model beats inferring it from an OOM message, which is how
+    it was found the first time.
+    """
+    try:
+        params = sum(p.numel() for p in model.parameters())
+        dtype = next(model.parameters()).dtype
+        gib = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024**3
+        logger.info(f"{model_name}: {params / 1e9:.2f}B parameters, {dtype}, {gib:.1f} GiB of weights")
+    except (StopIteration, RuntimeError) as exc:  # a meta-device or empty model
+        logger.debug(f"Could not measure {model_name} footprint: {exc}")
+
+
 def _resolve_esm_dir() -> str | None:
     """Resolve ESM_DIR as a direct local model path.
 
@@ -539,12 +579,9 @@ def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: 
                 cache_dir=loc,
                 local_files_only=True,
             )
-            model = AutoModelForMaskedLM.from_pretrained(
-                model_name,
-                cache_dir=loc,
-                local_files_only=True,
-            )
+            model = load_masked_lm(model_name, cache_dir=loc, local_files_only=True)
             logger.info(f"Loaded ESM model from {label} (offline)")
+            log_model_footprint(model, model_name)
             break
         except Exception:
             logger.debug(f"ESM model not found in {label}: {loc}")
@@ -571,7 +608,8 @@ def _load_hf_masked_lm(model_name: str, device: str, force_offline: bool, kind: 
         # If not forcing offline, download to cache_dir (not ESM_DIR)
         logger.info(f"Downloading ESM model from HuggingFace to {cache_dir}...")
         tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-        model = AutoModelForMaskedLM.from_pretrained(model_name, cache_dir=cache_dir)
+        model = load_masked_lm(model_name, cache_dir=cache_dir)
+        log_model_footprint(model, model_name)
 
     model = model.to(device)
     model.eval()
