@@ -270,8 +270,8 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:1566`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:1400`, called at `:1483`/`:1508`, plain
+  prediction in memory (`generate.py:1608`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:1442`, called at `:1525`/`:1550`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
@@ -561,7 +561,7 @@ python -m proteinfoundation.generate \
 inherit: the fan-out, and the `CUDA_VISIBLE_DEVICES = str(job_id)` pinning that would override
 SLURM's allocation. Nothing is lost — `generate.py` applies the atomworks patches and calls
 `load_dotenv()` at import, and `config_name` falls back to the `--config-name` stem
-(`generate.py:1415`), so `++base_config_name` is optional. Output lands in the task's own SLURM
+(`generate.py:1457`), so `++base_config_name` is optional. Output lands in the task's own SLURM
 log, which is what you wanted. One GPU per task comes from `--gres=gpu:1`; how many run at once
 is the array throttle (`%4`), not `gen_njobs`.
 

@@ -29,7 +29,7 @@ which raises `FileNotFoundError` from a module-level statement in
 `biotite`, `openfold`, and `torch` eagerly at module load, so those are all fine by the
 time you see this. `gen_dataset` is the **first lazily-imported module** in the run — it is
 pulled in only at `hydra.utils.instantiate(cfg_gen.dataloader)`
-(`src/proteinfoundation/generate.py:1539`) — and it drags in four modules nothing in
+(`src/proteinfoundation/generate.py:1581`) — and it drags in four modules nothing in
 `generate.py`'s eager graph touches:
 
 ```
@@ -225,10 +225,10 @@ evaluate config sets `compute_esm_metrics: true`
 (`configs/pipeline/binder/binder_evaluate.yaml:47`).
 
 **Do not just `mkdir` the directory.** `_resolve_esm_dir` tests only `os.path.isdir`
-(`evaluation/esm_eval.py:469-474`), so an empty directory resolves, becomes the *first*
-load location ahead of the HF cache (`:527-528`), and then `from_pretrained(...,
+(`evaluation/esm_eval.py:538-543`), so an empty directory resolves, becomes the *first*
+load location ahead of the HF cache (`:598-599`), and then `from_pretrained(...,
 local_files_only=True)` fails. With `force_offline=True` — the default on
-`compute_esm_ppl_for_sequences` (`:815-818`) — you get `RuntimeError: ESM model not found in
+`compute_esm_ppl_for_sequences` (`:887-890`) — you get `RuntimeError: ESM model not found in
 local paths` **partway through evaluation**, after generation has already spent the GPU
 time. Silencing the gate this way makes the failure later and more expensive. Gate on
 `community_models.ESM_DIR.has_weights` instead of `.exists`.
@@ -254,7 +254,7 @@ or skip the metric for this run:
 ```
 
 Do the download on a login node, not inside the job. Without a local copy,
-`_resolve_esm_dir()` returns `None` (`evaluation/esm_eval.py:459-475`) and the code falls
+`_resolve_esm_dir()` returns `None` (`evaluation/esm_eval.py:528-544`) and the code falls
 back to a HuggingFace fetch *during evaluation* — which needs network and possibly a token
 on the compute node, mid-run.
 
