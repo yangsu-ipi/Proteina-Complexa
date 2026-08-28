@@ -262,6 +262,31 @@ aborts rather than regenerating, because the directory names are deterministic a
 counters restart, so continuing would overwrite the earlier run's structures. Pick a new
 `generation.run_name` or clear the directory — the message says which.
 
+### Where designs live, and why a script must not assume
+
+Any script that counts, locates, trims or validates generated designs has to know this,
+and none of these skills used to say it:
+
+| stage | where a design is |
+|---|---|
+| after `generate` | `<root>/job_{job}_n_{n}_id_{i}[_tag]/` |
+| after `filter` | kept ones stay; the rest move to `<root>/filtered_out_samples/<name>/` |
+| after campaign post-processing | often grouped by reason, e.g. `filtered_out_samples/pre_filter_shard_trim/<name>/` |
+
+So **"not in the root" does not mean "gone"**, and a design can be one, two or more levels
+deep under `filtered_out_samples/`. Anything locating designs must search the root *and*
+`filtered_out_samples/` recursively — walk it once and index by directory name rather than
+searching per design.
+
+This bites hardest on a *resumed* run, and in a way that is easy to miss: a step that runs
+before `filter` still sees *post*-filter state the second time, because the previous run's
+filter already moved things. A per-shard trim step written against the root alone counted 2
+designs where 4 existed and stopped a campaign whose generation had correctly skipped.
+
+Complexa's own filter is **global** — top `filter_samples_limit` across all shards — so a
+campaign wanting a fixed count *per shard* has to add that itself. That is a legitimate gap
+to fill; fill it with the layout above in mind, and make it idempotent so re-running is free.
+
 That is a *changed config* only. **Do not put an output-directory-existence guard in a
 campaign runner or job script**: generation already distinguishes skip, clear-and-regenerate,
 and abort per shard, and a runner that refuses whenever the directory exists disables resume
