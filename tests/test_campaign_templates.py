@@ -15,6 +15,7 @@ the CBLN1 campaign:
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -183,3 +184,82 @@ def test_the_verifier_is_not_pinned_to_two_shards(tmp_path, shards, retained):
     assert "--shards says" not in r.stderr
     assert "unequal shard retention" not in r.stderr
     assert "retained" not in r.stderr or "expected" not in r.stderr
+
+
+# ----------------------------- the runner and its config must agree
+
+
+RUNNER = TEMPLATES / "run_campaign.sh"
+CONFIG_EXAMPLE = TEMPLATES / "campaign.env.example"
+
+
+def shell_vars(text):
+    """Variables a shell script reads, and the ones it assigns."""
+    read = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]{2,})\b", text))
+    # Anywhere on a line, not only at its start: the runner's `case` arms pack
+    # several assignments onto one line with semicolons, which is legitimate shell
+    # and invisible to a line-anchored pattern.
+    assigned = set(re.findall(r"(?:^|;|\s)(?:export\s+|local\s+)?([A-Z][A-Z0-9_]{2,})=", text, re.M))
+    return read, assigned
+
+
+def test_the_runner_reads_nothing_the_config_does_not_define():
+    """The load-bearing structural check. If the runner reads a variable that
+    campaign.env.example does not set, the next campaign discovers it by crashing
+    -- or worse, by an agent editing the template, which is what templating was
+    meant to stop."""
+    runner = RUNNER.read_text()
+    read, assigned = shell_vars(runner)
+    provided, _ = shell_vars(CONFIG_EXAMPLE.read_text())
+    _, config_sets = shell_vars(CONFIG_EXAMPLE.read_text())
+
+    environmental = {
+        "BASH_SOURCE",
+        "SLURM_JOB_ID",
+        "USER",
+        "HOME",
+        "PATH",
+        "KIND",
+        "STAGE",
+        "COMMUNITY_MODELS_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "XLA_PYTHON_CLIENT_MEM_FRACTION",
+        "CCD_MIRROR_PATH",
+        "PDB_MIRROR_PATH",
+    }
+    unresolved = read - assigned - config_sets - environmental
+    assert not unresolved, f"runner reads variables nothing defines: {sorted(unresolved)}"
+
+
+def test_the_config_example_is_valid_shell():
+    assert subprocess.run(["bash", "-n", str(CONFIG_EXAMPLE)]).returncode == 0
+
+
+@pytest.mark.parametrize("script", ["run_campaign.sh", "campaign.sbatch"])
+def test_shell_templates_parse(script):
+    assert subprocess.run(["bash", "-n", str(TEMPLATES / script)]).returncode == 0
+
+
+def test_the_runner_carries_no_campaign_identity():
+    """Everything specific lives in campaign.env. The provenance comment naming the
+    campaign that validated this is the one allowed exception, and it is a comment."""
+    for line in RUNNER.read_text().splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        assert not re.search(r"cbln1|5kc5|glud2", line, re.I), f"campaign identity leaked into: {line.strip()}"
+
+
+def test_the_runner_does_not_reintroduce_the_output_directory_guard():
+    """The single line that disabled resume, and which the documentation used to
+    ask for. It is easy to add back while 'tidying'."""
+    text = RUNNER.read_text()
+    live = "\n".join(x for x in text.splitlines() if not x.lstrip().startswith("#"))
+    assert "! -e " not in live, "an existence guard on the output directory disables resume"
+    assert "refusing to generate over" not in live
+
+
+def test_the_runner_pins_one_shard_per_gpu():
+    """Both shards on card 0 with the other idle, twice, on a real box."""
+    text = RUNNER.read_text()
+    assert 'CUDA_VISIBLE_DEVICES="$shard"' in text
+    assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in text, "JAX preallocates 75% of the card otherwise"
