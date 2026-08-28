@@ -263,3 +263,32 @@ def test_the_runner_pins_one_shard_per_gpu():
     text = RUNNER.read_text()
     assert 'CUDA_VISIBLE_DEVICES="$shard"' in text
     assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in text, "JAX preallocates 75% of the card otherwise"
+
+
+def source_config(**env):
+    """Source campaign.env.example under a given environment and report the result."""
+    probe = "; ".join(
+        f"echo {v}=${v}" for v in ("XLA_MEM_FRACTION_GENERATE", "XLA_MEM_FRACTION_EVALUATE", "MIN_VRAM_GB", "TASK_NAME")
+    )
+    r = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", f"source {CONFIG_EXAMPLE}; {probe}"],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "USER": "u", **env},
+    )
+    assert r.returncode == 0, r.stderr
+    return dict(line.split("=", 1) for line in r.stdout.strip().splitlines())
+
+
+def test_the_gpu_knobs_take_an_environment_override():
+    """So a fraction can be tried for one run without editing the file -- which is
+    exactly the experiment these numbers came from."""
+    assert source_config()["XLA_MEM_FRACTION_EVALUATE"] == "0.3"
+    assert source_config(XLA_MEM_FRACTION_EVALUATE="0.25")["XLA_MEM_FRACTION_EVALUATE"] == "0.25"
+    assert source_config(MIN_VRAM_GB="24")["MIN_VRAM_GB"] == "24"
+
+
+def test_identity_values_do_not_take_an_override():
+    """Overriding the task name from the environment would silently run a different
+    campaign against the same package, so those stay plain assignments."""
+    assert source_config(TASK_NAME="SOMETHING_ELSE")["TASK_NAME"] == "CBLN1_5KC5_GLUD2"
