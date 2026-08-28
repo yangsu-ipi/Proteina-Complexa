@@ -292,3 +292,29 @@ def test_identity_values_do_not_take_an_override():
     """Overriding the task name from the environment would silently run a different
     campaign against the same package, so those stay plain assignments."""
     assert source_config(TASK_NAME="SOMETHING_ELSE")["TASK_NAME"] == "CBLN1_5KC5_GLUD2"
+
+
+def test_the_runner_checks_the_configs_env_vars_before_spending_anything():
+    """An unset ${oc.env:VAR} used to surface as an omegaconf KeyError after the
+    checkpoint had loaded. This runs the template's own detection pipeline rather
+    than a copy of it, so the test cannot drift away from what ships."""
+    runner = RUNNER.read_text()
+    m = re.search(r"< <\((grep -oE .*?\| sort -u)\)", runner, re.S)
+    assert m, "the env-var scan is missing from run_campaign.sh"
+
+    probe = Path(__file__).parent / "_probe.yaml"
+    probe.write_text(
+        "root: ${oc.env:LEGACY_CAMPAIGN_DIR}\nok:   ${oc.env:HOME}\ndef:  ${oc.env:HAS_DEFAULT,/fallback}\n"
+    )
+    try:
+        script = f'''set -euo pipefail
+CONFIG="{probe}"
+required_env=()
+while read -r var; do [[ -z "$var" ]] || [[ -n "${{!var:-}}" ]] || required_env+=("$var"); done < <({m.group(1)})
+echo "${{required_env[*]:-}}"'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        named = r.stdout.split()
+        assert named == ["LEGACY_CAMPAIGN_DIR"], f"expected only the unset no-default var, got {named}"
+    finally:
+        probe.unlink(missing_ok=True)
