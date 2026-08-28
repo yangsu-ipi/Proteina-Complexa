@@ -50,6 +50,20 @@ RESOLVED="$CAMPAIGN_DIR/metadata/resolved_config_${KIND}.yaml"
 TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND}.json"
 OVERRIDES=("++run_name=$RUN_NAME" "++generation.dataloader.dataset.nres.nsamples=$SEEDS" "++generation.filter.filter_samples_limit=$EXPECT")
 
+# Campaign-specific preparation, before anything validates or resolves: MSA
+# building, target extraction, whatever this package needs. Declared in
+# campaign.env so the runner needs no knowledge of what they are. Dropping this
+# hook is how the first template lost the original's prepare_target_msa.py step --
+# a retrofit did not notice, because its MSA already existed, and a fresh campaign
+# would have discovered it much later.
+if [[ ${PREPARE_STEPS+set} == set ]] && ((${#PREPARE_STEPS[@]})); then
+  for step in "${PREPARE_STEPS[@]}"; do
+    echo "prepare: $step"
+    # shellcheck disable=SC2086
+    python $step
+  done
+fi
+
 # pipeline.yaml resolves ${oc.env:VAR} when Hydra loads it, and an unset one
 # surfaces as an omegaconf KeyError several frames deep, AFTER the checkpoint has
 # loaded. Checking here turns that into one line before anything expensive starts.
