@@ -63,16 +63,16 @@ python scripts/check_preflight.py "metadata/preflight_${KIND}.json" --resolved-c
 # does not isolate where GRES cgroups are unenforced: both steps then report
 # CUDA_VISIBLE_DEVICES [0,1], pick device 0, and fight over one card.
 run_gpu_stage() {
-  local module=$1 shard=$2
+  local module=$1 shard=$2 fraction=$3
   srun --exclusive --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 \
-    env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_MEM_FRACTION="$XLA_MEM_FRACTION" \
+    env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_MEM_FRACTION="$fraction" \
     python -m "$module" --config-path "$CAMPAIGN_DIR" --config-name "$CONFIG_NAME" \
     "++job_id=$shard" "++base_config_name=$CONFIG_NAME" "${OVERRIDES[@]}"
 }
 
 all_shards() {
-  local module=$1 pids=()
-  for ((s = 0; s < SHARDS; s++)); do run_gpu_stage "$module" "$s" & pids+=($!); done
+  local module=$1 fraction=$2 pids=()
+  for ((s = 0; s < SHARDS; s++)); do run_gpu_stage "$module" "$s" "$fraction" & pids+=($!); done
   for pid in "${pids[@]}"; do wait "$pid"; done
 }
 
@@ -80,7 +80,7 @@ all_shards() {
 # clear-and-regenerate and abort per shard; a guard that refuses whenever the
 # directory exists disables resume for the case resume is for.
 if [[ "$STAGE" == all || "$STAGE" == generate ]]; then
-  all_shards proteinfoundation.generate
+  all_shards proteinfoundation.generate "$XLA_MEM_FRACTION_GENERATE"
   python scripts/trim_shards.py --inference-dir "$INF" --per-shard "$KEEP" --shards "$SHARDS" --output "$TRIM"
 fi
 if [[ "$STAGE" == all || "$STAGE" == filter ]]; then
@@ -89,7 +89,7 @@ if [[ "$STAGE" == all || "$STAGE" == filter ]]; then
 fi
 if [[ "$STAGE" == all || "$STAGE" == evaluate ]]; then
   [[ -d "$INF" ]] || { echo "missing $INF" >&2; exit 2; }
-  all_shards proteinfoundation.evaluate
+  all_shards proteinfoundation.evaluate "$XLA_MEM_FRACTION_EVALUATE"
 fi
 if [[ "$STAGE" == all || "$STAGE" == analyze ]]; then
   python -m proteinfoundation.analyze --config-path "$CAMPAIGN_DIR" --config-name "$CONFIG_NAME" \

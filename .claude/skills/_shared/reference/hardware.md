@@ -174,10 +174,23 @@ advisory numbers at all**; then SolubleMPNN, which runs as a *subprocess* and
 needs its own CUDA context on the same card, could not start. One cause, three
 symptoms, none of which named memory except the first.
 
-`0.5` is a reasonable starting fraction for evaluation: JAX gets ~40 GB, leaving
-~40 for the ~19 GB of torch weights plus room for the MPNN subprocess. It is also
-the first configuration under which AF2's *real* footprint becomes observable,
-since preallocation has masked it in every run so far.
+**Use a different fraction per stage.** Both stages run JAX, and their profiles are
+opposite:
+
+| stage | torch peak (measured) | JAX role | fraction |
+|---|---|---|---|
+| generation | 3.12 GiB (diffusion model) | AF2 reward — dominant consumer | **0.7** |
+| evaluation | 38.11 GiB (ESMC + ESMFold2) | colabdesign refolding — smaller | **0.3** |
+
+`0.5` everywhere is the compromise that fails at both ends. In evaluation it left
+443 MiB free against the ~500 MiB the ProteinMPNN *subprocess* needs for a CUDA
+context, so MPNN could not start; 0.3 gives torch ~55 GB against its measured 38
+and was the configuration that first completed. In generation the constraint runs
+the other way — torch wants 3 GiB, so JAX may have most of the card.
+
+Figures are 2×A100 80 GB. On a smaller card lower both and lower
+`generation.dataloader.batch_size`, which `hardware.md` already names as the
+biggest lever.
 
 That open question about ESMC's size is now answered, and it was the larger one.
 Loading it without a dtype materialised float32 — measured, not inferred, once the
