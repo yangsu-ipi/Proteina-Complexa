@@ -73,45 +73,82 @@ METRIC_CASE_MAPPING = {
 # }
 
 # Default protein binder success thresholds (AlphaProteo criteria)
+# Keys are NAMES; the column suffix is the `metric` field. Two criteria that differ
+# only by prefix -- binder and complex scRMSD_ca -- cannot both exist while the key
+# doubles as the suffix, because Python keeps whichever literal came last with no
+# error at all. Every entry states its metric, so nothing here depends on the key.
+# (The ligand and motif dicts still use the implicit form; threshold_column falls
+# back to the key for them.)
 DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
-    "i_pAE": {
+    "complex_i_pAE": {
         "threshold": 7.0,
         "op": "<=",
         "scale": 31.0,  # ipae * 31 <= 7
         "column_prefix": "complex",
+        "metric": "i_pAE",
     },
-    "pLDDT": {
+    "complex_pLDDT": {
         "threshold": 0.9,
         "op": ">=",
         "scale": 1.0,
         "column_prefix": "complex",
+        "metric": "pLDDT",
     },
-    "scRMSD_ca": {
+    "binder_scRMSD_ca": {
         "threshold": 1.5,
         "op": "<",
         "scale": 1.0,
         "column_prefix": "binder",
+        "metric": "scRMSD_ca",
     },
     # Apo: the same sequence folded WITHOUT its target. BoltzGen reports that
     # requiring a binder to fold as designed both with and without the target
     # improves experimental success, and the holo criteria above cannot see it.
     #
-    # 2.0 A follows the monomer scRMSD convention rather than a measured
-    # distribution -- scRMSD is geometric, so the number transfers in principle,
-    # but no run has produced the apo distribution for binders. Expect to revisit
-    # it once one has.
+    # 2.0 A was a convention when written. It is now measured: on 340 production
+    # designs it rejects ~50% of sequences and is the most selective criterion in
+    # the gate (docs/EVALUATION_METRICS.md). The smoke test said the opposite only
+    # because it measured designs a reward had already selected.
     #
-    # Requires metric.compute_apo_metrics. The ``{model}`` placeholder is expanded
-    # against the apo columns a run actually produced, so one criterion covers
-    # whatever apo_folding_models asks for: [esmfold] gates the esmfold column,
-    # [esmfold2] the esmfold2 one, and [esmfold, esmfold2] gates BOTH -- the
-    # binder must fold apo under every predictor asked, which composes the same
-    # way the three holo criteria do. See expand_model_criteria.
-    "scRMSD_ca_{model}": {
+    # The {model} placeholder lives in the METRIC, because the emitted columns are
+    # per-model -- {seq}_apo_scRMSD_ca_esmfold2_all, with no unsuffixed form. It is
+    # expanded against the columns a run produced, so one criterion covers whatever
+    # apo_folding_models asks for, and [esmfold, esmfold2] gates BOTH.
+    "apo_scRMSD_ca": {
         "threshold": 2.0,
         "op": "<",
         "scale": 1.0,
         "column_prefix": "apo",
+        "metric": "scRMSD_ca_{model}",
+    },
+    # Placement, not fold. Both catch designs that fold correctly and sit somewhere
+    # other than the interface they were designed for -- invisible to
+    # binder_scRMSD_ca, which aligns on the binder and so cannot see where it went.
+    #
+    # Measured on the same 340 designs: five sequences across four designs passed
+    # all four criteria above while sitting 11-27 A from their designed placement,
+    # with i_pAE as good as 4.84 scaled, so no tightening of the existing gate
+    # reaches them.
+    #
+    # complex_scRMSD_ca at 2.0 removes exactly those five and nothing else --
+    # well-placed passers top out at 1.54. target_aligned at 2.0 is stricter: it
+    # also drops sequences 2-5 A off, about 9% of passers. Both are kept because
+    # they fail differently as targets change -- complex RMSD dilutes a binder
+    # displacement across the stationary target residues (a 27 A shift reads as
+    # 11 A here, with 136 target vs 59 binder), while target_aligned does not.
+    "complex_scRMSD_ca": {
+        "threshold": 2.0,
+        "op": "<",
+        "scale": 1.0,
+        "column_prefix": "complex",
+        "metric": "scRMSD_ca",
+    },
+    "binder_scRMSD_target_aligned_ca": {
+        "threshold": 2.0,
+        "op": "<",
+        "scale": 1.0,
+        "column_prefix": "binder",
+        "metric": "scRMSD_target_aligned_ca",
     },
 }
 
@@ -193,6 +230,25 @@ def build_column_name(seq_type: str, column_prefix: str, metric_suffix: str) -> 
     return f"{seq_type}_{column_prefix}_{metric_suffix}_all"
 
 
+def threshold_column(seq_type: str, metric_name: str, spec: dict) -> str:
+    """The column a criterion reads.
+
+    A criterion's key doubles as the column suffix unless the spec says otherwise.
+    That default is why ``binder`` and ``complex`` ``scRMSD_ca`` could not both
+    exist: one key, and Python keeps whichever literal came last -- no error, and
+    the only symptom a pass rate that moved for no stated reason.
+
+    ``metric`` frees the key to be a name. The protein-binder defaults now state it
+    on every entry, so nothing there depends on the key at all; the ligand and
+    motif dicts still use the implicit form, which is why the fallback stays.
+    """
+    return build_column_name(
+        seq_type,
+        spec.get("column_prefix", "complex"),
+        spec.get("metric") or metric_name,
+    )
+
+
 MODEL_PLACEHOLDER = "{model}"
 
 
@@ -221,12 +277,32 @@ def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) ->
     columns = set(available_columns)
     out: dict = {}
     for name, spec in thresholds.items():
-        if MODEL_PLACEHOLDER not in name:
+        parsed = parse_threshold_spec(spec)
+        # The placeholder lives wherever the column suffix comes from -- the
+        # `metric` field when a spec sets one, the key otherwise. Partitioning the
+        # key unconditionally would leave `apo_scRMSD_ca` with
+        # `metric: scRMSD_ca_{model}` unexpanded, gating a column no run emits,
+        # which per_sequence_pass turns into no verdict at all.
+        effective = parsed.get("metric") or name
+        if MODEL_PLACEHOLDER not in effective:
+            # The guard: a criterion naming a column this run did not emit does not
+            # weaken the gate, it removes it -- per_sequence_pass returns None and
+            # no verdict is produced for any sequence. This is the only place with
+            # both the criteria and the actual columns, so it is where that gets
+            # said. Kept non-fatal and kept in the set, matching how an unmatched
+            # {model} criterion is handled below: naming a missing column reads
+            # downstream as "cannot judge", which is the honest outcome.
+            col = build_column_name(seq_type, parsed.get("column_prefix", "complex"), effective)
+            if col not in columns:
+                logger.error(
+                    f"Criterion '{name}' reads column '{col}', which this run did not produce, so no "
+                    f"pass verdict will be emitted for '{seq_type}'. Enable the metric that produces "
+                    f"it, or override aggregation.success_thresholds to drop the criterion."
+                )
             out[name] = spec
             continue
-        parsed = parse_threshold_spec(spec)
         prefix = parsed.get("column_prefix", "complex")
-        head, _, tail = name.partition(MODEL_PLACEHOLDER)
+        head, _, tail = effective.partition(MODEL_PLACEHOLDER)
         lead = build_column_name(seq_type, prefix, head)[: -len("_all")]
         models = sorted(
             col[len(lead) : -len(tail + "_all")] if tail else col[len(lead) : -len("_all")]
@@ -248,7 +324,11 @@ def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) ->
             out[name] = spec
             continue
         for model in models:
-            out[f"{head}{model}{tail}"] = spec
+            # The expanded METRIC has to travel with the expanded key, or the
+            # consumer resolves the column from a spec still holding "{model}".
+            # Keyed by criterion-and-model so the four apo columns of a two-model
+            # run stay distinguishable in logs and in the emitted criteria JSON.
+            out[f"{name}_{model}"] = {**parsed, "metric": f"{head}{model}{tail}"}
     return out
 
 
