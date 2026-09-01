@@ -1570,7 +1570,54 @@ metric:
 | `metric.keep_folding_outputs` | `true` | Retain intermediate folding output files |
 | `metric.designability_num_seq` | `8` | Number of MPNN sequences for monomer designability |
 
-## First measurement of the apo gate (CBLN1/5KC5, 2026-08-28)
+## The apo gate at production scale (CBLN1/5KC5, 340 designs, 2026-08-31)
+
+**This supersedes the smoke-test section below, and reverses its conclusion.** The
+2.0 Å apo threshold is not loose. It is the single most selective criterion in the
+gate:
+
+| metric | n | p50 | p90 | p99 | max | fails its gate |
+|---|---|---|---|---|---|---|
+| `apo_scRMSD_ca_esmfold2` self | 340 | 2.79 | 13.57 | 22.76 | 30.63 | **54.7 %** at 2.0 |
+| `apo_scRMSD_ca_esmfold2` mpnn | 680 | 1.98 | 12.17 | 21.20 | 26.52 | **49.6 %** at 2.0 |
+| `binder_scRMSD_ca` self | 340 | 0.49 | 1.25 | 6.92 | 8.51 | 7.4 % at 1.5 |
+| `binder_scRMSD_ca` mpnn | 680 | 0.60 | 4.44 | 9.54 | 12.99 | 21.9 % at 1.5 |
+
+Overall: 28.5 % of `self` sequences and 14.4 % of `mpnn` sequences pass all four
+criteria.
+
+### Why the smoke test said the opposite
+
+Not scale — *selection*. The smoke run kept 4 of 8 designs per shard and 8 of 16
+overall, so every design it measured was a top-half survivor of an AF2 `i_pAE`
+reward. Production keeps 250 of 256 per shard, 97.7 %, which is very nearly the
+raw generator output. Measuring a gate on the designs a reward already approved
+tells you what the survivors look like, not what the gate rejects.
+
+That is exactly the caveat recorded with the smoke measurement, including the
+remedy — "compute apo scRMSD on unfiltered generation output, including the
+designs the reward already rejected." Keep the caveat in mind for any threshold
+read off a filtered set; the error was a factor of fifty in reject rate.
+
+### Target-aligned RMSD, at scale
+
+| metric | n | p50 | p90 | max | ≥ 5 Å |
+|---|---|---|---|---|---|
+| `binder_scRMSD_target_aligned_ca` self | 340 | 1.29 | 5.10 | 25.63 | 10.0 % |
+| `binder_scRMSD_target_aligned_ca` mpnn | 680 | **7.96** | **39.48** | 49.78 | **52.1 %** |
+
+The fold-versus-placement split is now unmissable. Redesigned (`mpnn`) sequences
+fold about as well as designed ones — holo p50 0.60 Å against 0.49 — while sitting
+a median 8 Å from their designed placement, and more than half sit beyond 5 Å.
+Binder-aligned RMSD cannot see any of that.
+
+This is the case for gating on it that the smoke test could not make: there, every
+large target-aligned value had already failed `i_pAE`, so the column added
+diagnosis and not selection. At 680 sequences that is worth re-testing directly —
+how many designs pass all four criteria *and* place badly — before choosing a
+threshold.
+
+## First measurement of the apo gate (CBLN1/5KC5, 2026-08-28) — superseded, see above
 
 The 2.0 Å apo threshold was a convention, picked before any apo number existed. The first
 complete run with real ESMFold2 weights gives one target's worth of evidence, and it says
