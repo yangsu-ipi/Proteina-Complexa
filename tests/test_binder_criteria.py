@@ -386,3 +386,62 @@ def test_a_criterion_naming_a_column_the_run_lacks_is_reported(caplog):
     with caplog.at_level(logging.ERROR):
         out = expand_model_criteria(thresholds, "mpnn", ["mpnn_complex_i_pAE_all"])
     assert "complex_scRMSD_ca" in out, "kept, so the gate reads as unjudged rather than shrinking silently"
+
+
+# ------------------------- verdicts are derived where thresholds are applied
+
+
+def verdict_frame():
+    """Two designs, two sequences each: one well placed, one 20 A off."""
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "mpnn_complex_i_pAE_all": [0.1, 0.1],
+                "mpnn_complex_pLDDT_all": [0.95, 0.95],
+                "mpnn_binder_scRMSD_ca_all": [0.5, 0.5],
+                "mpnn_apo_scRMSD_ca_esmfold2_all": [0.5, 0.5],
+                "mpnn_complex_scRMSD_ca_all": [0.5, 11.0],
+                "mpnn_binder_scRMSD_target_aligned_ca_all": [0.5, 20.0],
+                "mpnn_best_idx": 0,
+                # what evaluate froze in under a gate that could not see placement
+                "mpnn_pass_all": [1, 1],
+                "mpnn_pass": 1,
+            }
+        ]
+    )
+
+
+def test_analyze_rederives_verdicts_that_thresholds_have_outdated():
+    """The whole point: a threshold change changes no metric, so re-running
+    evaluate to refresh a verdict spends hours recomputing a comparison."""
+    from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    df = refresh_per_sequence_verdicts(verdict_frame(), ["mpnn"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    assert df["mpnn_pass_all"].iloc[0] == [1, 0], "the misplaced sequence is no longer a pass"
+    assert df["mpnn_pass"].iloc[0] == 1, "the headline follows best_idx, which is the well-placed one"
+
+
+def test_a_refresh_it_cannot_make_leaves_the_old_verdict_alone():
+    """A missing criterion column means 'cannot judge'. Overwriting a verdict an
+    earlier stage could make with one this stage cannot would lose information
+    rather than refresh it."""
+    from loguru import logger
+
+    from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    # A loguru sink, not caplog: this codebase logs through loguru, which does not
+    # route to the stdlib logging module, so caplog silently captures nothing and
+    # an assertion on it passes or fails for the wrong reason.
+    said = []
+    sink = logger.add(said.append, level="ERROR")
+    try:
+        df = verdict_frame().drop(columns=["mpnn_apo_scRMSD_ca_esmfold2_all"])
+        out = refresh_per_sequence_verdicts(df, ["mpnn"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    finally:
+        logger.remove(sink)
+    assert out["mpnn_pass_all"].iloc[0] == [1, 1], "left as it was"
+    assert any("Not refreshing" in m for m in said), "and said so: the columns now predate the thresholds"

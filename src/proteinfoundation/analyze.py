@@ -3043,6 +3043,24 @@ def main(cfg: DictConfig) -> None:
     # Add sequence columns by extracting from PDB files
     combined_df = add_sequence_columns(combined_df, result_type)
 
+    # Verdicts are derived, so they are derived here -- where the thresholds are
+    # applied -- rather than trusted from whatever evaluate froze into the row.
+    # Changing a threshold changes no metric, so re-running evaluate to refresh a
+    # verdict costs hours to recompute a comparison; this costs microseconds and
+    # keeps the per-row columns agreeing with the pass rates below them.
+    if result_type in ("protein_binder", "ligand_binder"):
+        from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
+        from proteinfoundation.result_analysis.binder_analysis_utils import get_thresholds_for_result_type
+
+        combined_df = refresh_per_sequence_verdicts(
+            combined_df,
+            list(cfg_aggregation.get("sequence_types", ["self", "mpnn"])),
+            get_thresholds_for_result_type(
+                cfg_aggregation.get("success_thresholds"),
+                is_ligand_binder=result_type == "ligand_binder",
+            ),
+        )
+
     # Save combined results
     combined_csv_filename = f"RAW_{result_type}_results_{config_name}_combined.csv"
     combined_csv_path = os.path.join(results_dir, combined_csv_filename)
