@@ -150,8 +150,8 @@ For an irregular set of `(key1, key2)` pairs (not a full cartesian product), the
 Step 6 of the skill from two real per-config outputs:
 
 - `./evaluation_results/eval_{idx}_{run_name}_{pipeline_run_name}/RAW_{result_type}_results_{config_name}_combined.csv`
-  (`analyze.py:3047`) — one row per generated sample.
-- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:648`, moved there by
+  (`analyze.py:3065`) — one row per generated sample.
+- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:697`, moved there by
   `organize_results`, `analyze.py:2803-2881`) — the pre-computed pass rates.
 
 No emitted file is named `results_*.csv`; the per-job files are
@@ -172,10 +172,10 @@ No emitted file is named `results_*.csv`; the per-job files are
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column
 **prefix**; pick the one the sweep actually requested. The `_all` suffix marks the per-redesign
-list columns that the threshold filter reads (`binder_analysis_utils.py:182-193`).
+list columns that the threshold filter reads (`binder_analysis_utils.py:219-230`).
 
 Ranking:
 
 - **Best by success** = argmax `success_rate`; tie-break on `mean_i_pae` ascending.
 - **Pareto frontier** on (`wall_clock_min`, `success_rate`): a config is on the frontier iff no other config has both lower wall-clock AND higher success rate. Implement with a sort + linear sweep.
-- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:411-412`) and left an unscaled `i_pAE` comparison that everything passes.
+- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:460-461`) and left an unscaled `i_pAE` comparison that everything passes.

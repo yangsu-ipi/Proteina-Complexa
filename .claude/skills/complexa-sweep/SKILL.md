@@ -187,8 +187,8 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 | File | Written by | Notes |
 |---|---|---|
 | `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:899`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:871`), `motif_results_*` (`:922`), `motif_binder_results_*` (`:948`) |
-| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3047`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
-| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:648`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
+| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3065`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
+| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:697`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
 The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:576, :593`), with one column *prefix* per requested `metric.sequence_types` value:
 
@@ -198,7 +198,7 @@ The combined CSV has **one row per generated sample** (`id_gen`, an enumerate in
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
 | `{seq}_sequence` | the binder sequence (`binder_eval.py:704`) |
-| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:182-193`) |
+| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:219-230`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.
 
