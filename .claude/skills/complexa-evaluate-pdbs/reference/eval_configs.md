@@ -79,9 +79,13 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 - `aggregation.analysis_modes` — default `[binder, monomer]` for binder result types.
 - `aggregation.success_thresholds` — `null` (defaults) or a dict of `{metric: {threshold, op, scale, column_prefix}}` entries.
 - Built-in defaults:
-  - `protein_binder`: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`
-    (four criteria — the apo one needs `metric.compute_apo_metrics`, on by default;
-    see `esm_esmfold2.md` for why turning it off removes gating rather than weakening it).
+  - `protein_binder`: six criteria — `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`,
+    `binder scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`, `complex scRMSD_ca < 2.0`,
+    `binder scRMSD_target_aligned_ca < 2.0`. The apo one needs
+    `metric.compute_apo_metrics`, on by default; see `esm_esmfold2.md` for why turning
+    it off removes gating rather than weakening it. The last two gate *placement*: a
+    binder can fold to 0.5 Å and sit 27 Å from its designed interface, which every
+    other criterion passes.
   - `ligand_binder`: `min_ipAE * 31 < 2.0`, `scRMSD_ca < 2.0`, `ligand_scRMSD_aligned_allatom < 5.0`.
 - Monomer-mode thresholds (when `[monomer]` is in `analysis_modes`):
   - `aggregation.designability_thresholds` — `{mode: {model: {threshold, op}}}`; default 2.0 Å.
