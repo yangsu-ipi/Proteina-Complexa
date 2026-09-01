@@ -1611,11 +1611,51 @@ fold about as well as designed ones — holo p50 0.60 Å against 0.49 — while 
 a median 8 Å from their designed placement, and more than half sit beyond 5 Å.
 Binder-aligned RMSD cannot see any of that.
 
-This is the case for gating on it that the smoke test could not make: there, every
-large target-aligned value had already failed `i_pAE`, so the column added
-diagnosis and not selection. At 680 sequences that is worth re-testing directly —
-how many designs pass all four criteria *and* place badly — before choosing a
-threshold.
+### How many pass all four and still place badly
+
+Measured. **Five sequences, across four designs** — and the existing gate is
+otherwise very good at this:
+
+| | passers | p50 | p90 | max |
+|---|---|---|---|---|
+| target-aligned among passing `self` | 97 | 1.11 | 1.96 | 22.64 |
+| target-aligned among passing `mpnn` | 98 | 1.14 | 2.02 | 27.51 |
+| target-aligned among *failing* `mpnn` | 582 | 13.14 | 40.44 | 49.78 |
+
+So the four criteria already reject nearly everything misplaced. The escapees are
+real, though, and not marginal on any existing axis. Design 110's two sequences
+fold to 0.40–0.54 Å, fold *apo* to 0.43–0.48, score i_pAE 6.6–6.7 scaled (gate
+≤7.0) and pLDDT 0.90 (gate ≥0.9) — while sitting 26–28 Å from their designed
+placement. Tightening `i_pAE` would not catch them: the five sit at 4.84, 5.39,
+6.14, 6.57 and 6.70 scaled, so two clear the gate comfortably.
+
+### The criterion to add is one we already compute
+
+`complex_scRMSD_ca` separates them perfectly, with a margin nothing else offers:
+
+| | well-placed passers, max | the misplaced passers |
+|---|---|---|
+| `self` | 1.54 | 4.6, 11.4 |
+| `mpnn` | 0.99 | 7.6, 11.2, 11.6 |
+
+A `complex_scRMSD_ca < 2.0` criterion removes all five with **zero** false
+rejections among the 195 currently-passing sequences. It needs no new metric and
+no code — it is a threshold entry beside the other four.
+
+That is the honest recommendation even though `binder_scRMSD_target_aligned_ca`
+was added for exactly this job. The two measure the same failure here: the target
+is rigid and identical every run, so complex RMSD is binder displacement diluted
+by the 136 stationary target residues (a 27 Å binder shift shows as ~11 Å). Target-
+aligned is ~2.4× more sensitive for that reason, and it will stay sensitive as
+targets grow while complex RMSD dilutes further — but at this target the existing
+column already separates by 3×, so sensitivity is not the binding constraint.
+
+Keep target-aligned as the diagnostic: it is what distinguishes "folded wrong"
+from "folded right, placed wrong", which is the reading `complex_scRMSD_ca` cannot
+give on its own.
+
+**Not yet applied.** Adding a fifth criterion changes every pass rate in the
+campaign; that is a call to make deliberately, not as a side effect of measuring.
 
 ## First measurement of the apo gate (CBLN1/5KC5, 2026-08-28) — superseded, see above
 
