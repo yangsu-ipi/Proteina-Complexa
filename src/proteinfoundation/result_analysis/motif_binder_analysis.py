@@ -35,7 +35,7 @@ from proteinfoundation.result_analysis.analysis_utils import (
     parse_threshold_spec,
     save_filtered_csv,
 )
-from proteinfoundation.result_analysis.binder_analysis_utils import build_column_name
+from proteinfoundation.result_analysis.binder_analysis_utils import build_column_name, threshold_column
 from proteinfoundation.result_analysis.motif_binder_analysis_utils import (
     check_redesign_passes_binder_and_motif,
     check_sample_has_passing_redesign,
@@ -191,7 +191,7 @@ def compute_motif_binder_pass_rate(
     for seq_type in SEQUENCE_TYPES:
         parsed_binder, resolved_motif = parse_motif_binder_success(success_thresholds, seq_type)
         for metric_name, spec in parsed_binder.items():
-            col = build_column_name(seq_type, spec["column_prefix"], metric_name)
+            col = threshold_column(seq_type, metric_name, spec)
             all_columns.add(col)
         for criterion in resolved_motif:
             all_columns.add(criterion["column"])
@@ -514,7 +514,7 @@ def _build_binder_column_mapping(
     mapping = {}
     available = set(available_columns)
     for metric_name, spec in parsed_binder.items():
-        col = build_column_name(seq_type, spec["column_prefix"], metric_name)
+        col = threshold_column(seq_type, metric_name, spec)
         if col in available:
             mapping[metric_name] = col
         else:

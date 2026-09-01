@@ -472,15 +472,21 @@ def check_thresholds_are_computable(
     """
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
 
-    apo_criteria = [
-        name for name, spec in thresholds.items() if parse_threshold_spec(spec).get("column_prefix") == "apo"
-    ]
+    # By metric, not by key: the key is a name now, so `apo_scRMSD_ca` carries its
+    # `{model}` placeholder in `metric`. Reading the key would see no placeholder,
+    # fall through to the exact-match branch, and report a perfectly good criterion
+    # as unsatisfiable.
+    apo_criteria = {
+        (parse_threshold_spec(spec).get("metric") or name): name
+        for name, spec in thresholds.items()
+        if parse_threshold_spec(spec).get("column_prefix") == "apo"
+    }
     if not apo_criteria:
         return
 
     if not compute_apo:
         logger.error(
-            f"Success criteria include apo metric(s) {apo_criteria} but metric.compute_apo_metrics is "
+            f"Success criteria include apo metric(s) {sorted(apo_criteria.values())} but metric.compute_apo_metrics is "
             f"false, so those columns will not exist. No pass verdicts or pass rates will be produced "
             f"for any sequence type. Either set metric.compute_apo_metrics=true, or override "
             f"aggregation.success_thresholds to the criteria this run can actually evaluate."
@@ -497,12 +503,12 @@ def check_thresholds_are_computable(
     # only half that can make it unsatisfiable.
     modes = set(apo_rmsd_modes or [])
     unmatched = []
-    for name in apo_criteria:
-        if MODEL_PLACEHOLDER in name:
-            mode = name.partition(MODEL_PLACEHOLDER)[0].removeprefix("scRMSD_").rstrip("_")
+    for metric, name in apo_criteria.items():
+        if MODEL_PLACEHOLDER in metric:
+            mode = metric.partition(MODEL_PLACEHOLDER)[0].removeprefix("scRMSD_").rstrip("_")
             if mode not in modes:
                 unmatched.append(name)
-        elif name not in produced:
+        elif metric not in produced:
             unmatched.append(name)
     if unmatched:
         logger.error(
@@ -539,11 +545,13 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
     # {model}-templated criteria stand for "every apo model this run produced",
     # so they are expanded against this row's columns before anything is built.
     thresholds = expand_model_criteria(thresholds, seq_type, row_dict.keys())
+    from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
+
     parsed = {name: parse_threshold_spec(spec) for name, spec in thresholds.items()}
 
     metric_values = {}
     for metric_name, spec in parsed.items():
-        col = build_column_name(seq_type, spec["column_prefix"], metric_name)
+        col = threshold_column(seq_type, metric_name, spec)
         if col not in row_dict:
             logger.debug(f"No pass verdict for '{seq_type}': criterion '{metric_name}' needs missing column {col}")
             return None

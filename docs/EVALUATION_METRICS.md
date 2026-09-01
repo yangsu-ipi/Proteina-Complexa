@@ -1654,8 +1654,28 @@ Keep target-aligned as the diagnostic: it is what distinguishes "folded wrong"
 from "folded right, placed wrong", which is the reading `complex_scRMSD_ca` cannot
 give on its own.
 
-**Not yet applied.** Adding a fifth criterion changes every pass rate in the
-campaign; that is a call to make deliberately, not as a side effect of measuring.
+### Applied — both, at 2.0
+
+Re-scoring the 340-design run under the six-criterion gate:
+
+| | sequences | designs |
+|---|---|---|
+| `self` | 97 → **89** | 97 → **89** |
+| `mpnn` | 98 → **88** | 63 → **59** |
+
+`complex_scRMSD_ca` alone accounts for the five placement false positives;
+`target_aligned` at 2.0 removes the rest, being stricter than the false-positive
+evidence requires — it also drops sequences 2–5 Å off. That is a policy choice, not
+a correction, and it is the reason the numbers move by ~9 % rather than ~3 %.
+
+Both are kept rather than one, because they fail differently as targets change.
+Complex RMSD dilutes a binder displacement across the stationary target residues —
+here 136 target against 59 binder, so a 27 Å binder shift reads as 11 Å — and that
+dilution grows with target size. Target-aligned does not dilute.
+
+The criteria dict now keys by NAME with the column suffix in a `metric` field,
+because `binder_scRMSD_ca` and `complex_scRMSD_ca` differ only by prefix and could
+not otherwise coexist: one key, and Python keeps the last with no error at all.
 
 ## First measurement of the apo gate (CBLN1/5KC5, 2026-08-28) — superseded, see above
 

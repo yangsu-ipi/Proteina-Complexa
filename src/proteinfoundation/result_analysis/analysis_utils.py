@@ -107,12 +107,19 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
         spec: Can be:
             - A float/int (uses defaults for op and scale based on metric)
             - A dict with keys: threshold, op (optional), scale (optional),
-              column_prefix (optional)
+              column_prefix (optional), metric (optional)
             - A tuple: (threshold,) or (threshold, op) or
               (threshold, op, scale) or (threshold, op, scale, column_prefix)
 
     Returns:
-        Standardized dict with threshold, op, scale, column_prefix.
+        Standardized dict with threshold, op, scale, column_prefix, metric.
+
+    ``metric`` is the column suffix when it differs from the criterion's key.
+    Without it the key doubles as the suffix, which means two criteria that differ
+    only by prefix -- binder and complex ``scRMSD_ca`` -- collide on one key and
+    Python silently keeps the last. Note this function REBUILDS the spec rather
+    than updating it, so a field absent here is dropped before any consumer sees
+    it; that is why ``metric`` has to be threaded through explicitly.
     """
     if isinstance(spec, (int, float)):
         return {
@@ -120,6 +127,7 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
             "op": "<=",
             "scale": 1.0,
             "column_prefix": "complex",
+            "metric": None,
         }
     elif isinstance(spec, dict):
         return {
@@ -127,6 +135,7 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
             "op": spec.get("op", spec.get("operator", "<=")),
             "scale": float(spec.get("scale", 1.0)),
             "column_prefix": spec.get("column_prefix", "complex"),
+            "metric": spec.get("metric"),
         }
     elif isinstance(spec, (list, tuple)):
         return {
@@ -134,6 +143,7 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
             "op": spec[1] if len(spec) > 1 else "<=",
             "scale": float(spec[2]) if len(spec) > 2 else 1.0,
             "column_prefix": spec[3] if len(spec) > 3 else "complex",
+            "metric": spec[4] if len(spec) > 4 else None,
         }
     else:
         raise ValueError(f"Invalid threshold specification: {spec}")
