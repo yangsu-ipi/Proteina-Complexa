@@ -36,16 +36,18 @@ aggregation:
   #
   # Custom example:
   # success_thresholds:
-  #   i_pAE:
+  #   complex_i_pAE:
   #     threshold: 8.0
   #     op: "<="
   #     scale: 31.0
   #     column_prefix: complex
-  #   pLDDT:
+  #     metric: i_pAE
+  #   complex_pLDDT:
   #     threshold: 0.85
   #     op: ">="
   #     scale: 1.0
   #     column_prefix: complex
+  #     metric: pLDDT
   #   scRMSD:
   #     threshold: 2.0
   #     op: "<"

@@ -36,24 +36,52 @@ PROTEIN = normalize_threshold_dict(DEFAULT_PROTEIN_BINDER_THRESHOLDS)
 # template is resolved one layer up, against the columns. Feeding it the raw
 # default set would silently fail every sequence on a criterion the caller never
 # supplied, so the primitive's tests use the holo three explicitly.
-HOLO = {name: spec for name, spec in PROTEIN.items() if MODEL_PLACEHOLDER not in name}
+# The placeholder lives in `metric`, not the key, so this filter has to look there
+# -- checking the name would keep `apo_scRMSD_ca` and fail every sequence on a
+# criterion these tests never supply.
+HOLO = {
+    name: spec
+    for name, spec in PROTEIN.items()
+    if MODEL_PLACEHOLDER not in (parse_threshold_spec(spec).get("metric") or name)
+}
 PARSED = {name: parse_threshold_spec(spec) for name, spec in HOLO.items()}
 
 
-def metric_values(i_pae, plddt, scrmsd, apo=None):
-    """One design's *_all lists, keyed the way redesign_pass_vector expects."""
-    values = {"i_pAE": i_pae, "pLDDT": plddt, "scRMSD_ca": scrmsd}
+def metric_values(i_pae, plddt, scrmsd, apo=None, complex_rmsd=None, target_aligned=None):
+    """One design's *_all lists, keyed the way redesign_pass_vector expects.
+
+    Keys here are CRITERION names, which since the placement criteria were added
+    are names rather than column suffixes -- `complex_scRMSD_ca` and
+    `binder_scRMSD_ca` differ only by prefix and could not otherwise coexist.
+    """
+    n = len(list(i_pae))
+    values = {
+        "complex_i_pAE": i_pae,
+        "complex_pLDDT": plddt,
+        "binder_scRMSD_ca": scrmsd,
+        # Default to comfortably passing: a test about apo or i_pAE should not
+        # have to restate the placement criteria to say nothing about them.
+        "complex_scRMSD_ca": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
+        "binder_scRMSD_target_aligned_ca": list(target_aligned) if target_aligned is not None else [0.5] * n,
+    }
     for model, vals in (apo or {}).items():
-        values[f"scRMSD_ca_{model}"] = vals
+        values[f"apo_scRMSD_ca_{model}"] = vals
     return values
 
 
-def row(seq_type="mpnn", *, i_pae=(0.10,), plddt=(0.95,), scrmsd=(1.0,), apo=None):
+def row(
+    seq_type="mpnn", *, i_pae=(0.10,), plddt=(0.95,), scrmsd=(1.0,), apo=None, complex_rmsd=None, target_aligned=None
+):
     """One design's row_dict, keyed by real column names."""
+    n = len(list(i_pae))
     out = {
         f"{seq_type}_complex_i_pAE_all": list(i_pae),
         f"{seq_type}_complex_pLDDT_all": list(plddt),
         f"{seq_type}_binder_scRMSD_ca_all": list(scrmsd),
+        f"{seq_type}_complex_scRMSD_ca_all": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
+        f"{seq_type}_binder_scRMSD_target_aligned_ca_all": (
+            list(target_aligned) if target_aligned is not None else [0.5] * n
+        ),
     }
     for model, vals in (apo or {}).items():
         out[f"{seq_type}_apo_scRMSD_ca_{model}_all"] = vals
@@ -111,9 +139,11 @@ def test_apo_criterion_follows_the_models_actually_produced(models):
     apo_folding_models changes."""
     columns = list(row(apo={m: [1.0] for m in models}))
     expanded = expand_model_criteria(PROTEIN, "mpnn", columns)
-    apo = sorted(k for k in expanded if k.startswith("scRMSD_ca_"))
-    assert apo == sorted(f"scRMSD_ca_{m}" for m in models)
-    assert len(expanded) == 3 + len(models)
+    apo = sorted(k for k in expanded if k.startswith("apo_scRMSD_ca_"))
+    assert apo == sorted(f"apo_scRMSD_ca_{m}" for m in models)
+    # The non-apo criteria, whatever they number, plus one per apo model.
+    non_apo = sum(1 for k in PROTEIN if not k.startswith("apo_"))
+    assert len(expanded) == non_apo + len(models)
 
 
 def test_two_apo_models_must_both_pass():
@@ -131,20 +161,23 @@ def test_two_apo_models_must_both_pass():
 def test_expansion_does_not_leak_across_sequence_types():
     """self and mpnn can be folded by different model sets in one run."""
     columns = list(row("self", apo={"esmfold": [1.0]})) + list(row("mpnn", apo={"esmfold": [1.0], "esmfold2": [1.0]}))
-    assert sorted(k for k in expand_model_criteria(PROTEIN, "self", columns) if k.startswith("scRMSD_ca_")) == [
-        "scRMSD_ca_esmfold"
+    assert sorted(k for k in expand_model_criteria(PROTEIN, "self", columns) if k.startswith("apo_scRMSD_ca_")) == [
+        "apo_scRMSD_ca_esmfold"
     ]
-    assert sorted(k for k in expand_model_criteria(PROTEIN, "mpnn", columns) if k.startswith("scRMSD_ca_")) == [
-        "scRMSD_ca_esmfold",
-        "scRMSD_ca_esmfold2",
+    assert sorted(k for k in expand_model_criteria(PROTEIN, "mpnn", columns) if k.startswith("apo_scRMSD_ca_")) == [
+        "apo_scRMSD_ca_esmfold",
+        "apo_scRMSD_ca_esmfold2",
     ]
 
 
 def test_holo_scrmsd_is_never_mistaken_for_an_apo_model():
     """binder_scRMSD_ca and apo_scRMSD_ca_<model> differ only in prefix."""
     expanded = expand_model_criteria(PROTEIN, "mpnn", list(row(apo={"esmfold": [1.0]})))
-    assert "scRMSD_ca" in expanded
-    assert parse_threshold_spec(expanded["scRMSD_ca"])["column_prefix"] == "binder"
+    # Three criteria now end in scRMSD_ca; each must keep its own prefix. Before
+    # keys became names these could not coexist at all.
+    assert parse_threshold_spec(expanded["binder_scRMSD_ca"])["column_prefix"] == "binder"
+    assert parse_threshold_spec(expanded["complex_scRMSD_ca"])["column_prefix"] == "complex"
+    assert parse_threshold_spec(expanded["apo_scRMSD_ca_esmfold"])["column_prefix"] == "apo"
 
 
 def test_unmatched_template_is_kept_so_the_gate_cannot_quietly_shrink():
@@ -152,7 +185,11 @@ def test_unmatched_template_is_kept_so_the_gate_cannot_quietly_shrink():
     passing a three-criterion gate must not look like one that passed four."""
     columns = list(row())  # no apo columns
     expanded = expand_model_criteria(PROTEIN, "mpnn", columns)
-    assert any(MODEL_PLACEHOLDER in name for name in expanded)
+    # The placeholder lives in the metric now, so that is where an unexpanded
+    # criterion still carries it.
+    assert any(
+        MODEL_PLACEHOLDER in (parse_threshold_spec(spec).get("metric") or name) for name, spec in expanded.items()
+    )
 
 
 def test_missing_apo_column_yields_no_verdict_rather_than_a_pass():
@@ -268,3 +305,84 @@ def test_the_verdict_is_computed_after_the_apo_columns_exist():
     assert src.index("apo_values = apo_refold(") < src.index("pass_vector = per_sequence_pass("), (
         "the apo criterion's column must be on the row before the verdict is taken"
     )
+
+
+# ------------------- keys are names; `metric` carries the column suffix
+
+
+def test_all_six_criteria_resolve_to_distinct_real_columns():
+    """The collision this exists to prevent is silent: two criteria keyed
+    `scRMSD_ca` would leave one entry, no error, and a pass rate that moved for no
+    stated reason."""
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        threshold_column,
+    )
+
+    cols = {
+        name: threshold_column("mpnn", name, parse_threshold_spec(spec))
+        for name, spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.items()
+    }
+    assert len(set(cols.values())) == len(cols), f"two criteria share a column: {cols}"
+    assert cols["binder_scRMSD_ca"] == "mpnn_binder_scRMSD_ca_all"
+    assert cols["complex_scRMSD_ca"] == "mpnn_complex_scRMSD_ca_all"
+    assert cols["binder_scRMSD_target_aligned_ca"] == "mpnn_binder_scRMSD_target_aligned_ca_all"
+
+
+def test_metric_survives_parse_threshold_spec():
+    """parse_threshold_spec REBUILDS the spec, so a field it does not name is
+    dropped before any consumer sees it -- which would put the collision straight
+    back with no symptom."""
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    parsed = parse_threshold_spec({"threshold": 2.0, "column_prefix": "complex", "metric": "scRMSD_ca"})
+    assert parsed["metric"] == "scRMSD_ca"
+    assert parse_threshold_spec({"threshold": 2.0})["metric"] is None, "absent means fall back to the key"
+    assert parse_threshold_spec(2.0)["metric"] is None
+
+
+def test_a_criterion_without_a_metric_still_uses_its_key():
+    """The ligand and motif dicts still rely on that, and are not being converted."""
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+    from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
+
+    spec = parse_threshold_spec({"threshold": 1.0, "column_prefix": "complex"})
+    assert threshold_column("self", "min_ipAE", spec) == "self_complex_min_ipAE_all"
+
+
+def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
+    """`apo_scRMSD_ca` carries `{model}` in its metric, because the emitted columns
+    are per-model and there is no unsuffixed form. Partitioning the key would leave
+    it unexpanded, naming a column no run produces."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        expand_model_criteria,
+    )
+
+    available = [
+        "mpnn_apo_scRMSD_ca_esmfold_all",
+        "mpnn_apo_scRMSD_ca_esmfold2_all",
+        "mpnn_complex_i_pAE_all",
+        "mpnn_complex_pLDDT_all",
+        "mpnn_binder_scRMSD_ca_all",
+        "mpnn_complex_scRMSD_ca_all",
+        "mpnn_binder_scRMSD_target_aligned_ca_all",
+    ]
+    out = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "mpnn", available)
+    apo = {k: v for k, v in out.items() if k.startswith("apo_")}
+    assert set(apo) == {"apo_scRMSD_ca_esmfold", "apo_scRMSD_ca_esmfold2"}, apo
+    assert apo["apo_scRMSD_ca_esmfold2"]["metric"] == "scRMSD_ca_esmfold2", "the expanded metric must travel too"
+
+
+def test_a_criterion_naming_a_column_the_run_lacks_is_reported(caplog):
+    """Not weakened -- removed: per_sequence_pass returns None and no verdict is
+    emitted for any sequence. It has to be loud."""
+    import logging
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import expand_model_criteria
+
+    thresholds = {"complex_scRMSD_ca": {"threshold": 2.0, "column_prefix": "complex", "metric": "scRMSD_ca"}}
+    with caplog.at_level(logging.ERROR):
+        out = expand_model_criteria(thresholds, "mpnn", ["mpnn_complex_i_pAE_all"])
+    assert "complex_scRMSD_ca" in out, "kept, so the gate reads as unjudged rather than shrinking silently"

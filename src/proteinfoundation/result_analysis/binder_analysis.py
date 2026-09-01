@@ -36,6 +36,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     expand_model_criteria,
     get_thresholds_for_result_type,
     normalize_threshold_dict,
+    threshold_column,
 )
 
 
@@ -267,7 +268,7 @@ def compute_grouped_pass_rate(
     # Build column names and extract data from row
     grouped_data = {}  # metric_name -> list of lists (samples -> redesigns)
     for metric_name, spec in parsed_thresholds.items():
-        col_name = build_column_name(seq_type, spec["column_prefix"], metric_name)
+        col_name = threshold_column(seq_type, metric_name, spec)
         if col_name in row.index:
             grouped_data[metric_name] = row[col_name]
 
@@ -326,7 +327,7 @@ def add_success_rate_columns(
     required_cols = []
     for metric_name, spec in normalized_thresholds.items():
         parsed = parse_threshold_spec(spec)
-        col_name = build_column_name(seq_type, parsed["column_prefix"], metric_name)
+        col_name = threshold_column(seq_type, metric_name, parsed)
         required_cols.append(col_name)
 
     missing = [col for col in required_cols if col not in df_grouped.columns]
@@ -431,7 +432,7 @@ def filter_by_success_thresholds(
     missing_cols = []
 
     for metric_name, spec in parsed_thresholds.items():
-        col_name = build_column_name(seq_type, spec["column_prefix"], metric_name)
+        col_name = threshold_column(seq_type, metric_name, spec)
         if col_name in df.columns:
             column_mapping[metric_name] = col_name
         else:
@@ -617,7 +618,7 @@ def compute_filter_pass_rate(
     for seq_type in sequence_types:
         for metric_name, spec in expand_model_criteria(thresholds, seq_type, df.columns).items():
             parsed = parse_threshold_spec(spec)
-            col_name = build_column_name(seq_type, parsed["column_prefix"], metric_name)
+            col_name = threshold_column(seq_type, metric_name, parsed)
             all_columns.append(col_name)
         all_columns.append(f"{seq_type}_complex_pdb_path")
 
