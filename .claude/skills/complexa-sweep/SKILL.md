@@ -187,8 +187,8 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 | File | Written by | Notes |
 |---|---|---|
 | `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:899`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:871`), `motif_results_*` (`:922`), `motif_binder_results_*` (`:948`) |
-| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3047`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
-| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:648`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
+| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3065`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
+| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:697`, relocated by `organize_results`, `analyze.py:2803-2881`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:252`) |
 
 The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:576, :593`), with one column *prefix* per requested `metric.sequence_types` value:
 
@@ -198,11 +198,11 @@ The combined CSV has **one row per generated sample** (`id_gen`, an enumerate in
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
 | `{seq}_sequence` | the binder sequence (`binder_eval.py:704`) |
-| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:182-193`) |
+| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:219-230`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.
 
-Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:75-94`): `i_pAE` with `scale: 31.0`, `threshold: 7.0`, `op: "<="`, `column_prefix: complex`; `pLDDT >= 0.9` on `complex`; `scRMSD_ca < 1.5` on `binder`. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:411-412`), so if you retune, supply all three entries complete with `scale` and `column_prefix`.
+Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:76-116`) and there are **six**: `complex_i_pAE` (`scale: 31.0`, `threshold: 7.0`, `op: "<="`), `complex_pLDDT >= 0.9`, `binder_scRMSD_ca < 1.5`, `apo_scRMSD_ca < 2.0` (per folding model), `complex_scRMSD_ca < 2.0` and `binder_scRMSD_target_aligned_ca < 2.0`. Recomputing from the older three overreports: on a 340-design campaign the last three took 97 passing designs to 89. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:411-412`), so if you retune, supply every entry complete with `scale`, `column_prefix` and `metric` — keys are names now, and `metric` carries the column suffix, because `binder_scRMSD_ca` and `complex_scRMSD_ca` differ only by prefix.
 
 **Preferred path: read `success_rate` per config out of `filter_results/res_filter_binder_pass_*.csv`** rather than recomputing it from the raw CSV. Fall back to the raw columns above only if that file is absent (e.g. `aggregation.analysis_modes` excluded `binder`).
 

@@ -1656,12 +1656,29 @@ give on its own.
 
 ### Applied — both, at 2.0
 
-Re-scoring the 340-design run under the six-criterion gate:
+The 340-design run, re-scored under the six-criterion gate and confirmed against
+the campaign's own outputs rather than predicted:
 
 | | sequences | designs |
 |---|---|---|
 | `self` | 97 → **89** | 97 → **89** |
 | `mpnn` | 98 → **88** | 63 → **59** |
+
+`mpnn` yields 88 passing sequences across only 59 designs, against `self`'s 89
+across 89 — redesigns cluster. A design tends to have both its MPNN sequences pass
+or neither, so the redesign track buys fewer distinct designs than its sequence
+count suggests.
+
+So the campaign's headline is **89 of 340 designs with a passing native sequence,
+59 with a passing redesign**. The `success_criteria_*.json` written beside the
+results record which six criteria those numbers mean, which matters here because
+the gate changed twice.
+
+Re-scoring cost an `analyze` run of a few minutes. Thresholds change no metric, so
+the verdicts are re-derived from the stored columns rather than recomputed from
+structures — see `refresh_per_sequence_verdicts`. An `evaluate` re-run was tried
+first and abandoned after 90 minutes; it would have recomputed nothing that
+changed.
 
 `complex_scRMSD_ca` alone accounts for the five placement false positives;
 `target_aligned` at 2.0 removes the rest, being stricter than the false-positive

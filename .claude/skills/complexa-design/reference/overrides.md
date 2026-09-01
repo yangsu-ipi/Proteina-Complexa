@@ -216,16 +216,16 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 ### Threshold overrides must be complete dicts
 
-`binder_analysis.py:411-412` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+`binder_analysis.py:460-461` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
 only when `success_thresholds` is *entirely absent*. Supplying a single metric
 replaces the whole dict, and `parse_threshold_spec`
-(`analysis_utils.py:124-129`) then fills the missing `scale` with `1.0`. So
+(`analysis_utils.py:132-137`) then fills the missing `scale` with `1.0`. So
 `++aggregation.success_thresholds.i_pAE.threshold=10.0` drops the `pLDDT` and
 `scRMSD_ca` criteria *and* compares a 0-1-scaled column against `10.0` — every
 sample passes and the reported success rate becomes 100%.
 
 Always write the full dict, and note the key is `scRMSD_ca`
-(`binder_analysis_utils.py:89`), not `scRMSD`:
+(`binder_analysis_utils.py:163`), not `scRMSD`:
 
 ```yaml
 aggregation:
