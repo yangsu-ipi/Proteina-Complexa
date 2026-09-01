@@ -224,7 +224,7 @@ ls ./evaluation_results/*/diversity/res_div_foldseek_*.csv                # Fold
 ```
 
 The only combined CSV is `RAW_{result_type}_results_{config_name}_combined.csv`
-(`analyze.py:3047`); `binder_results_*_{job_id}.csv` (`evaluate.py:899`) is
+(`analyze.py:3065`); `binder_results_*_{job_id}.csv` (`evaluate.py:899`) is
 per-job and never `_combined`. By the time you look, `organize_results()`
 (`analyze.py:2813-2856`) has moved `res_filter_*` into `filter_results/`,
 `res_div_*` into `diversity/`, `clusters_*` into `clusters/` (AME's
@@ -233,7 +233,7 @@ match nothing.
 
 Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
 — ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
-`binder_analysis.py:648`), the per-design
+`binder_analysis.py:697`), the per-design
 metrics (interface pAE, pLDDT, scRMSD) from the combined CSV, and FoldSeek
 TM-score diversity from `res_div_foldseek_*.csv`. Report top-N designs by
 i_pAE (protein binder) or min_ipAE (ligand binder).

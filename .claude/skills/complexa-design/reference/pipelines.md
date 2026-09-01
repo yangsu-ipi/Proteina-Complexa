@@ -38,14 +38,19 @@ inverse folding so the redesigned binder is soluble.
   PAE). Other AF2 metrics (`con`, `plddt`, `dgram_cce`, `min_ipae`, `min_ipsae`,
   `avg_ipsae`, `max_ipsae`, `min_ipsae_10`, `max_ipsae_10`, `avg_ipsae_10`)
   default to 0.0 and can be enabled by override.
-- Default success thresholds: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca <
-  1.5` Å, and `apo scRMSD_ca < 2.0` Å — **four** criteria
-  (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`, `binder_analysis_utils.py:76-116`). The apo
-  one asks whether the binder folds as designed *without* its target; it needs
-  `metric.compute_apo_metrics` (on by default) and a criterion whose column is
-  absent removes gating entirely rather than weakening it.
-  The key is `scRMSD_ca`, not `scRMSD`, and these thresholds can only be
-  overridden as a complete dict — see
+- Default success thresholds: **six** criteria (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`,
+  `binder_analysis_utils.py:76-116`), in three groups —
+  *interface* `i_pAE * 31 <= 7.0` and `pLDDT >= 0.9`;
+  *fold* `binder scRMSD_ca < 1.5` Å and `apo scRMSD_ca < 2.0` Å;
+  *placement* `complex scRMSD_ca < 2.0` Å and `binder scRMSD_target_aligned_ca < 2.0` Å.
+  The apo one asks whether the binder folds as designed *without* its target; the
+  placement pair asks whether it sits where it was designed to, which binder-aligned
+  RMSD cannot see because it aligns on the binder. A criterion whose column is
+  absent removes gating entirely rather than weakening it — analyze reports that
+  rather than quietly gating on fewer.
+  Keys are **names**, and the column suffix is the spec's `metric` field:
+  `binder_scRMSD_ca` and `complex_scRMSD_ca` differ only by prefix and could not
+  otherwise coexist. These thresholds can only be overridden as a complete dict — see
   [overrides.md](overrides.md) "Threshold overrides must be complete dicts".
 - Quick command:
   ```bash

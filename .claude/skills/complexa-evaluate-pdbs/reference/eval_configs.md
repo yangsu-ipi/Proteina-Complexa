@@ -79,9 +79,13 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 - `aggregation.analysis_modes` — default `[binder, monomer]` for binder result types.
 - `aggregation.success_thresholds` — `null` (defaults) or a dict of `{metric: {threshold, op, scale, column_prefix}}` entries.
 - Built-in defaults:
-  - `protein_binder`: `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`, `scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`
-    (four criteria — the apo one needs `metric.compute_apo_metrics`, on by default;
-    see `esm_esmfold2.md` for why turning it off removes gating rather than weakening it).
+  - `protein_binder`: six criteria — `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`,
+    `binder scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`, `complex scRMSD_ca < 2.0`,
+    `binder scRMSD_target_aligned_ca < 2.0`. The apo one needs
+    `metric.compute_apo_metrics`, on by default; see `esm_esmfold2.md` for why turning
+    it off removes gating rather than weakening it. The last two gate *placement*: a
+    binder can fold to 0.5 Å and sit 27 Å from its designed interface, which every
+    other criterion passes.
   - `ligand_binder`: `min_ipAE * 31 < 2.0`, `scRMSD_ca < 2.0`, `ligand_scRMSD_aligned_allatom < 5.0`.
 - Monomer-mode thresholds (when `[monomer]` is in `analysis_modes`):
   - `aggregation.designability_thresholds` — `{mode: {model: {threshold, op}}}`; default 2.0 Å.
@@ -92,7 +96,7 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 ### `analyze_motif_binder.yaml`
 
 - `result_type: motif_protein_binder` (default in the YAML) or `motif_ligand_binder` (override on CLI).
-- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3076-3086`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
+- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3094-3104`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
 - `aggregation.motif_binder_success_thresholds`:
   - **`motif_protein_binder` defaults** — binder: `i_pAE*31 <= 7.0`, `pLDDT >= 0.8`, `scRMSD_ca < 2.0`; motif: `motif_rmsd_pred_all < 2.0`, `correct_motif_sequence_all >= 1.0`.
   - **`motif_ligand_binder` defaults** — binder: `scRMSD_bb3 <= 2.0`; motif: `motif_rmsd_pred_all <= 1.5`, `correct_motif_sequence_all >= 1.0`, `has_ligand_clashes_all < 0.5`.
@@ -178,7 +182,7 @@ Pass-rate filter (applied by analyze), evaluated separately for each `sequence_t
 the results. The command above requests `sequence_types=[self,mpnn_fixed]`, so the columns are
 `self_*` and `mpnn_fixed_*` — there are no `mpnn_*` columns to filter on. Thresholding reads the
 `_all` list columns that `build_column_name` constructs
-(`binder_analysis_utils.py:182-193`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
+(`binder_analysis_utils.py:219-230`: `f"{seq_type}_{column_prefix}_{metric_suffix}_all"`), so for
 `mpnn_fixed` the criteria are:
 
 `mpnn_fixed_complex_i_pAE_all * 31 <= 7.0 AND mpnn_fixed_complex_pLDDT_all >= 0.9 AND mpnn_fixed_binder_scRMSD_ca_all < 1.5`

@@ -219,11 +219,11 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
   (`:922`) and `motif_binder_results_*` (`:948`). `{config_name}` is the config file stem
   (`cli_runner.py:650` passes `++base_config_name=<stem>`).
 - **Primary CSV** from `analyze` — `RAW_{result_type}_results_{config_name}_combined.csv`
-  (`analyze.py:3047`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
+  (`analyze.py:3065`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
   enumerate index over the file walk (`binder_eval.py:576, :593`). `sequence_types` are column
   **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
   `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
-  lists (`binder_eval.py:669-705`; `binder_analysis_utils.py:182-193` builds
+  lists (`binder_eval.py:669-705`; `binder_analysis_utils.py:219-230` builds
   `{seq}_{prefix}_{metric}_all`).
 - **Pass-rate summaries and everything else are moved into subdirectories** by
   `organize_results` (`analyze.py:2803-2881`), so do not glob the top level:
@@ -233,7 +233,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
   `res_motif_binder_*` / `res_filter_motif_binder_*` → `motif_binder_metrics/`, and the
   `clusters_*` directories → `clusters/`. The binder pass-rate file is
   `filter_results/res_filter_binder_pass_*.csv` for `protein_binder` and
-  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:648`);
+  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:697`);
   motif runs write `res_filter_motif_binder_pass_*.csv` (`motif_binder_analysis.py:252`).
 - Diversity output — FoldSeek/MMseqs2 cluster files under `diversity/` and `clusters/` when
   `aggregation.compute_diversity=true` (default).
@@ -241,7 +241,7 @@ suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results
 Summarize to the user:
 
 - Per-PDB row count and number of successful designs vs total.
-- Default-threshold pass rate by `result_type` (e.g. for `protein_binder`: `i_pAE*31 <= 7.0 AND pLDDT >= 0.9 AND scRMSD_ca < 1.5 AND apo scRMSD_ca < 2.0`).
+- Default-threshold pass rate by `result_type` (for `protein_binder`, **six** criteria: `i_pAE*31 <= 7.0 AND pLDDT >= 0.9 AND binder scRMSD_ca < 1.5 AND apo scRMSD_ca < 2.0 AND complex scRMSD_ca < 2.0 AND binder scRMSD_target_aligned_ca < 2.0`). The last two gate *placement* — a binder can fold correctly and sit metres from its designed interface, which binder-aligned RMSD cannot see. Measured on 340 designs: 89 pass with a native sequence, 59 with a redesign.
 - Top 5 designs by primary metric (`i_pAE` for protein, `min_ipAE` for ligand, `motif_rmsd_pred_all` for motif binders).
 
 ## Step 6: Emit manifest
