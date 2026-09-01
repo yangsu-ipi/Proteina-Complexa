@@ -29,13 +29,13 @@ from proteinfoundation.result_analysis.analysis_utils import (
 from proteinfoundation.result_analysis.binder_analysis_utils import (
     DEFAULT_LIGAND_BINDER_THRESHOLDS,
     DEFAULT_PROTEIN_BINDER_THRESHOLDS,
-    build_column_name,
     check_redesign_passes_all_thresholds,
     check_sample_has_passing_redesign,
     count_passing_redesigns,
     expand_model_criteria,
     get_thresholds_for_result_type,
     normalize_threshold_dict,
+    redesign_pass_vector,
     threshold_column,
 )
 
@@ -297,6 +297,54 @@ def compute_grouped_pass_rate(
 
     pass_rate = sum(per_sample_pass) / n_samples
     return pass_rate, per_sample_pass
+
+
+def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], success_thresholds: dict) -> pd.DataFrame:
+    """Recompute ``{seq}_pass`` / ``{seq}_pass_all`` from the metric columns.
+
+    A verdict is *derived*: it is a comparison against thresholds, and it changes
+    whenever the thresholds do while every metric it reads stays identical.
+    Evaluate writes these columns when it computes the metrics, which freezes a
+    derived value into an artifact at the wrong stage -- change a threshold and
+    the stored verdicts silently disagree with the pass rates analyze computes
+    from the same numbers.
+
+    Re-deriving them here costs microseconds against the hours a re-evaluation
+    costs, and it removes the staleness rather than labelling it: the verdicts are
+    now produced wherever the thresholds are applied.
+
+    Rows whose criteria columns are absent keep whatever they had. A missing
+    criterion means "cannot judge", and overwriting a verdict some earlier stage
+    could make with one this stage cannot would lose information rather than
+    refresh it.
+    """
+    for seq_type in seq_types:
+        expanded = expand_model_criteria(normalize_threshold_dict(success_thresholds), seq_type, df.columns)
+        parsed = {name: parse_threshold_spec(spec) for name, spec in expanded.items()}
+        cols = {name: threshold_column(seq_type, name, spec) for name, spec in parsed.items()}
+        missing = sorted(c for c in cols.values() if c not in df.columns)
+        if missing:
+            logger.error(
+                f"Not refreshing '{seq_type}' verdicts: criteria need column(s) {missing}, which the "
+                f"results do not contain. Any {seq_type}_pass columns already present are left as they "
+                f"are, and may predate the current thresholds."
+            )
+            continue
+
+        vectors = []
+        for _, row in df.iterrows():
+            per_metric = {name: row[col] for name, col in cols.items()}
+            vectors.append(redesign_pass_vector(per_metric, parsed))
+        df[f"{seq_type}_pass_all"] = vectors
+        # The headline verdict mirrors the row's own best-sequence index, which is
+        # what every other headline column on the row already uses.
+        best = df.get(f"{seq_type}_best_idx")
+        df[f"{seq_type}_pass"] = [
+            (v[int(b)] if best is not None and 0 <= int(b) < len(v) else (v[0] if v else None))
+            for v, b in zip(vectors, best if best is not None else [0] * len(vectors), strict=False)
+        ]
+        logger.info(f"Refreshed {seq_type} verdicts from {len(parsed)} criteria over {len(df)} rows")
+    return df
 
 
 def add_success_rate_columns(
