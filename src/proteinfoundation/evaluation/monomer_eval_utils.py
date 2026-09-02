@@ -379,6 +379,16 @@ def write_monomer_fold_cache(
                     existing = json.load(handle)
                 if existing.get("fingerprint") == fingerprint:
                     folds = dict(existing.get("folds") or {})
+                    if not folds:
+                        # A schema-1 file about to be overwritten. Reading adopts
+                        # its single fold under the seed that produced it; without
+                        # doing the same here the first write drops it, and the
+                        # adoption is undone every run -- the fold is reused in
+                        # memory and refolded on the next resume, forever.
+                        legacy = _fold_payload(existing)
+                        if legacy is not None:
+                            legacy_seed = deterministic_seed(os.path.basename(output_dir), suffix, *legacy["sequences"])
+                            folds[str(legacy_seed)] = legacy
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 folds = {}
         if seed is None:
