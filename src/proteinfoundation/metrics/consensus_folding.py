@@ -90,6 +90,7 @@ def _score_esmfold2(
     binder_seq: str,
     cfg: dict,
     out_pdb_path: str | None = None,
+    seed: int = 0,
 ) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
 
@@ -113,8 +114,6 @@ def _score_esmfold2(
     from esm.models.esmfold2 import ESMFold2InputBuilder, ProteinInput, StructurePredictionInput
 
     model = _esmfold2_model(cfg)
-    from proteinfoundation.metrics.esmfold2_loader import deterministic_seed
-
     target_msas = _target_msas(target_seqs, cfg)
     chains = [
         ProteinInput(id=f"T{i}", sequence=s, msa=m)
@@ -130,9 +129,6 @@ def _score_esmfold2(
     # fold's inputs: the same target and binder always give the same structure,
     # and a cached score therefore equals a recomputed one. cfg may pin a seed
     # instead, e.g. to draw a second independent sample of the same complex.
-    seed = cfg.get("seed")
-    if seed is None:
-        seed = deterministic_seed(*target_seqs, binder_seq)
     logger.debug(f"Advisory fold of a {len(binder_seq)}-residue binder (seed {seed})")
     folded = builder.fold(
         model,
@@ -453,7 +449,23 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def read_consensus_cache(cache_dir: str, backend: str, fingerprint: str) -> dict[str, dict[str, float | str]]:
+CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binder, seed)
+
+
+def read_consensus_cache(
+    cache_dir: str, backend: str, fingerprint: str, seed_for=None
+) -> dict[str, dict[int, dict[str, float | str]]]:
+    """Cached advisory scores as ``{binder_seq: {seed: metrics}}``.
+
+    Keyed by seed VALUE rather than position, for the reason the monomer cache is:
+    a seed is what produced a result, while "the k-th seed" means something only
+    relative to a derivation the key does not record.
+
+    *seed_for* maps a binder sequence to the seed a schema-1 entry must have used,
+    letting those entries be adopted instead of discarded -- the derivation is a
+    pure function of the target and binder sequences, so it is recoverable. Without
+    it, schema-1 entries are dropped.
+    """
     path = consensus_cache_path(cache_dir, backend)
     if not os.path.exists(path):
         return {}
@@ -466,16 +478,50 @@ def read_consensus_cache(cache_dir: str, backend: str, fingerprint: str) -> dict
                 f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
             )
             return {}
-        return {k: v for k, v in cached["scores"].items() if isinstance(v, dict)}
+        raw = cached.get("scores") or {}
+        if cached.get("schema") == CONSENSUS_CACHE_SCHEMA:
+            return {
+                seq: {int(k): v for k, v in by_seed.items() if isinstance(v, dict)}
+                for seq, by_seed in raw.items()
+                if isinstance(by_seed, dict)
+            }
+        out: dict[str, dict[int, dict]] = {}
+        for seq, metrics in raw.items():
+            if not isinstance(metrics, dict):
+                continue
+            if seed_for is None:
+                continue
+            out[seq] = {int(seed_for(seq)): metrics}
+        if out:
+            logger.info(f"Adopted {len(out)} schema-1 advisory entries at {path} under their derived seeds")
+        return out
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.warning(f"Ignoring unusable advisory fold cache {path}: {exc}")
         return {}
 
 
-def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores: dict[str, dict[str, float]]) -> None:
+def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores: dict[str, dict[int, dict]]) -> None:
+    """Persist ``{binder_seq: {seed: metrics}}``, merging with what is there.
+
+    Merging rather than replacing is what lets a later run add seeds to an
+    existing set instead of refolding all of them; the caller passes only what it
+    holds, which after adoption may be fewer entries than the file has.
+    """
+    path = consensus_cache_path(cache_dir, backend)
+    merged: dict[str, dict[str, dict]] = {}
     try:
-        blob = json.dumps({"fingerprint": fingerprint, "scores": scores})
-        with open(consensus_cache_path(cache_dir, backend), "w") as handle:
+        if os.path.exists(path):
+            with open(path) as handle:
+                existing = json.load(handle)
+            if existing.get("fingerprint") == fingerprint and existing.get("schema") == CONSENSUS_CACHE_SCHEMA:
+                merged = {k: dict(v) for k, v in (existing.get("scores") or {}).items() if isinstance(v, dict)}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        merged = {}
+    for seq, by_seed in scores.items():
+        merged.setdefault(seq, {}).update({str(seed): metrics for seed, metrics in by_seed.items()})
+    try:
+        blob = json.dumps({"fingerprint": fingerprint, "schema": CONSENSUS_CACHE_SCHEMA, "scores": merged})
+        with open(path, "w") as handle:
             handle.write(blob)
     except (OSError, TypeError, ValueError) as exc:
         logger.warning(f"Could not write advisory fold cache for {cache_dir}: {exc}")
@@ -486,14 +532,55 @@ def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores
 # =============================================================================
 
 
-def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str) -> str:
-    """Where a backend's folded complex for this binder goes.
+def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, float | str]:
+    """Average a binder's metrics across its seeds.
+
+    Seeds are exchangeable draws from a sampler -- seed k of one input has no
+    correspondence to seed k of another -- so the only meaningful reduction is to
+    pool them. Non-numeric entries (``pdb_path``) are taken from the first seed
+    rather than averaged; the structures differ per seed, and one of them has to
+    be the one a reader is pointed at.
+    """
+    if not by_seed:
+        return {}
+    ordered = [by_seed[s] for s in sorted(by_seed)]
+    out: dict[str, float | str] = {}
+    for key in ordered[0]:
+        values = [m[key] for m in ordered if key in m]
+        numeric = [float(v) for v in values if isinstance(v, (int, float)) and v == v]
+        out[key] = sum(numeric) / len(numeric) if numeric else values[0]
+    out["n_seeds"] = float(len(ordered))
+    return out
+
+
+def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str, seed: int | None = None) -> str:
+    """Where a backend's folded complex for this binder and seed goes.
 
     Content-addressed on the binder sequence, so the path a cache entry records
-    stays valid across runs and two sequences never collide.
+    stays valid across runs and two sequences never collide. The seed is part of
+    the name because each seed folds a different structure; without it, seeds
+    overwrite one another and the last one silently answers for all.
+
+    ``seed=None`` gives the pre-seed name, which is where a structure folded before
+    seeds existed still lives -- see ``existing_advisory_structure``.
     """
     digest = hashlib.sha256(binder_seq.encode("utf-8")).hexdigest()[:12]
-    return os.path.join(cache_dir, f"{backend}_complex", f"{digest}.pdb")
+    name = f"{digest}.pdb" if seed is None else f"{digest}_seed{seed}.pdb"
+    return os.path.join(cache_dir, f"{backend}_complex", name)
+
+
+def existing_advisory_structure(cache_dir: str, backend: str, binder_seq: str, seed: int) -> str | None:
+    """An already-folded structure for this binder and seed, wherever it lives.
+
+    Checks the seeded name, then the pre-seed one: a structure folded before seeds
+    existed was produced by the derivation's first seed, so it answers for that
+    seed and should not be refolded just because the naming changed.
+    """
+    seeded = advisory_structure_path(cache_dir, backend, binder_seq, seed)
+    if os.path.exists(seeded):
+        return seeded
+    legacy = advisory_structure_path(cache_dir, backend, binder_seq, None)
+    return legacy if os.path.exists(legacy) else None
 
 
 def score_binders(
@@ -522,10 +609,30 @@ def score_binders(
     if not target_seqs or not binder_seqs:
         return [{} for _ in binder_seqs]
 
+    from proteinfoundation.metrics.seeding import deterministic_seed, deterministic_seeds
+
     fingerprint = consensus_fingerprint(backend, cfg, target_seqs)
-    scores: dict[str, dict[str, float | str]] = {}
+
+    # Seeds are derived here rather than inside the scorer, so one place decides
+    # what a fold's identity is and the scorer stays a pure function of its
+    # inputs. A pinned cfg.seed means exactly one fold, however many are asked
+    # for: it names a specific sample, and repeating it would be the same fold
+    # counted twice.
+    pinned = cfg.get("seed")
+    n_seeds = max(1, int(cfg.get("n_seeds", 1)))
+
+    def seeds_for(seq: str) -> list[int]:
+        if pinned is not None:
+            return [int(pinned)]
+        return deterministic_seeds(*target_seqs, seq, count=n_seeds)
+
+    def first_seed_for(seq: str) -> int:
+        return int(pinned) if pinned is not None else deterministic_seed(*target_seqs, seq)
+
+    # per binder sequence: {seed: metrics}
+    scores: dict[str, dict[int, dict[str, float | str]]] = {}
     if cache_dir and reuse_cache:
-        scores = read_consensus_cache(cache_dir, backend, fingerprint)
+        scores = read_consensus_cache(cache_dir, backend, fingerprint, seed_for=first_seed_for)
 
     # A cached score does not imply the structure this run asked for. An earlier
     # run with keep_folding_outputs=false cached metrics and wrote no PDB, so
@@ -533,20 +640,29 @@ def score_binders(
     # request was for a file, and the cache answered about a number. Refold when
     # the structure is wanted and absent, which also repairs an entry whose PDB
     # was deleted since.
-    def _needs_structure(seq: str) -> bool:
+    def _needs_structure(seq: str, seed: int) -> bool:
         if not (cache_dir and keep_structures):
             return False
-        path = advisory_structure_path(cache_dir, backend, seq)
-        return not (path and os.path.exists(path))
+        return existing_advisory_structure(cache_dir, backend, seq, seed) is None
 
-    pending = [s for s in dict.fromkeys(binder_seqs) if s and (s not in scores or _needs_structure(s))]
+    # One unit of work is a (sequence, seed) pair, so adding a seed folds only
+    # what is new rather than everything for that sequence.
+    pending = [
+        (seq, seed)
+        for seq in dict.fromkeys(binder_seqs)
+        if seq
+        for seed in seeds_for(seq)
+        if seed not in scores.get(seq, {}) or _needs_structure(seq, seed)
+    ]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
-        fresh: dict[str, dict[str, float | str]] = {}
-        for seq in pending:
-            out_pdb = advisory_structure_path(cache_dir, backend, seq) if (cache_dir and keep_structures) else None
+        fresh: dict[str, dict[int, dict[str, float | str]]] = {}
+        for seq, seed in pending:
+            out_pdb = (
+                advisory_structure_path(cache_dir, backend, seq, seed) if (cache_dir and keep_structures) else None
+            )
             try:
-                metrics = scorer(target_seqs, seq, cfg, out_pdb)
+                metrics = scorer(target_seqs, seq, cfg, out_pdb, seed)
             except Exception as exc:
                 logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
                 continue
@@ -558,10 +674,12 @@ def score_binders(
                 # simply lack the key.
                 if metrics.get("pdb_path"):
                     usable["pdb_path"] = metrics["pdb_path"]
-                fresh[seq] = usable
-        scores.update(fresh)
+                fresh.setdefault(seq, {})[seed] = usable
+        for seq, by_seed in fresh.items():
+            scores.setdefault(seq, {}).update(by_seed)
         if cache_dir and fresh:
-            write_consensus_cache(cache_dir, backend, fingerprint, scores)
-        logger.info(f"Advisory backend '{backend}' scored {len(fresh)}/{len(pending)} binders")
+            write_consensus_cache(cache_dir, backend, fingerprint, fresh)
+        folded = sum(len(v) for v in fresh.values())
+        logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, seed) folds")
 
-    return [scores.get(seq, {}) for seq in binder_seqs]
+    return [mean_over_seeds(scores.get(seq, {})) for seq in binder_seqs]
