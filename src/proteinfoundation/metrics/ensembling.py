@@ -87,25 +87,66 @@ def average_af2_stats(per_model: list[dict]) -> dict:
     }
 
 
-def average_rmsd_over_models(per_model: list[dict]) -> dict:
-    """Mean each RMSD over the models that produced a finite value.
+# Placement asks whether the binder landed where it was designed to. A binder
+# that lands correctly in one model of five has not been placed correctly, so the
+# reduction is the worst model rather than the typical one.
+#
+# Measured, not assumed. Meaning these over five models compressed the
+# distribution asymmetrically: designs already under 2 A barely moved (median
+# +0.01 A, none crossing into failure), while 24 sequences crossed from failing
+# complex_scRMSD_ca to passing it -- twelve of those from 4-8 A on a single
+# model. The 2.0 A thresholds were calibrated against single-model geometry
+# where misplaced designs sat at 4.6-11.6 A, which is exactly the band a mean
+# pulls toward the cutoff. The max restores that discrimination, and is strictly
+# harder to satisfy than the single model ever was.
+#
+# complex_scRMSD is the legacy alias of complex_scRMSD_ca and has to reduce the
+# same way, or one row would carry two different answers to one question.
+PLACEMENT_METRICS = frozenset(
+    {
+        "complex_scRMSD_ca",
+        "complex_scRMSD",
+        "binder_scRMSD_target_aligned_ca",
+    }
+)
 
-    A model that failed to produce a usable number is dropped rather than
-    averaged in, so one NaN cannot turn four good placements into no answer --
-    and a metric with nothing finite behind it stays NaN rather than becoming a
-    plausible-looking zero.
+# Bumped when a reduction rule changes what a cached number means. Rides in the
+# binder eval fingerprint: the structures on disk stay valid, the numbers derived
+# from them do not.
+GEOMETRY_REDUCTION_VERSION = 2
+
+
+def reduce_rmsd_over_models(per_model: list[dict]) -> dict:
+    """Collapse per-model RMSDs, by mean or by worst case depending on the metric.
+
+    Placement metrics (:data:`PLACEMENT_METRICS`) take the max: every model has
+    to agree the binder is where it belongs. Everything else -- fold quality
+    against the designed backbone -- takes the mean, where the spread between
+    models is uncertainty about one structure rather than disagreement about a
+    location.
+
+    A model that produced no usable number is dropped rather than folded in, so
+    one NaN cannot cost four good measurements, and a metric with nothing finite
+    behind it stays NaN rather than becoming a plausible-looking zero. That holds
+    for the max too: a failed model leaves the worst case unknown, not zero --
+    and a NaN placement fails its threshold regardless.
     """
     if not per_model:
         return {}
     if len(per_model) == 1:
         return per_model[0]
-    averaged = {}
+    reduced = {}
     for key in per_model[0]:
         values = [
             model[key] for model in per_model if isinstance(model.get(key), (int, float)) and math.isfinite(model[key])
         ]
-        averaged[key] = sum(values) / len(values) if values else float("nan")
-    return averaged
+        if not values:
+            reduced[key] = float("nan")
+        elif key in PLACEMENT_METRICS:
+            reduced[key] = max(values)
+        else:
+            reduced[key] = sum(values) / len(values)
+    return reduced
 
 
 def pop_per_model_paths(complex_statistics: list, seq_num: int) -> list[str] | None:

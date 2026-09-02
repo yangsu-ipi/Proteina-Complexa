@@ -60,6 +60,7 @@ from proteinfoundation.metrics.consensus_folding import (
     available_backends,
     score_binders,
 )
+from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
 from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -593,6 +594,10 @@ def compute_binder_metrics(
         # every cached design would keep serving its single-model numbers --
         # the silent-stale-cache case this fingerprint exists to prevent.
         "n_af2_models": n_af2_models,
+        # How per-model numbers are collapsed, not just how many there are.
+        # Placement went from a mean to a worst-case, which changes every cached
+        # geometry value while leaving the structures behind them valid.
+        "geometry_reduction": GEOMETRY_REDUCTION_VERSION,
     }
     n_reused = 0
 

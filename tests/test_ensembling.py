@@ -12,12 +12,13 @@ import pytest
 
 from proteinfoundation.metrics.ensembling import (
     AF2_STAT_PRECISION,
+    PLACEMENT_METRICS,
     af2_stats_from_metrics,
     average_af2_stats,
-    average_rmsd_over_models,
     mean_chain_plddt,
     mean_plddt_from_pdb,
     pop_per_model_paths,
+    reduce_rmsd_over_models,
     residue_weighted_mean,
 )
 
@@ -128,9 +129,42 @@ def test_a_nonfinite_residue_does_not_erase_its_chain():
     assert split["target_pLDDT"] == pytest.approx(0.8)
 
 
-def test_rmsd_averages_over_the_models():
-    per_model = [{"complex_scRMSD_ca": 1.0}, {"complex_scRMSD_ca": 3.0}]
-    assert average_rmsd_over_models(per_model)["complex_scRMSD_ca"] == pytest.approx(2.0)
+def test_fold_quality_is_meaned_over_the_models():
+    """The spread between models is uncertainty about one structure."""
+    per_model = [{"binder_scRMSD_ca": 1.0}, {"binder_scRMSD_ca": 3.0}]
+    assert reduce_rmsd_over_models(per_model)["binder_scRMSD_ca"] == pytest.approx(2.0)
+
+
+def test_placement_takes_the_worst_model_not_the_typical_one():
+    """A binder that lands correctly in one model of five has not been placed
+    correctly. Meaning it instead let 24 sequences cross from failing
+    complex_scRMSD_ca to passing it on a real campaign, twelve of them from
+    4-8 A on a single model -- the 2.0 A thresholds were calibrated against
+    single-model geometry, and a mean pulls exactly that band to the cutoff."""
+    per_model = [{"complex_scRMSD_ca": 0.5}, {"complex_scRMSD_ca": 0.6}, {"complex_scRMSD_ca": 9.0}]
+    assert reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"] == pytest.approx(9.0)
+
+    aligned = [{"binder_scRMSD_target_aligned_ca": 1.0}, {"binder_scRMSD_target_aligned_ca": 4.0}]
+    assert reduce_rmsd_over_models(aligned)["binder_scRMSD_target_aligned_ca"] == pytest.approx(4.0)
+
+
+def test_the_legacy_alias_reduces_like_the_metric_it_aliases():
+    """complex_scRMSD is the same number as complex_scRMSD_ca. Reducing them
+    differently would put two answers to one question on the same row."""
+    per_model = [
+        {"complex_scRMSD": 0.5, "complex_scRMSD_ca": 0.5},
+        {"complex_scRMSD": 9.0, "complex_scRMSD_ca": 9.0},
+    ]
+    out = reduce_rmsd_over_models(per_model)
+    assert out["complex_scRMSD"] == out["complex_scRMSD_ca"] == pytest.approx(9.0)
+
+
+def test_a_placement_reduction_never_flatters_a_single_bad_model():
+    """Strictly harder to satisfy than the single model the gate used to read."""
+    per_model = [{"complex_scRMSD_ca": v} for v in (0.4, 0.5, 0.6, 0.7, 2.4)]
+    reduced = reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"]
+    assert reduced >= max(m["complex_scRMSD_ca"] for m in per_model[:1]), "not below model 1"
+    assert reduced == pytest.approx(2.4), "and it fails the 2.0 gate the mean would have passed"
 
 
 def test_one_unusable_model_does_not_erase_the_others():
@@ -138,24 +172,24 @@ def test_one_unusable_model_does_not_erase_the_others():
     keeps four good models answerable, while averaging it in would leave the
     design with no number and no reason visible for why."""
     per_model = [{"binder_scRMSD_ca": 1.0}, {"binder_scRMSD_ca": float("nan")}, {"binder_scRMSD_ca": 2.0}]
-    assert average_rmsd_over_models(per_model)["binder_scRMSD_ca"] == pytest.approx(1.5)
+    assert reduce_rmsd_over_models(per_model)["binder_scRMSD_ca"] == pytest.approx(1.5)
 
 
 def test_nothing_finite_stays_nan_rather_than_becoming_zero():
     """A zero RMSD passes every gate there is."""
     per_model = [{"complex_scRMSD_ca": float("nan")}, {"complex_scRMSD_ca": float("inf")}]
-    assert math.isnan(average_rmsd_over_models(per_model)["complex_scRMSD_ca"])
+    assert math.isnan(reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"])
 
 
 def test_a_single_model_result_is_passed_through_untouched():
     """Backends that predict one structure must not be reshaped by a reduction
     they never asked for -- including any non-numeric fields they carry."""
     only = {"complex_scRMSD_ca": 1.25, "note": "rf3"}
-    assert average_rmsd_over_models([only]) is only
+    assert reduce_rmsd_over_models([only]) is only
 
 
 def test_no_models_is_an_empty_result():
-    assert average_rmsd_over_models([]) == {}
+    assert reduce_rmsd_over_models([]) == {}
 
 
 def test_per_model_paths_are_removed_as_they_are_read():
@@ -365,3 +399,35 @@ def test_the_only_reader_of_the_old_column_was_repointed():
     source = (SRC / "src/proteinfoundation/utils/refolded_structure_utils.py").read_text()
     assert '_complex_binder_pLDDT"' in source
     assert '_complex_pLDDT"' not in source
+
+
+def test_the_reduction_rule_invalidates_the_geometry_cache():
+    """The structures on disk stay valid; the numbers derived from them do not.
+    Without this the placement columns would keep serving means while the
+    thresholds were re-derived against worst cases."""
+    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
+    base = source[source.index("cache_fingerprint_base = {") : source.index("n_reused = 0")]
+    assert '"geometry_reduction": GEOMETRY_REDUCTION_VERSION' in base
+
+
+def test_every_gated_placement_criterion_is_in_the_placement_set():
+    """The two must not drift apart: a criterion gating at 2.0 A against a mean
+    is reading a different quantity than the one that threshold was set for."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    # A threshold spec splits the column into prefix + metric; the reduction sees
+    # the joined name the geometry dict is keyed by. Two namespaces for one
+    # quantity, which is why this is worth asserting rather than assuming.
+    joined = {f"{spec['column_prefix']}_{spec['metric']}" for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values()}
+    assert {"complex_scRMSD_ca", "binder_scRMSD_target_aligned_ca"} <= joined, "both placement criteria are still gated"
+    assert {"complex_scRMSD_ca", "binder_scRMSD_target_aligned_ca"} <= PLACEMENT_METRICS, (
+        "and both are reduced by worst case, not by mean"
+    )
+    assert "binder_scRMSD_ca" in joined and "binder_scRMSD_ca" not in PLACEMENT_METRICS
+
+
+def test_fold_quality_criteria_stay_out_of_the_placement_set():
+    """binder_scRMSD_ca asks whether the sequence folds as designed, not where
+    it sits. Its 1.5 A threshold was calibrated on a mean."""
+    assert "binder_scRMSD_ca" not in PLACEMENT_METRICS
+    assert "apo_scRMSD_ca" not in PLACEMENT_METRICS

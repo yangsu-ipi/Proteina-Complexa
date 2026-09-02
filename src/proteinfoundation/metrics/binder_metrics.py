@@ -13,7 +13,7 @@ from loguru import logger
 from torch import Tensor
 from transformers import logging as hf_logging
 
-from proteinfoundation.metrics.ensembling import average_rmsd_over_models, pop_per_model_paths
+from proteinfoundation.metrics.ensembling import pop_per_model_paths, reduce_rmsd_over_models
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues,
@@ -361,7 +361,7 @@ def run_binder_eval(
                         label=label,
                     )
                 )
-        rmsd_results.append({label: average_rmsd_over_models(per_model_rmsd)})
+        rmsd_results.append({label: reduce_rmsd_over_models(per_model_rmsd)})
 
     # Add prefixes to complex and binder statistics
     # reordered_complex_stats = {k:[] for k in set(sequence_types)}
