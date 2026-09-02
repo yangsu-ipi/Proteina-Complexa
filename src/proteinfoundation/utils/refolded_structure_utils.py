@@ -113,7 +113,7 @@ def get_successful_best_samples_with_paths(
             try:
                 # Get the best metrics for this sequence type (not "_all" columns)
                 best_ipae_col = f"{seq_type}_complex_i_pAE"
-                best_plddt_col = f"{seq_type}_complex_pLDDT"
+                best_plddt_col = f"{seq_type}_complex_binder_pLDDT"
                 best_rmsd_col = f"{seq_type}_binder_scRMSD"
 
                 # Check if required columns exist

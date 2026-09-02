@@ -47,7 +47,7 @@ HOLO = {
 PARSED = {name: parse_threshold_spec(spec) for name, spec in HOLO.items()}
 
 
-def metric_values(i_pae, plddt, scrmsd, apo=None, complex_rmsd=None, target_aligned=None, binder_plddt=None):
+def metric_values(i_pae, plddt, scrmsd, apo=None, complex_rmsd=None, target_aligned=None):
     """One design's *_all lists, keyed the way redesign_pass_vector expects.
 
     Keys here are CRITERION names, which since the placement criteria were added
@@ -57,16 +57,12 @@ def metric_values(i_pae, plddt, scrmsd, apo=None, complex_rmsd=None, target_alig
     n = len(list(i_pae))
     values = {
         "complex_i_pAE": i_pae,
-        "complex_pLDDT": plddt,
+        "complex_binder_pLDDT": plddt,
         "binder_scRMSD_ca": scrmsd,
         # Default to comfortably passing: a test about apo or i_pAE should not
         # have to restate the placement criteria to say nothing about them.
         "complex_scRMSD_ca": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
         "binder_scRMSD_target_aligned_ca": list(target_aligned) if target_aligned is not None else [0.5] * n,
-        # The binder half of complex_pLDDT. Defaults to passing for the same
-        # reason as the placement criteria: a test about i_pAE should not have to
-        # restate every other criterion to stay silent about it.
-        "complex_binder_pLDDT": list(binder_plddt) if binder_plddt is not None else [0.95] * n,
     }
     for model, vals in (apo or {}).items():
         values[f"apo_scRMSD_ca_{model}"] = vals
@@ -82,19 +78,17 @@ def row(
     apo=None,
     complex_rmsd=None,
     target_aligned=None,
-    binder_plddt=None,
 ):
     """One design's row_dict, keyed by real column names."""
     n = len(list(i_pae))
     out = {
         f"{seq_type}_complex_i_pAE_all": list(i_pae),
-        f"{seq_type}_complex_pLDDT_all": list(plddt),
+        f"{seq_type}_complex_binder_pLDDT_all": list(plddt),
         f"{seq_type}_binder_scRMSD_ca_all": list(scrmsd),
         f"{seq_type}_complex_scRMSD_ca_all": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
         f"{seq_type}_binder_scRMSD_target_aligned_ca_all": (
             list(target_aligned) if target_aligned is not None else [0.5] * n
         ),
-        f"{seq_type}_complex_binder_pLDDT_all": list(binder_plddt) if binder_plddt is not None else [0.95] * n,
     }
     for model, vals in (apo or {}).items():
         out[f"{seq_type}_apo_scRMSD_ca_{model}_all"] = vals
@@ -377,7 +371,7 @@ def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
         "mpnn_apo_scRMSD_ca_esmfold_all",
         "mpnn_apo_scRMSD_ca_esmfold2_all",
         "mpnn_complex_i_pAE_all",
-        "mpnn_complex_pLDDT_all",
+        "mpnn_complex_binder_pLDDT_all",
         "mpnn_binder_scRMSD_ca_all",
         "mpnn_complex_scRMSD_ca_all",
         "mpnn_binder_scRMSD_target_aligned_ca_all",
@@ -412,7 +406,6 @@ def verdict_frame():
         [
             {
                 "mpnn_complex_i_pAE_all": [0.1, 0.1],
-                "mpnn_complex_pLDDT_all": [0.95, 0.95],
                 "mpnn_complex_binder_pLDDT_all": [0.95, 0.95],
                 "mpnn_binder_scRMSD_ca_all": [0.5, 0.5],
                 "mpnn_apo_scRMSD_ca_esmfold2_all": [0.5, 0.5],

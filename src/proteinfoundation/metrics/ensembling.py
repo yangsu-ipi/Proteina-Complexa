@@ -14,8 +14,12 @@ import math
 
 # The rounding the single-model path used, kept so a one-model run's numbers
 # stay byte-identical to what it produced before ensembling existed.
+# No "pLDDT": ColabDesign's binder protocol reports log["plddt"] over the binder
+# alone, so complex_pLDDT was never the whole-complex mean its name implied --
+# it equalled the binder half exactly on every row of a real run, to the last
+# digit the CSV carried. Keeping both would be one number under two names, and
+# the misleading name is the one a threshold could be pointed at by mistake.
 AF2_STAT_PRECISION = {
-    "pLDDT": 3,
     "pTM": 3,
     "i_pTM": 3,
     "pAE": 3,
@@ -48,9 +52,13 @@ def af2_stats_from_metrics(prediction_metrics: dict) -> dict:
     Rounding is deferred to :func:`average_af2_stats` so the mean is taken at
     full precision -- rounding each model first would average five rounding
     errors along with the scores.
+
+    ``plddt`` is deliberately not read from here. It is the binder-only mean,
+    and :func:`mean_chain_plddt` derives the same number from the per-residue
+    array along with the target's, so taking it twice would only create a second
+    name for it.
     """
     return {
-        "pLDDT": prediction_metrics["plddt"],
         "pTM": prediction_metrics["ptm"],
         "i_pTM": prediction_metrics["i_ptm"],
         "pAE": prediction_metrics["pae"],
@@ -131,10 +139,18 @@ def _mean(values) -> float:
 def mean_chain_plddt(plddt, target_len: int | None) -> dict:
     """Split a complex's per-residue pLDDT into a target mean and a binder mean.
 
-    The complex mean confounds the two. A CBLN1 complex is 136 target residues
-    against a 40-59 residue binder, so roughly three quarters of complex_pLDDT
-    is the target folding as well as it always does -- a binder can be modelled
-    badly and still clear a threshold on the average.
+    A whole-complex mean confounds the two. A CBLN1 complex is 136 target
+    residues against a 40-59 residue binder, so roughly three quarters of such a
+    mean is the target folding as well as it always does, and a binder can be
+    modelled badly and still clear a threshold on the average. That is the case
+    on the ESMFold2 advisory side, where the reported pLDDT does cover the whole
+    complex: measured over a real campaign its median tracked the target's to
+    three decimals while the binder ranged 0.71 to 0.92.
+
+    It was *not* the case for AF2, whose binder protocol reports its scalar over
+    the binder alone -- the split reproduced that number exactly, which is how
+    complex_pLDDT came to be retired as a second name for binder_pLDDT rather
+    than kept as a coarser one. The target mean is the new information there.
 
     ColabDesign's binder protocol orders residues target-first, which is the
     same assumption the binder-only losses make via ``_target_len``.

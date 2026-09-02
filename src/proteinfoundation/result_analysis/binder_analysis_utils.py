@@ -29,7 +29,12 @@ from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold
 METRIC_CASE_MAPPING = {
     # pLDDT variations
     "plddt": "pLDDT",
-    "complex_plddt": "complex_pLDDT",
+    # complex_pLDDT collapsed into complex_binder_pLDDT, which is the number it
+    # always held. Aliased rather than dropped so an existing
+    # aggregation.success_thresholds override keeps gating what it meant to.
+    "complex_plddt": "complex_binder_pLDDT",
+    "complex_pLDDT": "complex_binder_pLDDT",
+    "complex_binder_plddt": "complex_binder_pLDDT",
     # ipAE variations
     "ipae": "i_pAE",
     "i_pae": "i_pAE",
@@ -93,26 +98,19 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
         "column_prefix": "complex",
         "metric": "i_pAE",
     },
-    # The binder half of complex_pLDDT, which is the half a design controls. The
-    # complex mean is roughly three quarters target on a CBLN1-shaped complex,
-    # and the target is templated from its own structure in every prediction, so
-    # a badly modelled binder can clear the confounded gate on the target's
-    # score alone. 0.9 is the same bar complex_pLDDT already sets and means the
-    # same thing here: AF2 pLDDT is on its native scale. It does not transfer to
-    # ESMFold2, which runs compressed -- see consensus_folding.
+    # What complex_pLDDT always was. ColabDesign's binder protocol computes
+    # log["plddt"] over the binder alone, so the old name described a whole-
+    # complex mean it never held -- confirmed numerically: the two columns
+    # matched to the last digit on every row of a real run. Same 0.9 bar, same
+    # meaning, honest name. AF2 pLDDT is on its native scale; this threshold
+    # does not transfer to ESMFold2, which runs compressed (see
+    # consensus_folding), and nothing there is gated.
     "complex_binder_pLDDT": {
         "threshold": 0.9,
         "op": ">=",
         "scale": 1.0,
         "column_prefix": "complex",
         "metric": "binder_pLDDT",
-    },
-    "complex_pLDDT": {
-        "threshold": 0.9,
-        "op": ">=",
-        "scale": 1.0,
-        "column_prefix": "complex",
-        "metric": "pLDDT",
     },
     "binder_scRMSD_ca": {
         "threshold": 1.5,

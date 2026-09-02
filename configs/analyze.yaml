@@ -42,7 +42,7 @@ aggregation:
   #     scale: 31.0
   #     column_prefix: complex
   #     metric: i_pAE
-  #   complex_pLDDT:
+  #   complex_binder_pLDDT:
   #     threshold: 0.85
   #     op: ">="
   #     scale: 1.0

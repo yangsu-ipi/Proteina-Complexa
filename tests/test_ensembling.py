@@ -37,7 +37,7 @@ RAW = {
 def test_one_model_is_what_the_single_model_path_produced():
     """Ensembling must not move the numbers of a run that asked for one model."""
     stats = average_af2_stats([af2_stats_from_metrics(RAW)])
-    assert stats["pLDDT"] == round(RAW["plddt"], 3)
+    assert stats["pTM"] == round(RAW["ptm"], 3)
     assert stats["i_pAE"] == round(RAW["i_pae"], 3)
     assert stats["avg_ipSAE"] == round(RAW["avg_ipsae"], 4)
 
@@ -50,9 +50,9 @@ def test_absent_ipsae_10_reads_as_zero_rather_than_raising():
 def test_scores_are_meaned_not_best_of():
     """Taking the best model would discard the disagreement that is the whole
     reason for running five of them."""
-    good = af2_stats_from_metrics({**RAW, "plddt": 0.95})
-    bad = af2_stats_from_metrics({**RAW, "plddt": 0.55})
-    assert average_af2_stats([good, bad])["pLDDT"] == pytest.approx(0.75)
+    good = af2_stats_from_metrics({**RAW, "i_ptm": 0.95})
+    bad = af2_stats_from_metrics({**RAW, "i_ptm": 0.55})
+    assert average_af2_stats([good, bad])["i_pTM"] == pytest.approx(0.75)
 
 
 def test_the_mean_is_taken_before_rounding():
@@ -67,6 +67,7 @@ def test_every_stat_keeps_the_precision_it_had():
     assert set(AF2_STAT_PRECISION) - set(stats) == {"target_pLDDT", "binder_pLDDT"}, (
         "the per-chain means come from the per-residue array, not the log dict"
     )
+    assert "pLDDT" not in AF2_STAT_PRECISION, "collapsed into binder_pLDDT, the number ColabDesign's log always held"
 
 
 def test_a_backend_reporting_no_per_residue_confidence_still_averages():
@@ -75,7 +76,8 @@ def test_a_backend_reporting_no_per_residue_confidence_still_averages():
     not raise."""
     stats = average_af2_stats([af2_stats_from_metrics(RAW), af2_stats_from_metrics(RAW)])
     assert "target_pLDDT" not in stats
-    assert stats["pLDDT"] == round(RAW["plddt"], 3)
+    assert "binder_pLDDT" not in stats
+    assert stats["pTM"] == round(RAW["ptm"], 3)
 
 
 def test_per_chain_means_average_over_models_like_any_other_score():
@@ -331,3 +333,35 @@ def test_the_advisory_per_chain_columns_cannot_be_mistaken_for_gated_ones():
     columns = [advisory_column("mpnn", "esmfold2", m) for m in ("target_pLDDT", "binder_pLDDT")]
     gated = {"mpnn_complex_target_pLDDT", "mpnn_complex_binder_pLDDT", "mpnn_complex_pLDDT"}
     assert_columns_are_advisory(columns, gated)
+
+
+def test_complex_plddt_is_gone_and_still_addressable():
+    """It was one number under two names: ColabDesign's log["plddt"] is the
+    binder-only mean, matching the per-residue split to the last digit on a real
+    run. The name that survives is the one that says so -- but an existing
+    success_thresholds override naming the old one must keep gating what it
+    meant, not silently drop a criterion."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        normalize_threshold_dict,
+    )
+
+    assert "complex_pLDDT" not in DEFAULT_PROTEIN_BINDER_THRESHOLDS
+    assert "complex_binder_pLDDT" in DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values():
+        assert spec.get("metric") != "pLDDT", "nothing gates the retired suffix"
+
+    for alias in ("complex_pLDDT", "complex_plddt"):
+        normalized = normalize_threshold_dict({alias: {"threshold": 0.8, "op": ">="}})
+        assert "complex_binder_pLDDT" in normalized, f"{alias} still lands on a real criterion"
+        assert normalized["complex_binder_pLDDT"]["threshold"] == 0.8, "and keeps its threshold"
+
+
+def test_the_only_reader_of_the_old_column_was_repointed():
+    """refolded_structure_utils skips a sample when any of its three metric
+    columns is absent, and skips it at debug level -- so leaving it pointed at
+    the retired name would have quietly stopped exporting structures."""
+    source = (SRC / "src/proteinfoundation/utils/refolded_structure_utils.py").read_text()
+    assert '_complex_binder_pLDDT"' in source
+    assert '_complex_pLDDT"' not in source

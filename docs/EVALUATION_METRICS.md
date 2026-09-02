@@ -121,7 +121,7 @@ metric:
 |--------|---------------|------------------|------------|
 | Interface PAE | `{seq}_complex_i_pAE` | Binding confidence | < 10 (< 5 excellent) |
 | Interface pTM | `{seq}_complex_i_pTM` | Interface quality | > 0.5 |
-| pLDDT | `{seq}_complex_pLDDT` | Structure confidence | > 70 |
+| pLDDT | `{seq}_complex_binder_pLDDT` | Binder confidence in the complex | > 0.9 |
 | Binder scRMSD | `{seq}_binder_scRMSD` | Design preserved after refold | < 2.0 A |
 
 ### Ligand Binder Evaluation
@@ -314,7 +314,7 @@ metric:
 | Metric | What it measures | Good value |
 |--------|------------------|------------|
 | `{seq}_complex_i_pAE` | Binding confidence | < 10 (protein), varies (ligand) |
-| `{seq}_complex_pLDDT` | Structure confidence | > 0.8 |
+| `{seq}_complex_binder_pLDDT` | Structure confidence | > 0.8 |
 | `{seq}_binder_scRMSD` | Design preserved after refold | < 2.0 A |
 | `{seq}_motif_rmsd_pred` | Motif RMSD in predicted structure | < 2.0 A (protein), < 1.5 A (ligand) |
 | `{seq}_correct_motif_sequence` | Motif residues match ground truth | >= 1.0 (perfect) |
@@ -755,7 +755,7 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 |--------|-------------|
 | `{seq}_complex_i_pAE` | Best interface PAE (lower = better binding) |
 | `{seq}_complex_i_pTM` | Best interface pTM (higher = better) |
-| `{seq}_complex_pLDDT` | Best overall pLDDT (higher = more confident) |
+| `{seq}_complex_binder_pLDDT` | Binder pLDDT, meaned over the AF2 models (higher = more confident) |
 | `{seq}_complex_pTM` | Best overall pTM score |
 | `{seq}_binder_scRMSD` | Best binder backbone RMSD after refolding |
 | `{seq}_binder_scRMSD_ca` | Binder CA-only RMSD after refolding |
@@ -1039,7 +1039,7 @@ Written to `motif_binder_results_*.csv` by motif binder evaluation. Used by both
 |--------|-------------|
 | `{seq}_complex_i_pAE` | Best interface PAE (lower = better binding) |
 | `{seq}_complex_i_pTM` | Best interface pTM |
-| `{seq}_complex_pLDDT` | Best overall pLDDT |
+| `{seq}_complex_binder_pLDDT` | Binder pLDDT, meaned over the AF2 models |
 | `{seq}_binder_scRMSD` | Best binder backbone RMSD after refolding |
 | `{seq}_binder_scRMSD_ca` | CA-only binder scRMSD |
 | `{seq}_binder_scRMSD_bb3` | BB3 (N, CA, C) binder scRMSD |
@@ -1137,7 +1137,7 @@ print(f"Motif success rate: {len(success) / len(df) * 100:.1f}%")
 # Standard protein binder success
 success = df[
     (df["mpnn_complex_i_pAE"] * 31 <= 7.0) &
-    (df["mpnn_complex_pLDDT"] >= 0.9) &
+    (df["mpnn_complex_binder_pLDDT"] >= 0.9) &
     (df["mpnn_binder_scRMSD"] < 1.5)
 ]
 print(f"Protein binder success rate: {len(success) / len(df) * 100:.1f}%")
@@ -1164,7 +1164,7 @@ df = pd.read_csv("evaluation_results/my_run/motif_binder_results_combined.csv")
 # Joint binder + motif success (protein target)
 success = df[
     (df["mpnn_fixed_complex_i_pAE"] * 31 <= 7.0) &
-    (df["mpnn_fixed_complex_pLDDT"] >= 0.8) &
+    (df["mpnn_fixed_complex_binder_pLDDT"] >= 0.8) &
     (df["mpnn_fixed_binder_scRMSD_ca"] < 2.0) &
     (df["mpnn_fixed_motif_rmsd_pred"] < 2.0) &
     (df["mpnn_fixed_correct_motif_sequence"] >= 1.0)
@@ -1232,7 +1232,7 @@ Default thresholds (`result_type: protein_binder`), based on AlphaProteo criteri
 | Metric | Column | Threshold | Direction |
 |--------|--------|-----------|-----------|
 | i_pAE | `{seq}_complex_i_pAE` | * 31 <= 7.0 | Lower is better |
-| pLDDT | `{seq}_complex_pLDDT` | >= 0.9 | Higher is better |
+| pLDDT | `{seq}_complex_binder_pLDDT` | >= 0.9 | Higher is better |
 | scRMSD_ca | `{seq}_binder_scRMSD_ca` | < 1.5 A | Lower is better |
 
 A sample passes if **all three** thresholds are met for at least one redesigned sequence.
@@ -1324,7 +1324,7 @@ A sample is "successful" when at least one redesign passes ALL binder AND ALL mo
 | Metric | Default threshold | Direction |
 |--------|-------------------|-----------|
 | `{seq}_complex_i_pAE` (scaled by 31) | <= 7.0 | Lower is better |
-| `{seq}_complex_pLDDT` | >= 0.8 | Higher is better |
+| `{seq}_complex_binder_pLDDT` | >= 0.8 | Higher is better |
 | `{seq}_binder_scRMSD_ca` | < 2.0 A | Lower is better |
 
 **Motif criteria (evaluated on the same redesign):**

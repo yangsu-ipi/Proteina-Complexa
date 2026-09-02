@@ -172,8 +172,9 @@ def test_apo_confidence_is_not_gated():
 
 
 def test_the_binder_half_of_the_af2_plddt_is_gated():
-    """The AF2 side is on its native scale, where 0.9 is the bar complex_pLDDT
-    already sets."""
+    """The AF2 side is on its native scale, where 0.9 is the bar this criterion
+    has always set -- under the name complex_pLDDT until that was found to be a
+    second name for the same number."""
     from proteinfoundation.result_analysis.binder_analysis_utils import (
         DEFAULT_PROTEIN_BINDER_THRESHOLDS,
         build_column_name,

@@ -8,7 +8,7 @@ way it will, and what it displaces.
 A binder design is judged in two conditions:
 
 - **holo** — the binder folded with its target. Gated today by
-  `{seq_type}_complex_i_pAE`, `{seq_type}_complex_pLDDT` and
+  `{seq_type}_complex_i_pAE`, `{seq_type}_complex_binder_pLDDT` and
   `{seq_type}_binder_scRMSD_ca` (`binder_analysis_utils.py`,
   `DEFAULT_PROTEIN_BINDER_THRESHOLDS`).
 - **apo** — the binder folded alone. Computed today as *codesignability*, on the
