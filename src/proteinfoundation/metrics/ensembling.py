@@ -27,7 +27,19 @@ AF2_STAT_PRECISION = {
     "min_ipSAE_10": 4,
     "max_ipSAE_10": 4,
     "avg_ipSAE_10": 4,
+    # Per-chain means, from the same per-residue array the scalar pLDDT is the
+    # mean of. Absent from backends that report no per-residue confidence, so
+    # average_af2_stats skips what it is not given rather than requiring these.
+    "target_pLDDT": 3,
+    "binder_pLDDT": 3,
 }
+
+
+# A complex pLDDT below this is not plausible as a fraction, so the array is
+# almost certainly on AlphaFold's 0-100 scale. Worth guarding: the gates read
+# these as fractions, and a 0-100 array would clear a >= 0.9 threshold for
+# every design ever scored, silently, while looking like a great campaign.
+_PLDDT_FRACTION_CEILING = 1.5
 
 
 def af2_stats_from_metrics(prediction_metrics: dict) -> dict:
@@ -63,6 +75,7 @@ def average_af2_stats(per_model: list[dict]) -> dict:
     return {
         key: round(sum(model[key] for model in per_model) / len(per_model), precision)
         for key, precision in AF2_STAT_PRECISION.items()
+        if all(key in model for model in per_model)
     }
 
 
@@ -108,3 +121,36 @@ def pop_per_model_paths(complex_statistics: list, seq_num: int) -> list[str] | N
         return None
     paths = stats.pop("complex_pdb_paths", None)
     return list(paths) if paths else None
+
+
+def _mean(values) -> float:
+    finite = [float(v) for v in values if math.isfinite(float(v))]
+    return sum(finite) / len(finite) if finite else float("nan")
+
+
+def mean_chain_plddt(plddt, target_len: int | None) -> dict:
+    """Split a complex's per-residue pLDDT into a target mean and a binder mean.
+
+    The complex mean confounds the two. A CBLN1 complex is 136 target residues
+    against a 40-59 residue binder, so roughly three quarters of complex_pLDDT
+    is the target folding as well as it always does -- a binder can be modelled
+    badly and still clear a threshold on the average.
+
+    ColabDesign's binder protocol orders residues target-first, which is the
+    same assumption the binder-only losses make via ``_target_len``.
+    """
+    if plddt is None or target_len is None:
+        return {}
+    total = len(plddt)
+    if not 0 < target_len < total:
+        # No boundary means no split worth trusting -- better to emit nothing
+        # and leave the columns absent than to label the whole complex as one
+        # chain or the other.
+        return {}
+    values = [float(v) for v in plddt]
+    if _mean(values) > _PLDDT_FRACTION_CEILING:
+        values = [v / 100.0 for v in values]
+    return {
+        "target_pLDDT": _mean(values[:target_len]),
+        "binder_pLDDT": _mean(values[target_len:]),
+    }

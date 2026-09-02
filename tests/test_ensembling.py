@@ -15,6 +15,7 @@ from proteinfoundation.metrics.ensembling import (
     af2_stats_from_metrics,
     average_af2_stats,
     average_rmsd_over_models,
+    mean_chain_plddt,
     pop_per_model_paths,
 )
 
@@ -60,7 +61,67 @@ def test_the_mean_is_taken_before_rounding():
 
 def test_every_stat_keeps_the_precision_it_had():
     stats = average_af2_stats([af2_stats_from_metrics(RAW)])
-    assert set(stats) == set(AF2_STAT_PRECISION)
+    assert set(stats) <= set(AF2_STAT_PRECISION)
+    assert set(AF2_STAT_PRECISION) - set(stats) == {"target_pLDDT", "binder_pLDDT"}, (
+        "the per-chain means come from the per-residue array, not the log dict"
+    )
+
+
+def test_a_backend_reporting_no_per_residue_confidence_still_averages():
+    """average_af2_stats must not require the per-chain keys of every caller --
+    a model that exposes no per-residue pLDDT should lose those two columns,
+    not raise."""
+    stats = average_af2_stats([af2_stats_from_metrics(RAW), af2_stats_from_metrics(RAW)])
+    assert "target_pLDDT" not in stats
+    assert stats["pLDDT"] == round(RAW["plddt"], 3)
+
+
+def test_per_chain_means_average_over_models_like_any_other_score():
+    per_model = [
+        {**af2_stats_from_metrics(RAW), **mean_chain_plddt([0.9] * 4 + [0.8] * 2, 4)},
+        {**af2_stats_from_metrics(RAW), **mean_chain_plddt([0.9] * 4 + [0.6] * 2, 4)},
+    ]
+    assert average_af2_stats(per_model)["binder_pLDDT"] == pytest.approx(0.7)
+
+
+def test_the_target_and_binder_are_split_at_the_boundary():
+    """ColabDesign orders the binder protocol target-first, which is what the
+    binder-only losses already assume via _target_len."""
+    split = mean_chain_plddt([1.0, 1.0, 1.0, 0.5, 0.3], target_len=3)
+    assert split["target_pLDDT"] == pytest.approx(1.0)
+    assert split["binder_pLDDT"] == pytest.approx(0.4)
+
+
+def test_the_complex_mean_hides_a_bad_binder_that_the_split_shows():
+    """The reason this exists. A CBLN1-shaped complex is mostly target, so the
+    target folding as well as it always does carries the average past a
+    threshold the binder comes nowhere near."""
+    plddt = [0.97] * 136 + [0.55] * 44
+    split = mean_chain_plddt(plddt, target_len=136)
+    assert sum(plddt) / len(plddt) > 0.86, "complex mean is dragged up by the target"
+    assert split["binder_pLDDT"] == pytest.approx(0.55), "the binder is plainly bad"
+
+
+def test_a_0_to_100_array_is_read_as_fractions():
+    """The gates compare against 0.9. An unnormalised array would clear every
+    threshold for every design ever scored, and look like a great campaign."""
+    split = mean_chain_plddt([97.0] * 3 + [55.0] * 2, target_len=3)
+    assert split["target_pLDDT"] == pytest.approx(0.97)
+    assert split["binder_pLDDT"] == pytest.approx(0.55)
+
+
+def test_no_usable_boundary_emits_nothing():
+    """Better an absent column than the whole complex labelled as one chain."""
+    assert mean_chain_plddt([0.9, 0.8], target_len=None) == {}
+    assert mean_chain_plddt(None, 3) == {}
+    assert mean_chain_plddt([0.9, 0.8], target_len=0) == {}
+    assert mean_chain_plddt([0.9, 0.8], target_len=2) == {}, "no binder residues left"
+    assert mean_chain_plddt([0.9, 0.8], target_len=5) == {}
+
+
+def test_a_nonfinite_residue_does_not_erase_its_chain():
+    split = mean_chain_plddt([0.9, float("nan"), 0.7, 0.5], target_len=3)
+    assert split["target_pLDDT"] == pytest.approx(0.8)
 
 
 def test_rmsd_averages_over_the_models():
@@ -166,3 +227,25 @@ def test_every_model_gets_its_own_structure_file():
     body = body[body.index("def predict_binder_complex(") :]
     assert "_model{model_num + 1}.pdb" in body
     assert "complex_pdb_paths.append(complex_pdb)" in body
+
+
+def test_per_chain_plddt_is_computed_for_every_model():
+    """Per-model, not once per design: the split has to average over the five
+    models like every other score, which it cannot do from a single call."""
+    source = _read("src/proteinfoundation/utils/colabdesign_utils.py")
+    body = source[source.index("for model_num in range(n_models)") : source.index("stats = average_af2_stats")]
+    assert "mean_chain_plddt(" in body
+    assert 'aux.get("plddt")' in body
+    assert '"_target_len"' in body
+
+
+def test_the_column_a_gate_would_look_for_is_the_column_produced():
+    """binder_eval names complex columns f"{seq_type}_complex_{metric}_all", and
+    a threshold spec builds its column from column_prefix plus metric. These are
+    two derivations of one name written in different files, which is how the
+    last set of gate columns went missing."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import build_column_name
+
+    for metric in ("target_pLDDT", "binder_pLDDT"):
+        produced = f"mpnn_complex_{metric}_all"
+        assert build_column_name("mpnn", "complex", metric) == produced

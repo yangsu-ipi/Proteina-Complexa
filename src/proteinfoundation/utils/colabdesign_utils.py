@@ -42,7 +42,11 @@ from loguru import logger
 AF2_SAVE_LOCATION = "AF2"
 
 
-from proteinfoundation.metrics.ensembling import af2_stats_from_metrics, average_af2_stats
+from proteinfoundation.metrics.ensembling import (
+    af2_stats_from_metrics,
+    average_af2_stats,
+    mean_chain_plddt,
+)
 
 
 def get_af2_advanced_settings(num_af2_models: int = 1):
@@ -309,7 +313,17 @@ def predict_binder_complex(
             verbose=False,
         )
         prediction_model.save_pdb(complex_pdb)
-        per_model_stats.append(af2_stats_from_metrics(copy_dict(prediction_model.aux["log"])))
+        model_stats = af2_stats_from_metrics(copy_dict(prediction_model.aux["log"]))
+        # Per-chain means come from the per-residue array rather than the PDB's
+        # B-factor column: same numbers, no dependence on how save_pdb scales
+        # them, and no reparsing of a file we just wrote.
+        model_stats.update(
+            mean_chain_plddt(
+                prediction_model.aux.get("plddt"),
+                getattr(prediction_model, "_target_len", None),
+            )
+        )
+        per_model_stats.append(model_stats)
         complex_pdb_paths.append(complex_pdb)
 
     stats = average_af2_stats(per_model_stats)
