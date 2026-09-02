@@ -260,7 +260,7 @@ GENERATION_DIGEST_IGNORED_KEYS = ("skip_completed_shards",)
 # written by an older formula is recognised as incomparable rather than as a
 # mismatch: aborting a resume because *our* hash changed would be a false alarm
 # on a hard failure, which is worse than the warning it replaced.
-GENERATION_DIGEST_VERSION = 2
+GENERATION_DIGEST_VERSION = 3
 
 # Bumped when the marker payload gains a field a reader depends on. Separate from
 # the digest version, which is about what a digest *means*; this is about what a
@@ -282,23 +282,13 @@ MARKER_SCHEMA_VERSION = 3
 MARKER_SCHEMA_WITH_OUTPUTS = 2
 
 
-def generation_config_digest(cfg_gen: dict) -> str:
-    """Stable digest of the generation config, computed before job splitting.
+def _digest_inputs(cfg_gen: dict) -> tuple[str, str]:
+    """The config text and resolution mode every digest formula hashes.
 
-    Used to decide whether an already-complete shard was produced by the same
-    request. Hashing the whole ``generation`` subtree rather than comparing a
-    sample count keeps this correct for every code path (length-based, repeat
-    based, motif conditional features) without duplicating ``split_by_job``'s
-    arithmetic.
-
-    Resolution is attempted but never required. The generation subtree carries
-    ``oc.env`` interpolations for things a given run may not use at all --
-    ``af_params_dir: ${oc.env:AF2_DIR}`` (``binder_generate.yaml:135``) and, in
-    campaign configs, a ``target_path`` built from a campaign directory variable.
-    Insisting on resolution would abort generation over an unset variable that
-    the run never reads. So an unresolvable config falls back to the unresolved
-    text, with the mode mixed into the hash so the two forms cannot collide.
+    Shared so a legacy formula reproduces byte-for-byte what it once produced:
+    the only difference between versions must be the payload they wrap this in.
     """
+
     cfg_for_digest = cfg_gen
     if any(k in cfg_gen for k in GENERATION_DIGEST_IGNORED_KEYS):
         cfg_for_digest = cfg_gen.copy() if isinstance(cfg_gen, DictConfig) else OmegaConf.create(dict(cfg_gen))
@@ -315,7 +305,55 @@ def generation_config_digest(cfg_gen: dict) -> str:
         logger.debug(f"Generation config digest computed unresolved ({type(exc).__name__}: {exc})")
         text = OmegaConf.to_yaml(cfg_for_digest, resolve=False)
         mode = "unresolved"
-    return hashlib.sha256(f"v{GENERATION_DIGEST_VERSION}\n{mode}\n{text}".encode()).hexdigest()
+    return text, mode
+
+
+def generation_config_digest(cfg_gen: dict, seed: object = None) -> str:
+    """Stable digest of the generation request, computed before job splitting.
+
+    Used to decide whether an already-complete shard was produced by the same
+    request. Hashing the whole ``generation`` subtree rather than comparing a
+    sample count keeps this correct for every code path (length-based, repeat
+    based, motif conditional features) without duplicating ``split_by_job``'s
+    arithmetic.
+
+    *seed* is part of the request even though it lives outside the generation
+    subtree, because it decides what the run produces: ``nres`` draws its binder
+    lengths through ``np.random.randint`` under this seed, and the sampler's
+    noise follows from it too. Without it, changing the seed and rerunning into
+    an existing directory recomputed the same digest, skipped every shard, and
+    handed back the previous run's designs -- a silent no-op where the whole
+    point was a fresh draw. Only a rename protected against that.
+
+    The value reaching here is ``base + job_id`` (``setup`` offsets it so shards
+    do not draw the same samples), so shard digests differ within one run. That
+    is what the marker should record: it is the seed that produced those files.
+    Sharding is otherwise still excluded -- shard 0 digests the same whether the
+    run has two shards or four.
+
+    Resolution is attempted but never required. The generation subtree carries
+    ``oc.env`` interpolations for things a given run may not use at all --
+    ``af_params_dir: ${oc.env:AF2_DIR}`` (``binder_generate.yaml:135``) and, in
+    campaign configs, a ``target_path`` built from a campaign directory variable.
+    Insisting on resolution would abort generation over an unset variable that
+    the run never reads. So an unresolvable config falls back to the unresolved
+    text, with the mode mixed into the hash so the two forms cannot collide.
+    """
+    text, mode = _digest_inputs(cfg_gen)
+    return hashlib.sha256(f"v{GENERATION_DIGEST_VERSION}\nseed={seed}\n{mode}\n{text}".encode()).hexdigest()
+
+
+def digest_v2(cfg_gen: dict) -> str:
+    """What v2 would have digested for this config: the same text, no seed.
+
+    Exists so the seed's arrival does not force a rename on campaigns that did
+    not change. A v2 marker whose digest this reproduces is the same request as
+    far as v2 could tell, and the seed it was run under is not recorded anywhere
+    to check -- so this trusts it, exactly as a v2 run would have. Failing closed
+    instead would cost a rename on every campaign already on disk.
+    """
+    text, mode = _digest_inputs(cfg_gen)
+    return hashlib.sha256(f"v2\n{mode}\n{text}".encode()).hexdigest()
 
 
 def digest_v1_candidates(cfg_gen: dict) -> set[str]:
@@ -1000,8 +1038,8 @@ def shard_already_complete(
         # is an ordinary resume.
         if legacy_digests and recorded in legacy_digests:
             logger.info(
-                f"Shard {job_id} marker predates digest v{GENERATION_DIGEST_VERSION} but its v1 "
-                f"digest matches this config; treating it as the same request."
+                f"Shard {job_id} marker predates digest v{GENERATION_DIGEST_VERSION} but an earlier "
+                f"formula's digest matches this config; treating it as the same request."
             )
             recorded = digest  # comparable from here on
         else:
@@ -1508,7 +1546,7 @@ def main(cfg):
     # costs nothing, and computed before split_by_job so the digest does not
     # depend on the sharding. The previous check here named
     # results_{config_name}_{job_id}.csv, which nothing in the codebase writes.
-    gen_config_digest = generation_config_digest(cfg_gen)
+    gen_config_digest = generation_config_digest(cfg_gen, seed=cfg.get("seed"))
     if shard_already_complete(
         root_path,
         job_id,
@@ -1516,7 +1554,7 @@ def main(cfg):
         skip_enabled=bool(cfg_gen.get("skip_completed_shards", True)),
         # Lets a marker written before the digest was versioned be recognised as
         # the same request rather than refused.
-        legacy_digests=digest_v1_candidates(cfg_gen),
+        legacy_digests=digest_v1_candidates(cfg_gen) | {digest_v2(cfg_gen)},
         # What a shard of *this* config must have produced, which the marker on
         # disk may predate and so cannot be asked. Derived from the same branch
         # rule the save dispatch uses, because the conditions are not exclusive

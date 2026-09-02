@@ -30,6 +30,7 @@ from proteinfoundation.generate import (
     assert_contract_produced,
     assign_motif_csv_path,
     digest_v1_candidates,
+    digest_v2,
     generation_config_digest,
     generation_save_branch,
     motif_csv_outputs,
@@ -471,6 +472,63 @@ def test_a_legacy_marker_whose_v1_digest_matches_is_the_same_request(tmp_path, v
         )
         is True
     )
+
+
+def test_the_seed_is_part_of_the_request():
+    """The seed decides what a run produces -- nres draws its binder lengths
+    through np.random.randint under it, and the sampler's noise follows. Before
+    it was digested, changing the seed and rerunning into an existing directory
+    recomputed the same digest, skipped every shard, and handed back the previous
+    run's designs. A silent no-op where the point was a fresh draw."""
+    config = cfg()
+    assert generation_config_digest(config, seed=5) != generation_config_digest(config, seed=6)
+    assert generation_config_digest(config, seed=5) == generation_config_digest(config, seed=5)
+    assert generation_config_digest(config, seed=None) != generation_config_digest(config, seed=0), (
+        "an absent seed is not seed zero"
+    )
+
+
+def test_the_config_still_decides_the_digest_at_a_fixed_seed():
+    """Adding the seed must not have replaced what was already hashed."""
+    assert generation_config_digest(cfg(), seed=5) != generation_config_digest(cfg(args={"nsteps": 999}), seed=5)
+
+
+def test_a_v2_marker_resumes_rather_than_demanding_a_rename(tmp_path):
+    """v2 could not see the seed, so a v2 marker cannot be checked against one.
+    It is trusted exactly as a v2 run would have trusted it -- failing closed
+    instead would cost a rename on every campaign already on disk."""
+    config = cfg()
+    write_marker(tmp_path, digest_v2(config), version=2)
+    assert (
+        shard_already_complete(
+            str(tmp_path),
+            0,
+            generation_config_digest(config, seed=5),
+            skip_enabled=True,
+            legacy_digests=digest_v1_candidates(config) | {digest_v2(config)},
+        )
+        is True
+    )
+
+
+def test_a_v2_marker_from_a_different_config_is_still_refused(tmp_path):
+    """Trusting v2 on the seed must not extend to trusting it on the config."""
+    write_marker(tmp_path, digest_v2(cfg(args={"nsteps": 999})), version=2)
+    with pytest.raises(SystemExit, match="Refusing to generate"):
+        shard_already_complete(
+            str(tmp_path),
+            0,
+            generation_config_digest(cfg(), seed=5),
+            skip_enabled=True,
+            legacy_digests=digest_v1_candidates(cfg()) | {digest_v2(cfg())},
+        )
+
+
+def test_the_v2_formula_is_not_the_current_one():
+    """If these ever coincide, the legacy path is silently checking the wrong
+    thing and a real seed change would resume as though nothing moved."""
+    assert digest_v2(cfg()) != generation_config_digest(cfg(), seed=5)
+    assert digest_v2(cfg()) != generation_config_digest(cfg(), seed=None)
 
 
 def test_v1_candidates_cover_the_operational_key_it_used_to_hash(tmp_path):
