@@ -179,7 +179,7 @@ def test_a_backend_without_per_model_paths_reports_nothing():
 # torch and colabdesign.
 # ---------------------------------------------------------------------------
 
-import pathlib  # noqa: E402
+import pathlib
 
 SRC = pathlib.Path(__file__).resolve().parents[1]
 
