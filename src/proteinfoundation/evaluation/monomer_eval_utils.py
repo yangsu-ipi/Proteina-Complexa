@@ -160,8 +160,36 @@ def monomer_fold_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def read_monomer_fold_cache(output_dir: str, suffix: str, fingerprint: str) -> dict | None:
-    """Cached refold results for this design, or None. Never raises."""
+MONOMER_CACHE_SCHEMA = 2  # 1 held a single fold; 2 holds one per seed
+
+
+def _fold_payload(entry: dict) -> dict | None:
+    """One seed's stored fold, or None if it holds nothing usable."""
+    if not isinstance(entry, dict) or not entry.get("sequences") or not entry.get("rmsd_values"):
+        return None
+    return entry
+
+
+def read_monomer_fold_cache(
+    output_dir: str, suffix: str, fingerprint: str, seeds: list[int] | None = None
+) -> dict | None:
+    """Cached refold results for this design, or None. Never raises.
+
+    With *seeds*, returns ``{seed: fold}`` for the seeds present -- possibly a
+    subset, possibly empty. Folds are keyed by the SEED VALUE, not by position:
+    a seed is what actually determined a result, while "the k-th seed" is only
+    meaningful relative to a derivation the key would not record. Keying by value
+    also means a pinned seed is an ordinary entry rather than a special case, and
+    a derivation change simply misses rather than serving a fold produced under
+    the old one.
+
+    Entries from a superseded derivation are never served and are not deleted:
+    making a read destructive to reclaim a few hundred bytes is a worse trade than
+    letting these files grow slowly.
+
+    Without *seeds*, returns the single fold a schema-1 cache holds, for callers
+    not yet asking per seed.
+    """
     path = monomer_fold_cache_path(output_dir, suffix)
     if not os.path.exists(path):
         return None
@@ -174,9 +202,31 @@ def read_monomer_fold_cache(output_dir: str, suffix: str, fingerprint: str) -> d
                 f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
             )
             return None
-        if not cached.get("sequences") or not cached.get("rmsd_values"):
-            return None
-        return cached
+        folds = cached.get("folds")
+        if folds is None:
+            # Schema 1: one unlabelled fold. It was produced by whatever seed the
+            # derivation yields for its own stored sequences, so it can be adopted
+            # under that key rather than discarded -- which is what keeps a
+            # finished campaign's folds usable when a run starts asking for more
+            # than one seed.
+            single = _fold_payload(cached)
+            if single is None:
+                return None
+            if seeds is None:
+                return single
+            from proteinfoundation.metrics.seeding import deterministic_seed
+
+            legacy = deterministic_seed(os.path.basename(output_dir), suffix, *single["sequences"])
+            return {legacy: single} if legacy in seeds else {}
+        if seeds is None:
+            first = next((v for v in folds.values() if _fold_payload(v)), None)
+            return first
+        present = {}
+        for seed in seeds:
+            entry = _fold_payload(folds.get(str(seed)))
+            if entry is not None:
+                present[seed] = entry
+        return present
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.warning(f"Ignoring unusable monomer refold cache {path}: {exc}")
         return None
@@ -188,6 +238,8 @@ def write_monomer_fold_cache(
     fingerprint: str,
     result: "DesignabilityResult",
     keep_outputs: bool,
+    seed: int | None = None,
+    seed_index: int | None = None,
 ) -> None:
     """Persist refold results. Never raises.
 
@@ -211,18 +263,36 @@ def write_monomer_fold_cache(
         # Nothing usable was produced. Caching that would make one bad run
         # permanent for every later resume.
         return
+    entry = {
+        "sequences": list(result.sequences),
+        "rmsd_values": result.rmsd_values,
+        "best_rmsd": result.best_rmsd,
+        "folded_paths": list(result.folded_paths) if keep_outputs else [],
+        "structures_kept": bool(keep_outputs),
+    }
+    from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION, deterministic_seed
+
+    path = monomer_fold_cache_path(output_dir, suffix)
     try:
-        blob = json.dumps(
-            {
-                "fingerprint": fingerprint,
-                "sequences": list(result.sequences),
-                "rmsd_values": result.rmsd_values,
-                "best_rmsd": result.best_rmsd,
-                "folded_paths": list(result.folded_paths) if keep_outputs else [],
-                "structures_kept": bool(keep_outputs),
-            }
-        )
-        with open(monomer_fold_cache_path(output_dir, suffix), "w") as handle:
+        # MERGE, never replace. Growing three seeds to five must add two entries
+        # and keep three, so a write has to read what is there first. A stale
+        # fingerprint discards the lot: those folds answered a different request.
+        folds = {}
+        if os.path.exists(path):
+            try:
+                with open(path) as handle:
+                    existing = json.load(handle)
+                if existing.get("fingerprint") == fingerprint:
+                    folds = dict(existing.get("folds") or {})
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                folds = {}
+        if seed is None:
+            seed = deterministic_seed(os.path.basename(output_dir), suffix, *result.sequences)
+        entry["seed_index"] = seed_index
+        entry["seed_derivation"] = SEED_DERIVATION_VERSION
+        folds[str(seed)] = entry
+        blob = json.dumps({"fingerprint": fingerprint, "schema": MONOMER_CACHE_SCHEMA, "folds": folds})
+        with open(path, "w") as handle:
             handle.write(blob)
     except (OSError, TypeError, ValueError) as exc:
         logger.warning(f"Could not write monomer refold cache for {output_dir}: {exc}")
