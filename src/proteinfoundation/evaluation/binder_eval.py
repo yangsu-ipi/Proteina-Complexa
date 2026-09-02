@@ -168,7 +168,11 @@ def binder_eval_fingerprint(**inputs: Any) -> str:
 
 
 def write_binder_eval_cache(
-    sample_root_path: str, fingerprint: str, sequence_type_stats: dict, sequences_dict: dict
+    sample_root_path: str,
+    fingerprint: str,
+    sequence_type_stats: dict,
+    sequences_dict: dict,
+    derivation_fingerprint: str | None = None,
 ) -> None:
     """Persist everything the row-building code needs from ``run_binder_eval``.
 
@@ -181,6 +185,7 @@ def write_binder_eval_cache(
         blob = json.dumps(
             {
                 "fingerprint": fingerprint,
+                "derivation_fingerprint": derivation_fingerprint,
                 "sequence_type_stats": sequence_type_stats,
                 "sequences_dict": sequences_dict,
             }
@@ -193,13 +198,23 @@ def write_binder_eval_cache(
 
 
 def read_binder_eval_cache(
-    sample_root_path: str, fingerprint: str, sequence_types: list[str]
-) -> tuple[dict, dict] | None:
+    sample_root_path: str,
+    fingerprint: str,
+    sequence_types: list[str],
+    derivation_fingerprint: str | None = None,
+) -> tuple[dict, dict, bool] | None:
     """Cached refolding results for this design, or None to recompute.
 
-    Returns None unless the cache exists, parses, was produced by an identical
-    request, and covers every requested sequence type — a cache built for
-    ``["self"]`` must not be reused for a run asking for ``["self", "mpnn"]``.
+    Returns ``(stats, sequences, geometry_stale)``. None unless the cache exists,
+    parses, was produced by the same *structure* request, and covers every
+    requested sequence type — a cache built for ``["self"]`` must not be reused
+    for a run asking for ``["self", "mpnn"]``.
+
+    ``geometry_stale`` says the structures are the ones this run wants but the
+    numbers read off them are not: the reduction changed. The caller can then
+    recompute geometry rather than refold. A cache written before the split
+    carries no derivation fingerprint and is treated as stale, which is correct
+    -- it cannot say which rule produced its numbers.
     """
     cache_path = _binder_cache_path(sample_root_path)
     if not os.path.exists(cache_path):
@@ -222,7 +237,13 @@ def read_binder_eval_cache(
     if missing:
         logger.info(f"Binder eval cache at {cache_path} lacks sequence types {missing}; recomputing")
         return None
-    return stats, sequences
+    geometry_stale = cached.get("derivation_fingerprint") != derivation_fingerprint
+    if geometry_stale:
+        logger.info(
+            f"Binder eval cache at {cache_path} holds the structures this run wants but numbers "
+            f"from a different reduction; recomputing geometry rather than refolding"
+        )
+    return stats, sequences, geometry_stale
 
 
 def sequences_for_type(
@@ -594,11 +615,16 @@ def compute_binder_metrics(
         # every cached design would keep serving its single-model numbers --
         # the silent-stale-cache case this fingerprint exists to prevent.
         "n_af2_models": n_af2_models,
-        # How per-model numbers are collapsed, not just how many there are.
-        # Placement went from a mean to a worst-case, which changes every cached
-        # geometry value while leaving the structures behind them valid.
-        "geometry_reduction": GEOMETRY_REDUCTION_VERSION,
     }
+    # Split from the above on purpose. Everything in cache_fingerprint_base
+    # decides which structures get predicted; this decides only how the numbers
+    # are read off them. Keeping them apart is what lets a reduction change reuse
+    # the structures instead of refolding to recompute an arithmetic choice --
+    # and it means the structure hash is byte-identical to the single fingerprint
+    # that preceded the split, so caches already on disk are recognised.
+    derivation_fingerprint = binder_eval_fingerprint(
+        geometry_reduction=GEOMETRY_REDUCTION_VERSION,
+    )
     n_reused = 0
 
     # Advisory second-opinion refolding. Off unless metric.consensus_backends is
@@ -678,10 +704,32 @@ def compute_binder_metrics(
                 fixed_residues_override=fixed_residues_override,
             )
             cached = (
-                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types) if reuse_cached_folding else None
+                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types, derivation_fingerprint)
+                if reuse_cached_folding
+                else None
             )
             if cached is not None:
-                sequence_type_stats, sequences_dict = cached
+                sequence_type_stats, sequences_dict, geometry_stale = cached
+                if geometry_stale:
+                    from proteinfoundation.metrics.binder_metrics import recompute_geometry
+
+                    # The structures this run wants are already on disk; only the
+                    # rule for collapsing them changed. Refolding to learn that a
+                    # max is not a mean would spend hours recomputing arithmetic.
+                    if recompute_geometry(sequence_type_stats, pdb_path, binder_chain, is_target_ligand, n_af2_models):
+                        write_binder_eval_cache(
+                            sample_root_path,
+                            fingerprint,
+                            sequence_type_stats,
+                            sequences_dict,
+                            derivation_fingerprint,
+                        )
+                    else:
+                        # A structure is missing. A row where some sequences answer
+                        # to the new rule and some to the old is worse than a
+                        # refold, so drop the cache rather than patch part of it.
+                        cached = None
+            if cached is not None:
                 n_reused += 1
             else:
                 _, _, sequence_type_stats, sequences_dict = run_binder_eval(
@@ -705,7 +753,9 @@ def compute_binder_metrics(
                 with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
                     json.dump(sequence_type_stats, f, indent=4)
 
-                write_binder_eval_cache(sample_root_path, fingerprint, sequence_type_stats, sequences_dict)
+                write_binder_eval_cache(
+                    sample_root_path, fingerprint, sequence_type_stats, sequences_dict, derivation_fingerprint
+                )
 
             # Extract metrics for each sequence type
             for seq_type in sequence_types:

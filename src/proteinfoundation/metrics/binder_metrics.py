@@ -13,7 +13,11 @@ from loguru import logger
 from torch import Tensor
 from transformers import logging as hf_logging
 
-from proteinfoundation.metrics.ensembling import pop_per_model_paths, reduce_rmsd_over_models
+from proteinfoundation.metrics.ensembling import (
+    per_model_paths_from_first,
+    pop_per_model_paths,
+    reduce_rmsd_over_models,
+)
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues,
@@ -39,6 +43,86 @@ def complex_mpnn_chains(gen_target_chain: list[str], binder_chain: str) -> list[
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
     return gen_target_chain + [binder_chain]
+
+
+def geometry_over_models(gen_prot, model_paths, label, is_target_ligand, binder_chain) -> dict:
+    """Geometry for one sequence, reduced over the models that predicted it.
+
+    Split out so the cached path can reuse it. A geometry-only cache refresh
+    recomputes exactly this and nothing else, and doing that through a second
+    copy of the loop is how the two would come to disagree about, say, which
+    chain is the ligand.
+    """
+    per_model = []
+    for model_path in model_paths:
+        refolded_complex = load_any(model_path, file_type="pdb")[0]
+        if not is_target_ligand:
+            per_model.append(
+                calculate_prot_prot_binder_rmsd(
+                    refolded_complex=refolded_complex,
+                    gen_complex=gen_prot,
+                    label=label,
+                )
+            )
+        else:
+            per_model.append(
+                calculate_ligand_binder_rmsd(
+                    refolded_complex=refolded_complex,
+                    gen_complex=gen_prot,
+                    ligand_chain_id="A",
+                    binder_chain_id=binder_chain,
+                    label=label,
+                )
+            )
+    return reduce_rmsd_over_models(per_model)
+
+
+def recompute_geometry(
+    sequence_type_stats: dict,
+    pdb_file_path: str,
+    binder_chain: str,
+    is_target_ligand: bool,
+    n_af2_models: int,
+) -> bool:
+    """Redo the RMSDs of a cached result from the structures already on disk.
+
+    For when only the *derivation* changed -- how per-model numbers collapse into
+    one -- and not the request that produced the structures. Refolding to learn
+    that a max is not a mean costs hours to recompute an arithmetic choice, which
+    is the same argument that moved verdicts out of evaluate and pLDDT recovery
+    out of a refold.
+
+    Mutates ``sequence_type_stats`` in place and reports whether it could. False
+    means some structure is gone, and the caller must refold rather than keep a
+    row where some sequences answer to the new rule and some to the old.
+    """
+    entries = []
+    for seq_type, stats in sequence_type_stats.items():
+        complex_stats = stats.get("complex_stats") or []
+        rmsd_stats = stats.get("rmsd_stats") or []
+        if len(complex_stats) != len(rmsd_stats):
+            logger.warning(f"Cached stats for '{seq_type}' are ragged; refolding instead of refreshing")
+            return False
+        for i, complex_stat in enumerate(complex_stats):
+            paths = per_model_paths_from_first(complex_stat.get("complex_pdb_path", ""), n_af2_models)
+            if paths is None:
+                logger.info(
+                    f"Cannot refresh geometry for '{seq_type}' sequence {i + 1}: its per-model "
+                    f"structures are not all on disk. Refolding."
+                )
+                return False
+            entries.append((seq_type, i, paths, f"{seq_type}_seq_{i + 1}"))
+
+    if not entries:
+        return False
+
+    gen_prot = load_any(pdb_file_path)[0]
+    for seq_type, i, paths, label in entries:
+        sequence_type_stats[seq_type]["rmsd_stats"][i] = geometry_over_models(
+            gen_prot, paths, label, is_target_ligand, binder_chain
+        )
+    logger.info(f"Refreshed geometry for {len(entries)} sequence(s) from structures already on disk")
+    return True
 
 
 def run_binder_eval(
@@ -333,35 +417,12 @@ def run_binder_eval(
     for seq_num, complex_pdb_path in enumerate(complex_pdb_paths):
         seq_type = sequence_types_list[seq_num]
         label = f"{seq_type}_seq_{seq_num + 1}"
-        # AF2 ensembling writes one structure per model, and geometry averages
-        # over them for the same reason the confidence scores do: one model's
-        # placement is a draw, not the answer. Backends that predict a single
-        # structure (RF3, Boltz) leave the key absent and average over one.
-        # Popped rather than read because these stats become dataframe columns
-        # downstream, and a list-valued column survives nothing.
+        # AF2 ensembling writes one structure per model. Popped rather than read
+        # because these stats become dataframe columns downstream, and a
+        # list-valued column survives nothing. Backends that predict a single
+        # structure (RF3, Boltz) leave the key absent and reduce over one.
         model_paths = pop_per_model_paths(complex_statistics, seq_num) or [complex_pdb_path]
-        per_model_rmsd = []
-        for model_path in model_paths:
-            refolded_complex = load_any(model_path, file_type="pdb")[0]
-            if not is_target_ligand:
-                per_model_rmsd.append(
-                    calculate_prot_prot_binder_rmsd(
-                        refolded_complex=refolded_complex,
-                        gen_complex=gen_prot,
-                        label=label,
-                    )
-                )
-            else:
-                per_model_rmsd.append(
-                    calculate_ligand_binder_rmsd(
-                        refolded_complex=refolded_complex,
-                        gen_complex=gen_prot,
-                        ligand_chain_id="A",
-                        binder_chain_id=binder_chain,
-                        label=label,
-                    )
-                )
-        rmsd_results.append({label: reduce_rmsd_over_models(per_model_rmsd)})
+        rmsd_results.append({label: geometry_over_models(gen_prot, model_paths, label, is_target_ligand, binder_chain)})
 
     # Add prefixes to complex and binder statistics
     # reordered_complex_stats = {k:[] for k in set(sequence_types)}

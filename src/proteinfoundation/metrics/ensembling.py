@@ -11,6 +11,7 @@ dependencies that would keep it out of a unit test.
 """
 
 import math
+import os
 
 # The rounding the single-model path used, kept so a one-model run's numbers
 # stay byte-identical to what it produced before ensembling existed.
@@ -265,3 +266,18 @@ def residue_weighted_mean(values: list[float], weights: list[int]) -> float:
         return float("nan")
     total = sum(w for _, w in pairs)
     return sum(v * w for v, w in pairs) / total
+
+
+def per_model_paths_from_first(first_path: str, n_models: int) -> list[str] | None:
+    """The sibling structures of a model-1 path, or None if any is missing.
+
+    predict_binder_complex names them ``{design}_model{n}.pdb``, so the set is
+    derivable from the one path the stats keep. All-or-nothing: recomputing a
+    worst-case over three of five models would quietly report a better number
+    than the design earned.
+    """
+    if not first_path or not first_path.endswith("_model1.pdb"):
+        return None
+    stem = first_path[: -len("_model1.pdb")]
+    paths = [f"{stem}_model{n}.pdb" for n in range(1, max(1, int(n_models)) + 1)]
+    return paths if all(os.path.exists(p) for p in paths) else None

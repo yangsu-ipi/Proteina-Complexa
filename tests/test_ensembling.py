@@ -17,6 +17,7 @@ from proteinfoundation.metrics.ensembling import (
     average_af2_stats,
     mean_chain_plddt,
     mean_plddt_from_pdb,
+    per_model_paths_from_first,
     pop_per_model_paths,
     reduce_rmsd_over_models,
     residue_weighted_mean,
@@ -401,13 +402,39 @@ def test_the_only_reader_of_the_old_column_was_repointed():
     assert '_complex_pLDDT"' not in source
 
 
-def test_the_reduction_rule_invalidates_the_geometry_cache():
-    """The structures on disk stay valid; the numbers derived from them do not.
-    Without this the placement columns would keep serving means while the
-    thresholds were re-derived against worst cases."""
+def test_the_reduction_rule_is_derivation_not_structure():
+    """Which structures get predicted, and how numbers are read off them, are two
+    questions. Keeping the reduction out of the structure hash is what lets a
+    reduction change reuse the structures instead of refolding to recompute an
+    arithmetic choice -- and it keeps the structure hash identical to the single
+    fingerprint that preceded the split, so caches already on disk are still
+    recognised."""
     source = _read("src/proteinfoundation/evaluation/binder_eval.py")
-    base = source[source.index("cache_fingerprint_base = {") : source.index("n_reused = 0")]
-    assert '"geometry_reduction": GEOMETRY_REDUCTION_VERSION' in base
+    base = source[source.index("cache_fingerprint_base = {") : source.index("derivation_fingerprint =")]
+    assert "GEOMETRY_REDUCTION_VERSION" not in base, "not part of structure identity"
+    derivation = source[source.index("derivation_fingerprint = binder_eval_fingerprint(") :][:400]
+    assert "geometry_reduction=GEOMETRY_REDUCTION_VERSION" in derivation
+
+
+def test_a_stale_reduction_recomputes_geometry_instead_of_refolding():
+    """The whole point of the split. A cache whose structures match but whose
+    numbers came from another rule must be refreshed, not thrown away."""
+    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
+    assert "if geometry_stale:" in source
+    # Anchored on the import, because "if geometry_stale:" also appears in the
+    # reader that computes it -- and matching there would test the wrong branch.
+    stale_block = source[source.index("import recompute_geometry") :][:1400]
+    assert "recompute_geometry(" in stale_block
+    assert "cached = None" in stale_block, "missing structures fall back to a refold"
+    assert "write_binder_eval_cache(" in stale_block, "the refreshed numbers are persisted"
+
+
+def test_a_cache_predating_the_split_is_treated_as_stale():
+    """It carries no derivation fingerprint, so it cannot say which rule produced
+    its numbers -- and guessing 'the current one' would serve means as maxima."""
+    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
+    read_fn = source[source.index("def read_binder_eval_cache(") : source.index("def sequences_for_type(")]
+    assert 'cached.get("derivation_fingerprint") != derivation_fingerprint' in read_fn
 
 
 def test_every_gated_placement_criterion_is_in_the_placement_set():
@@ -431,3 +458,34 @@ def test_fold_quality_criteria_stay_out_of_the_placement_set():
     it sits. Its 1.5 A threshold was calibrated on a mean."""
     assert "binder_scRMSD_ca" not in PLACEMENT_METRICS
     assert "apo_scRMSD_ca" not in PLACEMENT_METRICS
+
+
+def test_sibling_structures_are_derived_from_the_one_path_the_stats_keep(tmp_path):
+    """predict_binder_complex names them {design}_model{n}.pdb, and the cached
+    stats keep only model 1 -- the rest are popped before they can reach a
+    dataframe. Recovering them is what makes a geometry-only refresh possible."""
+    for n in (1, 2, 3):
+        (tmp_path / f"d_model{n}.pdb").write_text("ATOM\n")
+    got = per_model_paths_from_first(str(tmp_path / "d_model1.pdb"), 3)
+    assert got == [str(tmp_path / f"d_model{n}.pdb") for n in (1, 2, 3)]
+
+
+def test_a_missing_sibling_gives_up_rather_than_reducing_over_what_is_left(tmp_path):
+    """A worst case over three of five models reports a better number than the
+    design earned. All-or-nothing, so the caller refolds instead."""
+    for n in (1, 2):
+        (tmp_path / f"d_model{n}.pdb").write_text("ATOM\n")
+    assert per_model_paths_from_first(str(tmp_path / "d_model1.pdb"), 3) is None
+
+
+def test_a_path_that_is_not_a_model_structure_recovers_nothing(tmp_path):
+    """RF3 and Boltz write one structure under their own names. There are no
+    siblings to find, and inventing some would point at another design's files."""
+    (tmp_path / "d.pdb").write_text("ATOM\n")
+    assert per_model_paths_from_first(str(tmp_path / "d.pdb"), 3) is None
+    assert per_model_paths_from_first("", 3) is None
+
+
+def test_a_single_model_run_recovers_just_its_own_structure(tmp_path):
+    (tmp_path / "d_model1.pdb").write_text("ATOM\n")
+    assert per_model_paths_from_first(str(tmp_path / "d_model1.pdb"), 1) == [str(tmp_path / "d_model1.pdb")]
