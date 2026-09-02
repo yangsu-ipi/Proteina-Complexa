@@ -7,10 +7,15 @@ This module contains:
 - Threshold check helpers for binder-specific success criteria
 """
 
-from typing import Any
+import math
+import statistics
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from loguru import logger
+
+if TYPE_CHECKING:  # annotations only -- this module stays free of pandas at runtime
+    import pandas as pd
 
 from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold
 
@@ -470,3 +475,96 @@ def count_passing_redesigns(
         Number of redesigns that pass all criteria
     """
     return sum(redesign_pass_vector(sample_metric_values, parsed_thresholds))
+
+
+# =============================================================================
+# Robust outlier flags
+# =============================================================================
+#
+# Advisory metrics have no transferable absolute scale -- ESMFold2 in particular
+# runs compressed, where a native protein folds to ~0.65 -- so the only baseline
+# available is the campaign's own designs. That baseline is a good one here: the
+# target sequence is identical in every design and the advisory fold is not
+# templated, so the spread in target pLDDT across a campaign already is the
+# effect of the binder on the target.
+
+OUTLIER_K = 3.0
+
+# Makes the MAD comparable to a standard deviation for normally distributed data,
+# so k keeps its usual meaning: k=3 is roughly "three sigma".
+_MAD_TO_SIGMA = 1.4826
+
+
+def robust_spread(values: list[float]) -> tuple[float, float]:
+    """Median and MAD-derived sigma, ignoring anything non-finite.
+
+    Median and MAD rather than mean and standard deviation because what we are
+    looking for is *in* the data we would estimate from: a handful of designs
+    that wreck the target inflate the standard deviation, which pushes a
+    mean-based threshold down until those same designs sit inside it and hide
+    themselves. On the CBLN1 production run a 3-sigma cut flagged one design
+    where a 3-MAD cut flagged twelve.
+    """
+    finite = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if len(finite) < 3:
+        # Two points have a MAD, but not one that means anything.
+        return (float("nan"), float("nan"))
+    median = statistics.median(finite)
+    mad = statistics.median([abs(v - median) for v in finite])
+    return (median, mad * _MAD_TO_SIGMA)
+
+
+def low_outlier_threshold(values: list[float], k: float = OUTLIER_K) -> float:
+    """``median - k * sigma``, or NaN when there is not enough data to say."""
+    median, sigma = robust_spread(values)
+    if not math.isfinite(median) or not math.isfinite(sigma) or sigma == 0:
+        # A zero MAD means over half the designs share one value exactly. The
+        # median is then a threshold that rejects every design at or below the
+        # most common number, which is not what a caller asking for an outlier
+        # cut wants -- there are no outliers to find.
+        return float("nan")
+    return median - k * sigma
+
+
+def advisory_per_chain_columns(df: "pd.DataFrame") -> list[str]:
+    """Advisory per-chain pLDDT columns present on the frame.
+
+    Gated columns are excluded by their reserved ``complex`` segment, which is
+    the same marker :func:`assert_columns_are_advisory` enforces on the way in.
+    """
+    return [
+        column
+        for column in df.columns
+        if (column.endswith("_target_pLDDT") or column.endswith("_binder_pLDDT")) and "_complex_" not in column
+    ]
+
+
+def add_outlier_columns(df: "pd.DataFrame", columns: list[str] | None = None, k: float = OUTLIER_K):
+    """Add ``_robust_z`` and ``_low_outlier`` beside each named column.
+
+    ``_robust_z`` is signed, so a design well *above* the campaign is visible
+    too; ``_low_outlier`` marks only the low tail, which is the direction that
+    means the binder hurt something.
+
+    These describe a design relative to the campaign it was run in, so a row's
+    flag depends on which other rows are present. That is acceptable precisely
+    because these are advisory: they change nothing about pass or fail, and the
+    reproducibility a verdict needs is not a property this has to carry. A gate
+    built on this reduction would have to freeze its threshold to a constant
+    first.
+    """
+    for column in columns if columns is not None else advisory_per_chain_columns(df):
+        if column not in df.columns:
+            continue
+        values = df[column].tolist()
+        median, sigma = robust_spread(values)
+        if not math.isfinite(median) or not math.isfinite(sigma) or sigma == 0:
+            # A campaign with no spread has no outliers, and dividing by its
+            # sigma would report every design as infinitely unusual.
+            df[f"{column}_robust_z"] = float("nan")
+            df[f"{column}_low_outlier"] = False
+            continue
+        z = [(float(v) - median) / sigma if v is not None and math.isfinite(float(v)) else float("nan") for v in values]
+        df[f"{column}_robust_z"] = z
+        df[f"{column}_low_outlier"] = [bool(score < -k) if math.isfinite(score) else False for score in z]
+    return df

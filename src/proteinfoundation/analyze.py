@@ -3050,7 +3050,10 @@ def main(cfg: DictConfig) -> None:
     # keeps the per-row columns agreeing with the pass rates below them.
     if result_type in ("protein_binder", "ligand_binder"):
         from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
-        from proteinfoundation.result_analysis.binder_analysis_utils import get_thresholds_for_result_type
+        from proteinfoundation.result_analysis.binder_analysis_utils import (
+            add_outlier_columns,
+            get_thresholds_for_result_type,
+        )
 
         combined_df = refresh_per_sequence_verdicts(
             combined_df,
@@ -3060,6 +3063,12 @@ def main(cfg: DictConfig) -> None:
                 is_ligand_binder=result_type == "ligand_binder",
             ),
         )
+
+        # Advisory metrics have no transferable absolute scale, so the only
+        # baseline is the campaign itself. Flagged here rather than in evaluate
+        # for the same reason verdicts are: this is a property of the set of
+        # designs, and evaluate sees one design at a time.
+        combined_df = add_outlier_columns(combined_df)
 
     # Save combined results
     combined_csv_filename = f"RAW_{result_type}_results_{config_name}_combined.csv"
