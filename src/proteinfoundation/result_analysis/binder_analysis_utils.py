@@ -7,6 +7,7 @@ This module contains:
 - Threshold check helpers for binder-specific success criteria
 """
 
+import ast
 import math
 import statistics
 from typing import TYPE_CHECKING, Any
@@ -411,6 +412,42 @@ def check_redesign_passes_all_thresholds(
     return True
 
 
+def as_redesign_list(value) -> list:
+    """One metric's per-redesign values, however they arrived.
+
+    analyze reads its inputs with ``pd.read_csv``, which hands back the *text* of
+    a list column -- ``"[0.146]"`` -- not a list. Indexing that by redesign
+    position walks characters instead: a design with one redesign looked like
+    seven, each judged against a ``'['`` or a digit, and every verdict came out
+    0. The lengths disagreeing is what made it visible at all.
+
+    Coerced here rather than at the call site because this function is what
+    defines a per-redesign list. Another caller reading the same CSV would
+    otherwise reintroduce it, and the symptom -- every design failing -- looks
+    far more like a strict gate than like a parsing bug.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return []
+        return list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if hasattr(value, "tolist"):  # numpy array from a parsed column
+        listed = value.tolist()
+        return listed if isinstance(listed, list) else [listed]
+    if value is None:
+        return []
+    # A bare scalar is one redesign, unless it is the NaN a missing cell becomes.
+    if isinstance(value, float) and math.isnan(value):
+        return []
+    return [value]
+
+
 def redesign_pass_vector(
     sample_metric_values: dict[str, list],
     parsed_thresholds: dict,
@@ -434,6 +471,8 @@ def redesign_pass_vector(
     """
     if not sample_metric_values:
         return []
+
+    sample_metric_values = {name: as_redesign_list(v) for name, v in sample_metric_values.items()}
 
     # The criteria's metric lists are built in append order and are parallel by
     # construction. Judge only the prefix all of them cover, rather than indexing

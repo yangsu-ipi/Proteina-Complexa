@@ -459,3 +459,69 @@ def test_a_refresh_it_cannot_make_leaves_the_old_verdict_alone():
         logger.remove(sink)
     assert out["mpnn_pass_all"].iloc[0] == [1, 1], "left as it was"
     assert any("Not refreshing" in m for m in said), "and said so: the columns now predate the thresholds"
+
+
+# ---------------------------------------------------------------------------
+# Values as analyze actually receives them. aggregate_results calls
+# pd.read_csv, which hands back the text of a list column rather than a list.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stringified_list_is_judged_as_a_list():
+    """The bug this pins: indexing "[0.146]" by redesign position walks
+    characters, so one redesign looked like seven and every verdict came out 0.
+    A gate that fails every design reads as a strict gate, not as a parse bug."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import redesign_pass_vector
+
+    text = {name: str(list(values)) for name, values in metric_values([0.10], [0.95], [1.0]).items()}
+    assert redesign_pass_vector(text, PARSED) == [1]
+
+
+def test_text_and_lists_reach_the_same_verdict():
+    from proteinfoundation.result_analysis.binder_analysis_utils import redesign_pass_vector
+
+    values = metric_values([0.10, 9.9], [0.95, 0.95], [1.0, 1.0])
+    text = {name: str(list(v)) for name, v in values.items()}
+    assert redesign_pass_vector(text, PARSED) == redesign_pass_vector(values, PARSED) == [1, 0]
+
+
+def test_the_analyze_refresh_survives_a_csv_round_trip(tmp_path):
+    """End to end through the reader analyze uses, which is where this broke:
+    every per-row verdict in every smoke run since the refresh landed was zero."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    frame = pd.DataFrame([{**row("self", apo={"esmfold2": [0.7]}), "self_best_idx": 0}])
+    path = tmp_path / "results.csv"
+    frame.to_csv(path, index=False)
+
+    reread = pd.read_csv(path)
+    assert isinstance(reread["self_complex_i_pAE_all"].iloc[0], str), "the premise of this test"
+
+    out = refresh_per_sequence_verdicts(reread, ["self"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    assert list(out["self_pass_all"].iloc[0]) == [1]
+    assert out["self_pass"].iloc[0] == 1
+
+
+def test_the_odd_shapes_a_column_can_hold():
+    from proteinfoundation.result_analysis.binder_analysis_utils import as_redesign_list
+
+    assert as_redesign_list("[0.1, 0.2]") == [0.1, 0.2]
+    assert as_redesign_list([0.1]) == [0.1]
+    assert as_redesign_list(0.5) == [0.5], "a bare scalar is one redesign"
+    assert as_redesign_list(float("nan")) == [], "an empty cell is no redesigns"
+    assert as_redesign_list(None) == []
+    assert as_redesign_list("") == []
+    assert as_redesign_list("not a list") == [], "unparseable is nothing, not one bad value"
+
+
+def test_a_scalar_column_is_not_read_as_its_digits():
+    """np.float64 has .tolist(), which returns a float rather than a list."""
+    import numpy as np
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import as_redesign_list
+
+    assert as_redesign_list(np.float64(0.5)) == [0.5]
+    assert as_redesign_list(np.array([0.5, 0.6])) == [0.5, 0.6]
