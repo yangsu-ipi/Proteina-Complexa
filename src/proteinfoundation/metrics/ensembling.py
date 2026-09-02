@@ -154,3 +154,57 @@ def mean_chain_plddt(plddt, target_len: int | None) -> dict:
         "target_pLDDT": _mean(values[:target_len]),
         "binder_pLDDT": _mean(values[target_len:]),
     }
+
+
+def mean_plddt_from_pdb(pdb_path: str) -> float:
+    """Mean pLDDT over the CA atoms of a folded structure, as a fraction.
+
+    The folding backends write per-residue pLDDT into the B-factor column --
+    ESMFold does it explicitly, ColabFold by convention -- so this is where the
+    confidence of a monomer fold lives once the model has been unloaded.
+
+    Parsed by column offset rather than through a structure library: the fixed
+    PDB columns are the one thing about the format that is genuinely stable,
+    and it keeps this reachable from a test that cannot import atomworks.
+
+    Returns NaN when the file holds nothing usable, so a missing reference
+    stays visibly missing instead of becoming a number a ratio would divide by.
+    """
+    values = []
+    try:
+        with open(pdb_path) as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                if line[12:16].strip() != "CA":
+                    continue
+                try:
+                    values.append(float(line[60:66]))
+                except ValueError:
+                    continue
+    except OSError:
+        return float("nan")
+    if not values:
+        return float("nan")
+    mean = _mean(values)
+    return mean / 100.0 if mean > _PLDDT_FRACTION_CEILING else mean
+
+
+def residue_weighted_mean(values: list[float], weights: list[int]) -> float:
+    """Mean of per-chain values weighted by how many residues each covers.
+
+    A target's chains are folded separately but its pLDDT in complex is one
+    mean over all its residues. Averaging the chain means unweighted would let
+    a ten-residue chain count as much as a three-hundred-residue one, and the
+    ratio between the two numbers would then measure the chain split rather
+    than the target.
+    """
+    pairs = [
+        (float(v), int(w))
+        for v, w in zip(values, weights, strict=False)
+        if w > 0 and isinstance(v, (int, float)) and math.isfinite(v)
+    ]
+    if not pairs:
+        return float("nan")
+    total = sum(w for _, w in pairs)
+    return sum(v * w for v, w in pairs) / total

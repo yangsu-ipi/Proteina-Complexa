@@ -54,6 +54,19 @@ metric:
   # with itself. Seeds are prefix-stable, so raising this later folds only the
   # new ones and reuses the folds already stored.
   n_esmfold2_seeds: 3
+
+  # Fold the target with no binder at all, once per campaign, to get the pLDDT
+  # it scores on its own. A target-in-complex pLDDT means nothing in isolation:
+  # a target that folds to 0.82 alone has not been harmed by a design that
+  # leaves it at 0.80. Cached beside the shared evaluation results and keyed on
+  # the target sequence, so both shards -- and a later campaign against the same
+  # target -- reuse one fold.
+  # esmfold2 references the advisory complex fold. The AF2 side has no entry
+  # here: colabfold would answer with a different parameter set than the
+  # multimer models the complex is folded with, so the ratio would not be
+  # between comparable numbers. Empty list disables it.
+  target_reference_models: [esmfold2]
+  reuse_cached_target_reference: true
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true
   
