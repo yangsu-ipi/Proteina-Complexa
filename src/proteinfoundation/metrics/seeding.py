@@ -61,10 +61,19 @@ def deterministic_seeds(*parts: str, count: int) -> list[int]:
     The index is mixed in as a part rather than added to the result: adding would
     make the seeds of one input the neighbours of another's, so two designs whose
     seeds happened to land close together would sample near-identical noise.
+
+    The FIRST seed is the unindexed ``deterministic_seed(*parts)`` -- the value
+    single-seed runs used before this existed. Without that, index 0 would hash to
+    something new, every fold a finished campaign holds would be orphaned, and the
+    cache adoption written to preserve them would never match a requested seed.
+    The compatibility is worth one branch: the alternative is refolding a completed
+    340-design campaign to gain seeds it already has one of.
     """
     if count < 1:
         raise ValueError(f"count must be at least 1, got {count}")
-    return [deterministic_seed(*parts, str(index)) for index in range(count)]
+    return [
+        deterministic_seed(*parts) if index == 0 else deterministic_seed(*parts, str(index)) for index in range(count)
+    ]
 
 
 # Sampling settings shared by both ProteinMPNN call sites. The apo and holo
