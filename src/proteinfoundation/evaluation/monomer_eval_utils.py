@@ -170,6 +170,101 @@ def _fold_payload(entry: dict) -> dict | None:
     return entry
 
 
+def _fold_seeds(name: str, suffix: str, sequences: list[str], folding_models: list[str], count: int) -> list[int]:
+    """The seeds this design's folds are identified by.
+
+    Only ESMFold2 is a sampler; ESMFold v1 and ColabFold are deterministic given
+    their inputs, so asking them for several seeds would fold the same structure
+    repeatedly and average it with itself. A run without esmfold2 therefore gets
+    exactly one seed however many are configured.
+    """
+    from proteinfoundation.metrics.seeding import deterministic_seeds
+
+    n = max(1, int(count)) if "esmfold2" in (folding_models or []) else 1
+    return deterministic_seeds(name, suffix, *sequences, count=n)
+
+
+def average_folds(folds: dict[int, dict]) -> dict | None:
+    """One fold's worth of numbers, averaged across the seeds that produced them.
+
+    Seeds are exchangeable draws, so the reduction is a mean -- per sequence, per
+    mode, per model, keeping the positional alignment every downstream column
+    depends on.
+
+    A non-finite value in any seed makes the average non-finite. That fold failed,
+    and averaging a failure into a finite number would turn one failure into a
+    slightly worse success -- which is exactly the kind of quiet degradation this
+    whole gate is meant to catch rather than produce.
+
+    ``folded_paths`` are concatenated rather than averaged: a path is not a
+    measurement, and each is a real structure a reader may want.
+    """
+    usable = [f for f in (folds or {}).values() if f and f.get("rmsd_values")]
+    if not usable:
+        return None
+    if len(usable) == 1:
+        return usable[0]
+
+    merged: dict[str, dict[str, list[float]]] = {}
+    for mode in usable[0]["rmsd_values"]:
+        merged[mode] = {}
+        for model in usable[0]["rmsd_values"][mode]:
+            per_seed = [f["rmsd_values"].get(mode, {}).get(model, []) for f in usable]
+            width = min((len(v) for v in per_seed), default=0)
+            merged[mode][model] = [
+                sum(v[i] for v in per_seed) / len(per_seed)
+                if all(math.isfinite(v[i]) for v in per_seed)
+                else float("inf")
+                for i in range(width)
+            ]
+    averaged = dict(usable[0])
+    averaged["rmsd_values"] = merged
+    averaged["folded_paths"] = [p for f in usable for p in f.get("folded_paths", [])]
+    averaged["n_seeds"] = len(usable)
+    return averaged
+
+
+def read_monomer_folds(output_dir: str, suffix: str, fingerprint: str) -> dict[int, dict] | None:
+    """Every stored fold for this design, as ``{seed: fold}``, or None.
+
+    Separate from :func:`read_monomer_fold_cache` because a caller cannot always
+    name its seeds up front: the seed derives from the redesigned sequences, and
+    those are an *output* of the expensive step this cache exists to skip. So the
+    order has to be read-then-derive -- take the sequences from any stored fold,
+    derive the seeds from them, and only run ProteinMPNN if nothing is stored.
+    Deriving first would re-run the inverse folder on every resume.
+
+    Schema-1 caches yield their single fold under the seed the derivation gives
+    for their own stored sequences, so a finished campaign keeps its folds.
+    """
+    path = monomer_fold_cache_path(output_dir, suffix)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as handle:
+            cached = json.load(handle)
+        if cached.get("fingerprint") != fingerprint:
+            return None
+        folds = cached.get("folds")
+        if folds is None:
+            single = _fold_payload(cached)
+            if single is None:
+                return None
+            from proteinfoundation.metrics.seeding import deterministic_seed
+
+            legacy = deterministic_seed(os.path.basename(output_dir), suffix, *single["sequences"])
+            return {legacy: single}
+        out = {}
+        for key, entry in folds.items():
+            payload = _fold_payload(entry)
+            if payload is not None:
+                out[int(key)] = payload
+        return out or None
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        logger.warning(f"Ignoring unusable monomer refold cache {path}: {exc}")
+        return None
+
+
 def read_monomer_fold_cache(
     output_dir: str, suffix: str, fingerprint: str, seeds: list[int] | None = None
 ) -> dict | None:

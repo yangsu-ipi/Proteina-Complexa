@@ -619,7 +619,7 @@ def score_binders(
     # for: it names a specific sample, and repeating it would be the same fold
     # counted twice.
     pinned = cfg.get("seed")
-    n_seeds = max(1, int(cfg.get("n_seeds", 1)))
+    n_seeds = max(1, int(cfg.get("n_seeds", cfg.get("n_esmfold2_seeds", 1))))
 
     def seeds_for(seq: str) -> list[int]:
         if pinned is not None:

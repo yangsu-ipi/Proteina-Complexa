@@ -302,6 +302,7 @@ def apo_refold(
     rmsd_modes: list[str],
     keep_outputs: bool,
     reuse_cache: bool,
+    n_esmfold2_seeds: int = 1,
 ) -> dict[tuple[str, str], list[float]]:
     """Fold each sequence alone and measure it against the designed backbone.
 
@@ -345,6 +346,7 @@ def apo_refold(
             folding_models=folding_models,
             keep_outputs=keep_outputs,
             reuse_cache=reuse_cache,
+            n_esmfold2_seeds=n_esmfold2_seeds,
         )
         # The sequence read off the PDB should be the one whose holo metrics sit on
         # this row. If it is not, the apo and holo columns would describe different
@@ -493,6 +495,10 @@ def compute_binder_metrics(
     apo_folding_models = list(cfg_metric.get("apo_folding_models", ["esmfold"]) or [])
     apo_rmsd_modes = list(cfg_metric.get("apo_rmsd_modes", ["ca"]) or [])
     reuse_cached_apo = cfg_metric.get("reuse_cached_apo_folds", True)
+    # ESMFold2 is a diffusion sampler, so one fold is one draw. More seeds trade
+    # evaluation time for a less noisy number; the other folders are deterministic
+    # and ignore this. Prefix-stable, so raising it later folds only what is new.
+    n_esmfold2_seeds = max(1, int(cfg_metric.get("n_esmfold2_seeds", 1)))
     if compute_apo and is_target_ligand:
         logger.info("Apo refolding skipped: these folders fold a single protein chain, target is a ligand")
         compute_apo = False
@@ -764,6 +770,7 @@ def compute_binder_metrics(
                             rmsd_modes=apo_rmsd_modes,
                             keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                             reuse_cache=reuse_cached_apo,
+                            n_esmfold2_seeds=n_esmfold2_seeds,
                         )
                     except Exception as exc:
                         logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")

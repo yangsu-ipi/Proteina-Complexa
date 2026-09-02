@@ -40,6 +40,13 @@ metric:
   # entirely; override aggregation.success_thresholds if that is what you want.
   compute_apo_metrics: true
   apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
+  # ESMFold2 is a diffusion sampler: one fold is one draw, and two unseeded runs
+  # disagree. Folding several seeds and averaging trades evaluation time for a
+  # less noisy number. Only esmfold2 uses this -- esmfold and colabfold are
+  # deterministic given their inputs, so extra seeds would average a structure
+  # with itself. Seeds are prefix-stable, so raising this later folds only the
+  # new ones and reuses the folds already stored.
+  n_esmfold2_seeds: 1
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true
   
