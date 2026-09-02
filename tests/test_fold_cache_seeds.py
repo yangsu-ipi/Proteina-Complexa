@@ -225,3 +225,75 @@ def test_metrics_are_pooled_over_seeds_and_paths_are_not():
     assert pooled["pdb_path"] == "/a", "lowest seed, deterministically"
     assert pooled["n_seeds"] == 2.0
     assert mean_over_seeds({}) == {}
+
+
+# ------------------------------------------ which folders actually need seeds
+
+
+def test_only_esmfold2_gets_more_than_one_seed():
+    """ESMFold v1 and ColabFold are deterministic given their inputs, so asking
+    them for three seeds would fold one structure three times and average it with
+    itself -- three times the cost for no variance reduction."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds
+
+    assert len(_fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold2"], 3)) == 3
+    assert len(_fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold"], 3)) == 1
+    assert len(_fold_seeds("d", "apo_mpnn", ["AAAA"], ["colabfold"], 3)) == 1
+    assert len(_fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold", "esmfold2"], 3)) == 3, "any esmfold2 is enough"
+    assert len(_fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold2"], 0)) == 1, "a count below one is still one fold"
+
+
+def test_seeds_are_prefix_stable_through_the_fold_layer():
+    """Raising the count must fold only the new ones."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds
+
+    five = _fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold2"], 5)
+    assert _fold_seeds("d", "apo_mpnn", ["AAAA"], ["esmfold2"], 3) == five[:3]
+
+
+def test_per_seed_rmsds_average_and_keep_their_positions():
+    """Averaging must stay per sequence, per mode, per model: every downstream
+    column reads these lists positionally."""
+    from proteinfoundation.evaluation.monomer_eval_utils import average_folds
+
+    folds = {
+        1: {
+            "sequences": ["A", "B"],
+            "rmsd_values": {"ca": {"esmfold2": [1.0, 3.0]}},
+            "best_rmsd": 1.0,
+            "folded_paths": ["/1"],
+        },
+        2: {
+            "sequences": ["A", "B"],
+            "rmsd_values": {"ca": {"esmfold2": [2.0, 5.0]}},
+            "best_rmsd": 2.0,
+            "folded_paths": ["/2"],
+        },
+    }
+    got = average_folds(folds)
+    assert got["rmsd_values"]["ca"]["esmfold2"] == [1.5, 4.0]
+    assert set(got["folded_paths"]) == {"/1", "/2"}, "paths are kept, not averaged -- each is a real structure"
+
+
+def test_one_bad_seed_does_not_average_into_a_plausible_number():
+    """An infinite RMSD means that fold failed. Averaging it as a finite value
+    would turn one failure into a slightly worse success."""
+    from proteinfoundation.evaluation.monomer_eval_utils import average_folds
+
+    folds = {
+        1: {"sequences": ["A"], "rmsd_values": {"ca": {"esmfold2": [1.0]}}, "best_rmsd": 1.0, "folded_paths": []},
+        2: {
+            "sequences": ["A"],
+            "rmsd_values": {"ca": {"esmfold2": [float("inf")]}},
+            "best_rmsd": 0.0,
+            "folded_paths": [],
+        },
+    }
+    assert average_folds(folds)["rmsd_values"]["ca"]["esmfold2"] == [float("inf")]
+
+
+def test_no_usable_folds_is_reported_as_nothing_rather_than_zero():
+    from proteinfoundation.evaluation.monomer_eval_utils import average_folds
+
+    assert average_folds({}) is None
+    assert average_folds({1: {"sequences": ["A"], "rmsd_values": {}}}) is None

@@ -175,6 +175,7 @@ def run_esmfold2(
     suffix: str,
     cache_dir: str | None = None,
     keep_outputs: bool = False,
+    seed: int | None = None,
 ) -> list[str]:
     """Runs ESMFold2 on sequences and stores results as PDB files.
 
@@ -216,7 +217,8 @@ def run_esmfold2(
     # design, same sequences, same structures -- which is what makes a resumed
     # run agree with the cached values it reuses. ESMFold2 is a diffusion
     # sampler; unseeded, two runs disagree.
-    seed = deterministic_seed(name, suffix, *sequences)
+    if seed is None:
+        seed = deterministic_seed(name, suffix, *sequences)
     logger.info(f"Running ESMFold2 ({model_id}) on {len(sequences)} sequence(s) for {name} (seed {seed})")
     results = builder.fold_batch(model, inputs, seed=seed)
 
@@ -233,7 +235,9 @@ def run_esmfold2(
         # Filename pattern mirrors run_esmfold's so anything downstream that
         # inspects names sees the same shape. Outputs land in a per-model
         # directory, so there is no collision between backends.
-        fname = f"esm_{i + 1}.pdb_esm_{suffix}"
+        # The seed goes in the name: each seed folds a different structure, and
+        # without it the last overwrites the rest and answers for all of them.
+        fname = f"esm_{i + 1}_seed{seed}.pdb_esm_{suffix}"
         fdir = os.path.join(path_to_esmfold_out, fname)
         single.complex.to_protein_complex().to_pdb(fdir)
         out_paths.append(fdir)
