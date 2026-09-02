@@ -22,6 +22,7 @@ import pytest
 from proteinfoundation.evaluation.monomer_eval_utils import (
     monomer_fold_cache_path,
     read_monomer_fold_cache,
+    read_monomer_folds,
     write_monomer_fold_cache,
 )
 from proteinfoundation.metrics.seeding import deterministic_seed, deterministic_seeds
@@ -352,6 +353,38 @@ def test_adoption_survives_the_first_write(tmp_path):
 
     after = read_monomer_folds(str(tmp_path), "pdb", fp)
     assert set(after) == {legacy_seed, 999}, "the legacy fold must survive the merge, not be replaced by it"
+
+
+def test_the_apo_path_adopts_under_the_name_it_folds_with(tmp_path):
+    """The apo path folds under ``<binder>_apo_<seq_type>`` but caches beside the
+    sample, so the two names differ. Deriving the legacy seed from the directory
+    instead of the fold name adopted the fold under a key nothing would ask for:
+    the run refolded all three seeds and left a fourth, unreachable entry behind.
+    A real smoke run produced exactly that -- four folds for three seeds."""
+    fp = "fingerprint"
+    seqs = ["AAAA"]
+    name = "binder7_apo_mpnn"
+    assert name != tmp_path.name, "the whole point is that these differ"
+    with open(monomer_fold_cache_path(str(tmp_path), "apo_mpnn"), "w") as handle:
+        json.dump(
+            {
+                "fingerprint": fp,
+                "sequences": seqs,
+                "rmsd_values": {"esmfold": {"ca": [0.5]}},
+                "best_rmsd": 0.5,
+                "folded_paths": [],
+                "structures_kept": False,
+            },
+            handle,
+        )
+
+    wanted = deterministic_seeds(name, "apo_mpnn", *seqs, count=3)
+    adopted = read_monomer_folds(str(tmp_path), "apo_mpnn", fp, name=name)
+    assert set(adopted) & set(wanted) == {wanted[0]}, "the stored fold is reachable"
+    assert adopted[wanted[0]]["best_rmsd"] == 0.5
+
+    stale = read_monomer_folds(str(tmp_path), "apo_mpnn", fp)
+    assert not set(stale) & set(wanted), "without the name, nothing the apo path asks for"
 
 
 def test_every_evaluate_self_consistency_call_passes_a_seed_count():
