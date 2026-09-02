@@ -881,6 +881,7 @@ def compute_monomer_metrics(
                     mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
                     target_chains=target_chains,
                     inverse_folding_model=inverse_folding_model,
+                    n_esmfold2_seeds=max(1, int(cfg_metric.get("n_esmfold2_seeds", 1))),
                 )
 
                 for model in designability_folding_models:
@@ -917,6 +918,7 @@ def compute_monomer_metrics(
                     folding_models=codesignability_folding_models,
                     keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                     reuse_cache=cfg_metric.get("reuse_cached_monomer_folds", True),
+                    n_esmfold2_seeds=max(1, int(cfg_metric.get("n_esmfold2_seeds", 1))),
                 )
 
                 for model in codesignability_folding_models:

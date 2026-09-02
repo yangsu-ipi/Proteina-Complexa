@@ -331,3 +331,56 @@ def test_a_schema_1_fold_is_actually_reused_end_to_end(tmp_path):
     wanted = _fold_seeds(tmp_path.name, "apo_mpnn", seqs, ["esmfold2"], 3)
     assert set(stored) & set(wanted), "the stored fold must satisfy one of the requested seeds"
     assert wanted[0] in stored, "and specifically the first, which is what it was folded as"
+
+
+def test_adoption_survives_the_first_write(tmp_path):
+    """Reading adopted a schema-1 fold and writing dropped it, so the fold was
+    reused in memory and refolded on the next resume -- adoption undone every run,
+    invisibly, because the run that did it looked correct."""
+    from proteinfoundation.evaluation.monomer_eval_utils import read_monomer_folds
+
+    fp = "fp"
+    seqs = ["AAAA"]
+    with open(monomer_fold_cache_path(str(tmp_path), "pdb"), "w") as handle:
+        json.dump(
+            {"fingerprint": fp, "sequences": seqs, "rmsd_values": {"esmfold2": {"ca": [0.4]}}, "best_rmsd": 0.4},
+            handle,
+        )
+    legacy_seed = deterministic_seed(tmp_path.name, "pdb", *seqs)
+
+    write_monomer_fold_cache(str(tmp_path), "pdb", fp, Result(seqs=seqs, rmsd=0.6), False, seed=999, seed_index=1)
+
+    after = read_monomer_folds(str(tmp_path), "pdb", fp)
+    assert set(after) == {legacy_seed, 999}, "the legacy fold must survive the merge, not be replaced by it"
+
+
+def test_every_evaluate_self_consistency_call_passes_a_seed_count():
+    """The smoke run threaded only one of four folding paths, so `pdb` folds got
+    three seeds while `mpnn` and `apo_mpnn` silently stayed at one -- visible only
+    by counting files on disk afterwards. A signature default of 1 makes a missed
+    call site look like a deliberate choice."""
+    import re
+
+    src = pathlib.Path("src/proteinfoundation/evaluation/monomer_eval.py").read_text()
+    calls = [
+        m.start()
+        for m in re.finditer(r"evaluate_self_consistency\(", src)
+        if "def " not in src[max(0, m.start() - 40) : m.start()]
+    ]
+    for start in calls:
+        depth, i = 0, src.index("(", start)
+        for j in range(i, len(src)):
+            depth += src[j] == "("
+            depth -= src[j] == ")"
+            if depth == 0:
+                break
+        assert "n_esmfold2_seeds" in src[i:j], f"a call at offset {start} does not pass n_esmfold2_seeds"
+
+
+def test_the_apo_path_folds_every_seed_too():
+    """apo_refold's redesign branch has its own fold-and-cache flow rather than
+    delegating, so threading the codesignability path left it at one seed."""
+    src = pathlib.Path("src/proteinfoundation/evaluation/binder_eval.py").read_text()
+    body = src[src.index("def apo_refold(") : src.index("def ", src.index("def apo_refold(") + 10)]
+    assert "_fold_seeds(" in body, "the apo branch must derive its seeds"
+    assert "average_folds(" in body, "and average across them"
