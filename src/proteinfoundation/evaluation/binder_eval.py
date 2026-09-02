@@ -46,7 +46,6 @@ from proteinfoundation.evaluation.esm_eval import (
     compute_esm_ppl_for_sequences,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
-    read_monomer_fold_cache,
     write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
@@ -371,31 +370,51 @@ def apo_refold(
         folding_models=list(folding_models),
         model_identities={m: folding_model_identity(m) for m in folding_models},
     )
-    cached = read_monomer_fold_cache(sample_root_path, suffix, fingerprint) if reuse_cache else None
-    if cached is not None:
-        values = cached.get("rmsd_values", {})
-        if all(mode in values and all(m in values[mode] for m in folding_models) for mode in rmsd_modes):
-            return {(mode, m): values[mode][m] for mode in rmsd_modes for m in folding_models}
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds, average_folds, read_monomer_folds
 
-    folded = fold_sequences(
-        sequences=sequences,
-        output_dir=sample_root_path,
-        name=f"{pdb_name_from_path(binder_pdb_path)}_{suffix}",
-        folding_models=folding_models,
-        suffix=suffix,
-        cache_dir=None,
-        keep_outputs=keep_outputs,
-    )
-    result = compute_scrmsd_from_folded(
-        reference_pdb_path=binder_pdb_path,
-        folding_results=folded,
-        rmsd_modes=rmsd_modes,
-    )
-    result.sequences = sequences
-    write_monomer_fold_cache(sample_root_path, suffix, fingerprint, result, keep_outputs)
+    name = f"{pdb_name_from_path(binder_pdb_path)}_{suffix}"
+    # Sequences are an argument here rather than an output, so the seeds can be
+    # derived up front -- unlike the codesignability path, where they come out of
+    # the inverse folder and the cache has to be read first.
+    seeds = _fold_seeds(name, suffix, list(sequences), folding_models, n_esmfold2_seeds)
+    stored = read_monomer_folds(sample_root_path, suffix, fingerprint) if reuse_cache else None
+    per_seed = {seed: stored[seed] for seed in seeds if stored and seed in stored}
+    if len(per_seed) < len(seeds):
+        logger.info(f"{len(per_seed)}/{len(seeds)} apo seeds cached for {name}; folding the rest")
 
+    for seed in seeds:
+        if seed in per_seed:
+            continue
+        folded = fold_sequences(
+            sequences=sequences,
+            output_dir=sample_root_path,
+            name=name,
+            folding_models=folding_models,
+            suffix=suffix,
+            cache_dir=None,
+            keep_outputs=keep_outputs,
+            seed=seed,
+        )
+        scored = compute_scrmsd_from_folded(
+            reference_pdb_path=binder_pdb_path,
+            folding_results=folded,
+            rmsd_modes=rmsd_modes,
+        )
+        scored.sequences = sequences
+        write_monomer_fold_cache(
+            sample_root_path, suffix, fingerprint, scored, keep_outputs, seed=seed, seed_index=seeds.index(seed)
+        )
+        per_seed[seed] = {
+            "sequences": list(scored.sequences),
+            "rmsd_values": scored.rmsd_values,
+            "best_rmsd": scored.best_rmsd,
+            "folded_paths": list(scored.folded_paths),
+        }
+
+    averaged = average_folds(per_seed) or {}
+    values = averaged.get("rmsd_values", {})
     return {
-        (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
+        (mode, m): values.get(mode, {}).get(m, [float("inf")] * len(sequences))
         for mode in rmsd_modes
         for m in folding_models
     }
