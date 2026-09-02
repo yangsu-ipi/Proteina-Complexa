@@ -28,6 +28,9 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+# Only needs math, so importing it here keeps this module as light as it was.
+from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
+
 # =============================================================================
 # Folding Configuration Constants
 # =============================================================================
@@ -167,10 +170,47 @@ def monomer_fold_fingerprint(
 MONOMER_CACHE_SCHEMA = 2  # 1 held a single fold; 2 holds one per seed
 
 
+def _plddt_from_kept_structures(entry: dict) -> dict[str, list[float]]:
+    """pLDDT for a fold cached before it was recorded, read back off the
+    structures that fold kept.
+
+    Only attempted where the mapping from paths to sequences is unambiguous:
+    one folding model, and exactly one kept structure per sequence.
+    ``folded_paths`` is a flat list appended model by model, skipping folds that
+    failed, so with two models or a single failure there is no way to say which
+    path belongs to which sequence -- and a confidence attributed to the wrong
+    sequence is worse than an absent one. Those folds stay unmeasured.
+
+    This is what makes the column available without refolding: whenever
+    keep_folding_outputs held, the structures are already on disk and their
+    B-factor column already holds the number.
+    """
+    paths = list(entry.get("folded_paths") or [])
+    sequences = list(entry.get("sequences") or [])
+    models = {m for by_model in (entry.get("rmsd_values") or {}).values() for m in by_model}
+    if len(models) != 1 or not paths or len(paths) != len(sequences):
+        return {}
+    values = [mean_plddt_from_pdb(path) for path in paths]
+    # All NaN means the structures are gone or unreadable. Recording that is no
+    # better than recording nothing, and nothing is what the caller expects.
+    if all(math.isnan(v) for v in values):
+        return {}
+    return {next(iter(models)): values}
+
+
 def _fold_payload(entry: dict) -> dict | None:
-    """One seed's stored fold, or None if it holds nothing usable."""
+    """One seed's stored fold, or None if it holds nothing usable.
+
+    Also the single funnel every cache read goes through, which is why the
+    pLDDT recovery hangs here rather than at each of them.
+    """
     if not isinstance(entry, dict) or not entry.get("sequences") or not entry.get("rmsd_values"):
         return None
+    if not entry.get("plddt"):
+        recovered = _plddt_from_kept_structures(entry)
+        if recovered:
+            # A copy: the caller's cached dict is not ours to edit.
+            return {**entry, "plddt": recovered}
     return entry
 
 
@@ -358,8 +398,10 @@ def read_monomer_fold_cache(
             legacy = deterministic_seed(name or os.path.basename(output_dir), suffix, *single["sequences"])
             return {legacy: single} if legacy in seeds else {}
         if seeds is None:
-            first = next((v for v in folds.values() if _fold_payload(v)), None)
-            return first
+            # Take what _fold_payload returns, not the entry it was asked
+            # about: it normalises now, so discarding its result would throw
+            # away the pLDDT it just recovered.
+            return next((p for p in (_fold_payload(v) for v in folds.values()) if p), None)
         present = {}
         for seed in seeds:
             entry = _fold_payload(folds.get(str(seed)))

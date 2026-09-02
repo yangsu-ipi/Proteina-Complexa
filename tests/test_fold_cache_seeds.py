@@ -450,3 +450,103 @@ def test_adding_an_advisory_metric_invalidates_the_advisory_cache(monkeypatch):
     before = consensus_folding.consensus_fingerprint("esmfold2", cfg, target)
     monkeypatch.setattr(consensus_folding, "CONSENSUS_METRIC_SUFFIXES", ("i_pAE", "pLDDT"))
     assert consensus_folding.consensus_fingerprint("esmfold2", cfg, target) != before
+
+
+# ---------------------------------------------------------------------------
+# Recovering pLDDT from folds cached before it was recorded. The structures are
+# already on disk whenever keep_folding_outputs held, and their B-factor column
+# already holds the number -- so the column costs a parse rather than a refold.
+# ---------------------------------------------------------------------------
+
+
+def _kept_structure(path: pathlib.Path, values: list[float]) -> str:
+    lines = [
+        f"ATOM  {i:>5}  CA  ALA A{i:>4}    {0.0:>8.3f}{0.0:>8.3f}{0.0:>8.3f}{1.0:>6.2f}{v:>6.2f}           C"
+        for i, v in enumerate(values, start=1)
+    ]
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return str(path)
+
+
+def _cached_fold(tmp_path, n_seqs=1, models=("esmfold2",), kept=1, plddt=0.7):
+    seqs = [f"AAA{i}" for i in range(n_seqs)]
+    paths = [_kept_structure(tmp_path / f"f{i}.pdb", [plddt] * 3) for i in range(kept)]
+    return {
+        "sequences": seqs,
+        "rmsd_values": {"ca": {m: [0.5] * n_seqs for m in models}},
+        "best_rmsd": {"ca": dict.fromkeys(models, 0.5)},
+        "folded_paths": paths,
+    }
+
+
+def test_plddt_is_recovered_from_the_structures_a_fold_kept(tmp_path):
+    """The whole point: an existing campaign gains the column without refolding
+    a single sequence."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    payload = _fold_payload(_cached_fold(tmp_path))
+    assert payload["plddt"] == {"esmfold2": pytest.approx([0.7])}
+
+
+def test_recovery_does_not_overwrite_a_recorded_value(tmp_path):
+    """A fold that measured its own confidence is the authority on it."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path)
+    entry["plddt"] = {"esmfold2": [0.42]}
+    assert _fold_payload(entry)["plddt"] == {"esmfold2": [0.42]}
+
+
+def test_the_cached_entry_is_not_edited_in_place(tmp_path):
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path)
+    _fold_payload(entry)
+    assert "plddt" not in entry, "the caller's dict is not ours to edit"
+
+
+def test_two_models_are_left_unmeasured(tmp_path):
+    """folded_paths is flat and appended model by model, so with two models
+    there is no way to say which path belongs to which. A confidence attributed
+    to the wrong sequence is worse than an absent one."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path, n_seqs=2, models=("esmfold2", "esmfold"), kept=4)
+    assert not _fold_payload(entry).get("plddt")
+
+
+def test_a_failed_fold_makes_the_mapping_ambiguous(tmp_path):
+    """Failures are skipped when the paths are written, so three sequences with
+    two structures cannot say which sequence went unfolded."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path, n_seqs=3, kept=2)
+    assert not _fold_payload(entry).get("plddt")
+
+
+def test_structures_that_were_not_kept_recover_nothing(tmp_path):
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path, kept=0)
+    assert not _fold_payload(entry).get("plddt")
+
+
+def test_structures_since_deleted_recover_nothing(tmp_path):
+    """All-NaN is no better than nothing, and nothing is what a caller expects."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_payload
+
+    entry = _cached_fold(tmp_path)
+    pathlib.Path(entry["folded_paths"][0]).unlink()
+    assert not _fold_payload(entry).get("plddt")
+
+
+def test_recovery_survives_a_real_cache_round_trip(tmp_path):
+    """Through the reader the apo path actually calls, not just the funnel."""
+    fp = "fingerprint"
+    entry = _cached_fold(tmp_path, plddt=0.66)
+    seed = 4242
+    with open(monomer_fold_cache_path(str(tmp_path), "apo_mpnn"), "w") as handle:
+        json.dump({"schema": 2, "fingerprint": fp, "folds": {str(seed): entry}}, handle)
+
+    got = read_monomer_folds(str(tmp_path), "apo_mpnn", fp)
+    assert got[seed]["plddt"]["esmfold2"] == pytest.approx([0.66])
