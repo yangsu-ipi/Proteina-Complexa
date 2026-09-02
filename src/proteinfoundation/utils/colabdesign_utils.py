@@ -42,7 +42,10 @@ from loguru import logger
 AF2_SAVE_LOCATION = "AF2"
 
 
-def get_af2_advanced_settings():
+from proteinfoundation.metrics.ensembling import af2_stats_from_metrics, average_af2_stats
+
+
+def get_af2_advanced_settings(num_af2_models: int = 1):
     """Return default advanced settings for AF2 evaluation.
 
     Reads ``AF2_DIR`` and ``DSSP_EXEC`` from the environment (set via
@@ -56,6 +59,7 @@ def get_af2_advanced_settings():
         "predict_initial_guess": True,
         "predict_bigbang": False,
         "num_recycles_validation": 3,
+        "num_af2_models": max(1, int(num_af2_models)),
         "af_params_dir": os.getenv("AF2_DIR", f"{data_path}/tools/AF2" if data_path else None),
         "dssp_path": os.getenv("DSSP_EXEC", f"{data_path}/tools/dssp" if data_path else None),
     }
@@ -88,9 +92,7 @@ def _af2_binder_cache_key(advanced_settings: dict, multimer_validation: bool = T
     )
 
 
-def _get_or_build_af2_binder_model(
-    advanced_settings: dict, multimer_validation: bool = True
-) -> Any:
+def _get_or_build_af2_binder_model(advanced_settings: dict, multimer_validation: bool = True) -> Any:
     """Return a cached AF2 binder model or build + cache a new one.
 
     Safe to call concurrently from a single thread per process (no
@@ -282,33 +284,35 @@ def predict_binder_complex(
     advanced_settings,
     design_paths,
 ):
-    """Predict a binder–target complex with AF2 and extract confidence scores."""
+    """Predict a binder-target complex with AF2 and extract confidence scores.
+
+    Runs ``num_af2_models`` of AF2-Multimer's five parameter sets and returns
+    the mean of their confidence scores. The five models disagree, and which
+    one is right is not knowable per design, so a single model's number carries
+    a variance nothing downstream can see.
+
+    ``complex_pdb_path`` stays the first model's structure -- every existing
+    consumer expects one path -- and ``complex_pdb_paths`` carries all of them
+    for callers that average over structures rather than over scores.
+    """
     binder_sequence = re.sub("[^A-Z]", "", binder_sequence.upper())
+    n_models = max(1, int(advanced_settings.get("num_af2_models", 1)))
 
-    model_num = 0
-    complex_pdb = os.path.join(design_paths[AF2_SAVE_LOCATION], f"{mpnn_design_name}_model{model_num + 1}.pdb")
-    prediction_model.predict(
-        seq=binder_sequence,
-        models=[model_num],
-        num_recycles=advanced_settings["num_recycles_validation"],
-        verbose=False,
-    )
-    prediction_model.save_pdb(complex_pdb)
-    prediction_metrics = copy_dict(prediction_model.aux["log"])
+    complex_pdb_paths = []
+    per_model_stats = []
+    for model_num in range(n_models):
+        complex_pdb = os.path.join(design_paths[AF2_SAVE_LOCATION], f"{mpnn_design_name}_model{model_num + 1}.pdb")
+        prediction_model.predict(
+            seq=binder_sequence,
+            models=[model_num],
+            num_recycles=advanced_settings["num_recycles_validation"],
+            verbose=False,
+        )
+        prediction_model.save_pdb(complex_pdb)
+        per_model_stats.append(af2_stats_from_metrics(copy_dict(prediction_model.aux["log"])))
+        complex_pdb_paths.append(complex_pdb)
 
-    stats = {
-        "pLDDT": round(prediction_metrics["plddt"], 3),
-        "pTM": round(prediction_metrics["ptm"], 3),
-        "i_pTM": round(prediction_metrics["i_ptm"], 3),
-        "pAE": round(prediction_metrics["pae"], 3),
-        "i_pAE": round(prediction_metrics["i_pae"], 3),
-        "min_ipAE": round(prediction_metrics["min_ipae"], 4),
-        "min_ipSAE": round(prediction_metrics["min_ipsae"], 4),
-        "max_ipSAE": round(prediction_metrics["max_ipsae"], 4),
-        "avg_ipSAE": round(prediction_metrics["avg_ipsae"], 4),
-        "min_ipSAE_10": round(prediction_metrics.get("min_ipsae_10", 0.0), 4),
-        "max_ipSAE_10": round(prediction_metrics.get("max_ipsae_10", 0.0), 4),
-        "avg_ipSAE_10": round(prediction_metrics.get("avg_ipsae_10", 0.0), 4),
-        "complex_pdb_path": complex_pdb,
-    }
+    stats = average_af2_stats(per_model_stats)
+    stats["complex_pdb_path"] = complex_pdb_paths[0]
+    stats["complex_pdb_paths"] = complex_pdb_paths
     return stats

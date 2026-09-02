@@ -22,6 +22,13 @@ metric:
   
   # Folding method: colabdesign, rf3_latest, boltz2_default, esmfold
   binder_folding_method: colabdesign
+
+  # AF2-Multimer ships five parameter sets that disagree with each other. Folding
+  # all five and averaging both the confidence scores and the geometry measured
+  # off their structures removes a variance that a single model hides rather
+  # than avoids. Only the colabdesign backend reads this.
+  # Cost is linear: this is the dominant term in evaluation time.
+  n_af2_models: 5
   
   # Sequence types: self (generated), mpnn (redesign all), mpnn_fixed (fixed interface)
   sequence_types: [self] #[self, mpnn, mpnn_fixed]

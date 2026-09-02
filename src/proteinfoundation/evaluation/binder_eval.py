@@ -525,6 +525,7 @@ def compute_binder_metrics(
     # evaluation time for a less noisy number; the other folders are deterministic
     # and ignore this. Prefix-stable, so raising it later folds only what is new.
     n_esmfold2_seeds = max(1, int(cfg_metric.get("n_esmfold2_seeds", 1)))
+    n_af2_models = max(1, int(cfg_metric.get("n_af2_models", 1)))
     if compute_apo and is_target_ligand:
         logger.info("Apo refolding skipped: these folders fold a single protein chain, target is a ligand")
         compute_apo = False
@@ -556,6 +557,12 @@ def compute_binder_metrics(
         # same design. Reusing them would quietly reintroduce the un-joinable
         # state this work exists to remove, so a derivation change invalidates.
         "mpnn_seed_derivation": SEED_DERIVATION_VERSION,
+        # AF2 confidence scores and the geometry measured off its structures are
+        # both means over this many models, so a cache written at one count
+        # cannot answer for another. Without this the count could be raised and
+        # every cached design would keep serving its single-model numbers --
+        # the silent-stale-cache case this fingerprint exists to prevent.
+        "n_af2_models": n_af2_models,
     }
     n_reused = 0
 
@@ -666,6 +673,7 @@ def compute_binder_metrics(
                     is_target_ligand=is_target_ligand,
                     num_redesign_seqs=num_redesign_seqs,
                     fixed_residues_override=fixed_residues_override,
+                    n_af2_models=n_af2_models,
                 )
 
                 # Save raw stats
