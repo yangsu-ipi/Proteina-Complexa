@@ -297,3 +297,37 @@ def test_no_usable_folds_is_reported_as_nothing_rather_than_zero():
 
     assert average_folds({}) is None
     assert average_folds({1: {"sequences": ["A"], "rmsd_values": {}}}) is None
+
+
+def test_the_first_seed_is_the_one_single_seed_runs_used():
+    """Otherwise every fold a finished campaign holds is orphaned, and the cache
+    adoption written to preserve them never matches a requested seed -- the
+    adoption path would be dead code and the saving it exists for imaginary."""
+    parts = ("design", "apo_mpnn", "AAAA")
+    assert deterministic_seeds(*parts, count=3)[0] == deterministic_seed(*parts)
+    assert deterministic_seeds(*parts, count=1) == [deterministic_seed(*parts)]
+
+
+def test_a_schema_1_fold_is_actually_reused_end_to_end(tmp_path):
+    """The adoption and the derivation have to agree, which is the thing the two
+    were written apart from each other and did not."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds, read_monomer_folds
+
+    fp = "fp"
+    seqs = ["AAAA"]
+    path = monomer_fold_cache_path(str(tmp_path), "apo_mpnn")
+    with open(path, "w") as handle:
+        json.dump(
+            {
+                "fingerprint": fp,
+                "sequences": seqs,
+                "rmsd_values": {"esmfold2": {"ca": [0.4]}},
+                "best_rmsd": 0.4,
+                "folded_paths": [],
+            },
+            handle,
+        )
+    stored = read_monomer_folds(str(tmp_path), "apo_mpnn", fp)
+    wanted = _fold_seeds(tmp_path.name, "apo_mpnn", seqs, ["esmfold2"], 3)
+    assert set(stored) & set(wanted), "the stored fold must satisfy one of the requested seeds"
+    assert wanted[0] in stored, "and specifically the first, which is what it was folded as"

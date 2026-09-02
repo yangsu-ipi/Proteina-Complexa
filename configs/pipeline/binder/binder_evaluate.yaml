@@ -46,7 +46,7 @@ metric:
   # deterministic given their inputs, so extra seeds would average a structure
   # with itself. Seeds are prefix-stable, so raising this later folds only the
   # new ones and reuses the folds already stored.
-  n_esmfold2_seeds: 1
+  n_esmfold2_seeds: 3
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true
   
