@@ -57,6 +57,7 @@ import hashlib
 import json
 import math
 import os
+import string
 from collections.abc import Callable
 
 import numpy as np
@@ -90,6 +91,40 @@ _GATED_PREFIX = "complex"
 # =============================================================================
 
 
+class AdvisoryStructureWriteError(RuntimeError):
+    """A requested advisory structure could not be written.
+
+    Distinct from a fold that failed, which is per-design and survivable. This
+    says the run cannot honour ``keep_folding_outputs``, which is systematic --
+    the next design will fail the same way -- so it stops rather than repeating
+    an expensive fold whose only requested output is a file it cannot produce.
+    """
+
+
+def advisory_chain_ids(n_target_chains: int) -> list[str]:
+    """Chain IDs for the advisory complex: targets in order, binder last.
+
+    Single characters because PDB gives the chain ID exactly one column. The
+    earlier ``T0``/``T1`` labels were readable and unwriteable, so every advisory
+    structure write failed -- and since a missing structure is what asks for a
+    refold, the folds recurred on every run, indefinitely, producing nothing.
+
+    Only the order carries meaning: the metrics index the complex by
+    ``target_len`` rather than by name, and nothing reads these structures back.
+    A single-chain target therefore gets ``A``/``B``, which is also what the
+    generated complexes use.
+    """
+    if n_target_chains < 1:
+        raise ValueError("an advisory complex needs at least one target chain")
+    needed = n_target_chains + 1
+    if needed > len(string.ascii_uppercase):
+        raise ValueError(
+            f"{needed} chains exceed the {len(string.ascii_uppercase)} single-character IDs a PDB "
+            f"chain column can hold; this complex cannot be written as PDB at all"
+        )
+    return list(string.ascii_uppercase[:needed])
+
+
 def _score_esmfold2(
     target_seqs: list[str],
     binder_seq: str,
@@ -120,13 +155,14 @@ def _score_esmfold2(
 
     model = _esmfold2_model(cfg)
     target_msas = _target_msas(target_seqs, cfg)
+    ids = advisory_chain_ids(len(target_seqs))
     chains = [
-        ProteinInput(id=f"T{i}", sequence=s, msa=m)
+        ProteinInput(id=ids[i], sequence=s, msa=m)
         for i, (s, m) in enumerate(zip(target_seqs, target_msas, strict=True))
     ]
     # msa=None for the binder, always. A de novo miniprotein has no meaningful
     # alignment, and this is not a knob for that reason.
-    chains.append(ProteinInput(id="B", sequence=binder_seq, msa=None))
+    chains.append(ProteinInput(id=ids[-1], sequence=binder_seq, msa=None))
     request = StructurePredictionInput(sequences=chains)
 
     builder = ESMFold2InputBuilder()
@@ -178,8 +214,16 @@ def _score_esmfold2(
             os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
             results[best].complex.to_protein_complex().to_pdb(out_pdb_path)
             scored[best]["pdb_path"] = out_pdb_path
-        except Exception as exc:  # advisory: a failed write must not lose the metrics
-            logger.warning(f"Could not write advisory complex structure to {out_pdb_path}: {exc}")
+        except Exception as exc:
+            # Not a warning. keep_folding_outputs asked for this file, and a
+            # missing structure is what triggers the refold -- so swallowing the
+            # failure means folding this complex again on every future run and
+            # producing nothing, which is what happened here for months of runs.
+            raise AdvisoryStructureWriteError(
+                f"Could not write the advisory complex structure requested by keep_folding_outputs "
+                f"to {out_pdb_path}: {exc}. The metrics were computed, but a structure that cannot "
+                f"be written will be refolded on every run, so this stops instead."
+            ) from exc
     return scored[best]
 
 
@@ -682,6 +726,11 @@ def score_binders(
             )
             try:
                 metrics = scorer(target_seqs, seq, cfg, out_pdb, seed)
+            except AdvisoryStructureWriteError:
+                # Systematic, not per-design: the next binder writes to the same
+                # kind of path and fails the same way. Tolerating it here is what
+                # made an unwriteable structure look like a survivable hiccup.
+                raise
             except Exception as exc:
                 logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
                 continue
