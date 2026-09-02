@@ -48,7 +48,6 @@ from proteinfoundation.evaluation.esm_eval import (
 from proteinfoundation.evaluation.monomer_eval_utils import (
     write_monomer_fold_cache,
 )
-from proteinfoundation.evaluation.target_reference import target_alone_plddt
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.consensus_folding import (
@@ -622,31 +621,9 @@ def compute_binder_metrics(
                 f"{'best sequence only' if consensus_best_only else 'all sequences'}"
             )
 
-    # The target folded without any binder, once for the whole campaign. Cached
-    # beside the shared evaluation results, so the second shard reads what the
-    # first folded rather than folding its own and disagreeing with it.
-    target_reference_models = [str(m) for m in (cfg_metric.get("target_reference_models", []) or [])]
-    target_alone_reference: dict[str, float] = {}
-    if target_reference_models and not is_target_ligand and sample_root_paths:
-        reference_seqs = consensus_target_seqs or _target_chain_sequences(target_pdb_path, target_pdb_chain)
-        if reference_seqs:
-            target_alone_reference = target_alone_plddt(
-                target_seqs=reference_seqs,
-                campaign_dir=os.path.dirname(os.path.abspath(sample_root_paths[0])),
-                folding_models=target_reference_models,
-                n_esmfold2_seeds=n_esmfold2_seeds,
-                reuse_cache=bool(cfg_metric.get("reuse_cached_target_reference", True)),
-            )
-        else:
-            logger.error("Target-alone reference skipped: no readable target sequence")
-    elif target_reference_models and is_target_ligand:
-        logger.info("Target-alone reference skipped: a ligand target has no sequence to fold")
-
     # Setup columns
     columns, flat_dict = parse_cfg_for_table(eval_config)
     all_columns = columns + ["id_gen", "pdb_path", "L", "task_name"]
-    reference_columns = [f"target_alone_pLDDT_{model}" for model in sorted(target_alone_reference)]
-    all_columns += reference_columns
 
     results = []
     binder_chain = None
@@ -672,7 +649,6 @@ def compute_binder_metrics(
             "id_gen": idx,
             "pdb_path": pdb_path,
             "task_name": target_task_name,
-            **{f"target_alone_pLDDT_{model}": value for model, value in target_alone_reference.items()},
         }
 
         if cfg_metric.get("compute_binder_metrics", True):

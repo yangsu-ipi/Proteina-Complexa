@@ -16,7 +16,9 @@ from proteinfoundation.metrics.ensembling import (
     average_af2_stats,
     average_rmsd_over_models,
     mean_chain_plddt,
+    mean_plddt_from_pdb,
     pop_per_model_paths,
+    residue_weighted_mean,
 )
 
 RAW = {
@@ -249,3 +251,48 @@ def test_the_column_a_gate_would_look_for_is_the_column_produced():
     for metric in ("target_pLDDT", "binder_pLDDT"):
         produced = f"mpnn_complex_{metric}_all"
         assert build_column_name("mpnn", "complex", metric) == produced
+
+
+# ---------------------------------------------------------------------------
+# Reading confidence back off a structure. The folding backends write
+# per-residue pLDDT into the B-factor column, which is where it lives once
+# the model has been unloaded.
+# ---------------------------------------------------------------------------
+
+
+def pdb_with_plddt(path: pathlib.Path, values: list[float]) -> str:
+    """A minimal CA-only PDB with pLDDT in the B-factor column, as the folding
+    backends write it."""
+    lines = []
+    for i, value in enumerate(values, start=1):
+        lines.append(
+            f"ATOM  {i:>5}  CA  ALA A{i:>4}    {0.0:>8.3f}{0.0:>8.3f}{0.0:>8.3f}{1.0:>6.2f}{value:>6.2f}           C"
+        )
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return str(path)
+
+
+def test_plddt_is_read_out_of_the_b_factor_column(tmp_path):
+    path = pdb_with_plddt(tmp_path / "f.pdb", [0.9, 0.8, 0.7])
+    assert mean_plddt_from_pdb(path) == pytest.approx(0.8)
+
+
+def test_a_0_to_100_structure_is_read_as_fractions(tmp_path):
+    """ColabFold writes pLDDT on 0-100. A gate comparing to 0.9 would pass every
+    design ever folded."""
+    path = pdb_with_plddt(tmp_path / "f.pdb", [90.0, 80.0, 70.0])
+    assert mean_plddt_from_pdb(path) == pytest.approx(0.8)
+
+
+def test_an_unreadable_structure_is_nan_not_zero(tmp_path):
+    """Zero would make every ratio against it infinite; a missing file must stay
+    missing."""
+    assert math.isnan(mean_plddt_from_pdb(str(tmp_path / "absent.pdb")))
+    assert math.isnan(mean_plddt_from_pdb(pdb_with_plddt(tmp_path / "empty.pdb", [])))
+
+
+def test_chains_are_weighted_by_their_length():
+    """The target's pLDDT in complex is one mean over all its residues, so the
+    reference has to be too -- otherwise the ratio measures the chain split."""
+    assert residue_weighted_mean([1.0, 0.0], [3, 1]) == pytest.approx(0.75)
+    assert residue_weighted_mean([1.0, 0.0], [1, 3]) == pytest.approx(0.25)

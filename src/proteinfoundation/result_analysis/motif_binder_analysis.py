@@ -35,7 +35,7 @@ from proteinfoundation.result_analysis.analysis_utils import (
     parse_threshold_spec,
     save_filtered_csv,
 )
-from proteinfoundation.result_analysis.binder_analysis_utils import build_column_name, threshold_column
+from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
 from proteinfoundation.result_analysis.motif_binder_analysis_utils import (
     check_redesign_passes_binder_and_motif,
     check_sample_has_passing_redesign,
