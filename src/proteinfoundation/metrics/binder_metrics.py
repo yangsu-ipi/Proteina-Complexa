@@ -13,6 +13,7 @@ from loguru import logger
 from torch import Tensor
 from transformers import logging as hf_logging
 
+from proteinfoundation.metrics.ensembling import average_rmsd_over_models, pop_per_model_paths
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues,
@@ -54,6 +55,7 @@ def run_binder_eval(
     binder_chain: str = None,  # If none, use the last chain id in the refolded complex
     num_redesign_seqs: int = None,  # If none, default to 8 for protein targets, 1 for ligand targets
     fixed_residues_override: list[str] | None = None,
+    n_af2_models: int = 1,
 ) -> dict[str, list[dict[str, dict]]]:
     """Evaluates protein binder designs using inverse folding models and folding models.
 
@@ -278,7 +280,7 @@ def run_binder_eval(
     if model_name == "colabdesign":
         from proteinfoundation.utils.colabdesign_utils import get_af2_advanced_settings, run_af_eval
 
-        colabdesign_advanced_settings = get_af2_advanced_settings()
+        colabdesign_advanced_settings = get_af2_advanced_settings(num_af2_models=n_af2_models)
         target_settings = {
             "starting_pdb": target_pdb_path,
             "chains": ",".join(gen_target_chain),
@@ -331,23 +333,35 @@ def run_binder_eval(
     for seq_num, complex_pdb_path in enumerate(complex_pdb_paths):
         seq_type = sequence_types_list[seq_num]
         label = f"{seq_type}_seq_{seq_num + 1}"
-        if not is_target_ligand:
-            refolded_complex = load_any(complex_pdb_path, file_type="pdb")[0]
-            rmsd_result = calculate_prot_prot_binder_rmsd(
-                refolded_complex=refolded_complex,
-                gen_complex=gen_prot,
-                label=label,
-            )
-        else:
-            refolded_complex = load_any(complex_pdb_path, file_type="pdb")[0]
-            rmsd_result = calculate_ligand_binder_rmsd(
-                refolded_complex=refolded_complex,
-                gen_complex=gen_prot,
-                ligand_chain_id="A",
-                binder_chain_id=binder_chain,
-                label=label,
-            )
-        rmsd_results.append({label: rmsd_result})
+        # AF2 ensembling writes one structure per model, and geometry averages
+        # over them for the same reason the confidence scores do: one model's
+        # placement is a draw, not the answer. Backends that predict a single
+        # structure (RF3, Boltz) leave the key absent and average over one.
+        # Popped rather than read because these stats become dataframe columns
+        # downstream, and a list-valued column survives nothing.
+        model_paths = pop_per_model_paths(complex_statistics, seq_num) or [complex_pdb_path]
+        per_model_rmsd = []
+        for model_path in model_paths:
+            refolded_complex = load_any(model_path, file_type="pdb")[0]
+            if not is_target_ligand:
+                per_model_rmsd.append(
+                    calculate_prot_prot_binder_rmsd(
+                        refolded_complex=refolded_complex,
+                        gen_complex=gen_prot,
+                        label=label,
+                    )
+                )
+            else:
+                per_model_rmsd.append(
+                    calculate_ligand_binder_rmsd(
+                        refolded_complex=refolded_complex,
+                        gen_complex=gen_prot,
+                        ligand_chain_id="A",
+                        binder_chain_id=binder_chain,
+                        label=label,
+                    )
+                )
+        rmsd_results.append({label: average_rmsd_over_models(per_model_rmsd)})
 
     # Add prefixes to complex and binder statistics
     # reordered_complex_stats = {k:[] for k in set(sequence_types)}
