@@ -377,7 +377,7 @@ def apo_refold(
     # derived up front -- unlike the codesignability path, where they come out of
     # the inverse folder and the cache has to be read first.
     seeds = _fold_seeds(name, suffix, list(sequences), folding_models, n_esmfold2_seeds)
-    stored = read_monomer_folds(sample_root_path, suffix, fingerprint) if reuse_cache else None
+    stored = read_monomer_folds(sample_root_path, suffix, fingerprint, name=name) if reuse_cache else None
     per_seed = {seed: stored[seed] for seed in seeds if stored and seed in stored}
     if len(per_seed) < len(seeds):
         logger.info(f"{len(per_seed)}/{len(seeds)} apo seeds cached for {name}; folding the rest")
@@ -402,7 +402,14 @@ def apo_refold(
         )
         scored.sequences = sequences
         write_monomer_fold_cache(
-            sample_root_path, suffix, fingerprint, scored, keep_outputs, seed=seed, seed_index=seeds.index(seed)
+            sample_root_path,
+            suffix,
+            fingerprint,
+            scored,
+            keep_outputs,
+            seed=seed,
+            seed_index=seeds.index(seed),
+            name=name,
         )
         per_seed[seed] = {
             "sequences": list(scored.sequences),

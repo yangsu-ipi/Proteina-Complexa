@@ -224,7 +224,9 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
     return averaged
 
 
-def read_monomer_folds(output_dir: str, suffix: str, fingerprint: str) -> dict[int, dict] | None:
+def read_monomer_folds(
+    output_dir: str, suffix: str, fingerprint: str, name: str | None = None
+) -> dict[int, dict] | None:
     """Every stored fold for this design, as ``{seed: fold}``, or None.
 
     Separate from :func:`read_monomer_fold_cache` because a caller cannot always
@@ -236,6 +238,13 @@ def read_monomer_folds(output_dir: str, suffix: str, fingerprint: str) -> dict[i
 
     Schema-1 caches yield their single fold under the seed the derivation gives
     for their own stored sequences, so a finished campaign keeps its folds.
+
+    *name* must match what the caller passes to ``_fold_seeds``. It defaults to
+    the output directory's basename, which is what the codesignability path uses
+    -- but the apo path folds under ``<binder>_apo_<seq_type>`` while caching
+    beside the sample, so the default adopted its legacy fold under a seed nothing
+    would ever ask for. The symptom was four entries for three seeds: three folded
+    fresh, one orphan unreachable.
     """
     path = monomer_fold_cache_path(output_dir, suffix)
     if not os.path.exists(path):
@@ -252,7 +261,7 @@ def read_monomer_folds(output_dir: str, suffix: str, fingerprint: str) -> dict[i
                 return None
             from proteinfoundation.metrics.seeding import deterministic_seed
 
-            legacy = deterministic_seed(os.path.basename(output_dir), suffix, *single["sequences"])
+            legacy = deterministic_seed(name or os.path.basename(output_dir), suffix, *single["sequences"])
             return {legacy: single}
         out = {}
         for key, entry in folds.items():
@@ -266,7 +275,7 @@ def read_monomer_folds(output_dir: str, suffix: str, fingerprint: str) -> dict[i
 
 
 def read_monomer_fold_cache(
-    output_dir: str, suffix: str, fingerprint: str, seeds: list[int] | None = None
+    output_dir: str, suffix: str, fingerprint: str, seeds: list[int] | None = None, name: str | None = None
 ) -> dict | None:
     """Cached refold results for this design, or None. Never raises.
 
@@ -311,7 +320,7 @@ def read_monomer_fold_cache(
                 return single
             from proteinfoundation.metrics.seeding import deterministic_seed
 
-            legacy = deterministic_seed(os.path.basename(output_dir), suffix, *single["sequences"])
+            legacy = deterministic_seed(name or os.path.basename(output_dir), suffix, *single["sequences"])
             return {legacy: single} if legacy in seeds else {}
         if seeds is None:
             first = next((v for v in folds.values() if _fold_payload(v)), None)
@@ -335,6 +344,7 @@ def write_monomer_fold_cache(
     keep_outputs: bool,
     seed: int | None = None,
     seed_index: int | None = None,
+    name: str | None = None,
 ) -> None:
     """Persist refold results. Never raises.
 
@@ -387,12 +397,14 @@ def write_monomer_fold_cache(
                         # memory and refolded on the next resume, forever.
                         legacy = _fold_payload(existing)
                         if legacy is not None:
-                            legacy_seed = deterministic_seed(os.path.basename(output_dir), suffix, *legacy["sequences"])
+                            legacy_seed = deterministic_seed(
+                                name or os.path.basename(output_dir), suffix, *legacy["sequences"]
+                            )
                             folds[str(legacy_seed)] = legacy
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 folds = {}
         if seed is None:
-            seed = deterministic_seed(os.path.basename(output_dir), suffix, *result.sequences)
+            seed = deterministic_seed(name or os.path.basename(output_dir), suffix, *result.sequences)
         entry["seed_index"] = seed_index
         entry["seed_derivation"] = SEED_DERIVATION_VERSION
         folds[str(seed)] = entry
