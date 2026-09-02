@@ -46,6 +46,27 @@ def deterministic_seed(*parts: str) -> int:
     return int.from_bytes(digest[:4], "big") % (2**32 - 1)
 
 
+def deterministic_seeds(*parts: str, count: int) -> list[int]:
+    """A stable *sequence* of seeds for the same inputs.
+
+    Prefix-stable by construction: each seed depends only on the inputs and its
+    own index, never on how many were asked for, so
+
+        deterministic_seeds(*parts, count=n)[:k] == deterministic_seeds(*parts, count=k)
+
+    for every ``k <= n``. A campaign that starts at three seeds and later wants
+    five reuses the first three folds and computes two, instead of discarding
+    everything -- which is only true if ``count`` stays out of the derivation.
+
+    The index is mixed in as a part rather than added to the result: adding would
+    make the seeds of one input the neighbours of another's, so two designs whose
+    seeds happened to land close together would sample near-identical noise.
+    """
+    if count < 1:
+        raise ValueError(f"count must be at least 1, got {count}")
+    return [deterministic_seed(*parts, str(index)) for index in range(count)]
+
+
 # Sampling settings shared by both ProteinMPNN call sites. The apo and holo
 # tracks must draw from the same distribution for their redesigns to be the same
 # sequences, so these are constants rather than per-track defaults.
