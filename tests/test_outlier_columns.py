@@ -34,7 +34,7 @@ def test_the_spread_is_not_inflated_by_the_outliers_it_looks_for():
 
     threshold = low_outlier_threshold(contaminated, k=3)
     assert all(x > threshold for x in clean), "no good design is caught"
-    assert 0.20 < threshold, "and every bad one is"
+    assert threshold > 0.20, "and every bad one is"
 
 
 def test_no_spread_means_no_threshold():
