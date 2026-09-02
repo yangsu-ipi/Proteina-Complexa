@@ -9,7 +9,7 @@
 # pinning, and the JAX memory fraction. Re-deriving this per campaign is how those
 # bugs come back.
 set -euo pipefail
-KIND="${1:?usage: run_campaign.sh smoke|production [all|generate|filter|evaluate|analyze]}"
+KIND="${1:?usage: run_campaign.sh smoke|production|scale [all|generate|filter|evaluate|analyze]}"
 STAGE="${2:-all}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,8 +17,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$HERE/campaign.env"
 
 case "$KIND" in
-  smoke)      RUN_NAME="${RUN_PREFIX}_smoke";      SEEDS=$SMOKE_SEEDS;      RAW=$SMOKE_RAW;      KEEP=$SMOKE_KEEP;      EXPECT=$SMOKE_EXPECT ;;
-  production) RUN_NAME="${RUN_PREFIX}_production"; SEEDS=$PRODUCTION_SEEDS; RAW=$PRODUCTION_RAW; KEEP=$PRODUCTION_KEEP; EXPECT=$PRODUCTION_EXPECT ;;
+  smoke)      RUN_NAME="${RUN_PREFIX}_smoke";      SEEDS=$SMOKE_SEEDS;      RAW=$SMOKE_RAW;      KEEP=$SMOKE_KEEP;      EXPECT=$SMOKE_EXPECT;      RNG_SEED=${SMOKE_RNG_SEED:?set SMOKE_RNG_SEED in campaign.env} ;;
+  production) RUN_NAME="${RUN_PREFIX}_production"; SEEDS=$PRODUCTION_SEEDS; RAW=$PRODUCTION_RAW; KEEP=$PRODUCTION_KEEP; EXPECT=$PRODUCTION_EXPECT; RNG_SEED=${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env} ;;
+  scale)      RUN_NAME="${RUN_PREFIX}_scale";      SEEDS=$SCALE_SEEDS;      RAW=$SCALE_RAW;      KEEP=$SCALE_KEEP;      EXPECT=$SCALE_EXPECT;      RNG_SEED=${SCALE_RNG_SEED:?set SCALE_RNG_SEED in campaign.env} ;;
   *) echo "invalid run kind: $KIND" >&2; exit 2 ;;
 esac
 
@@ -48,7 +49,12 @@ INF="$CAMPAIGN_DIR/inference/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
 EVAL="$CAMPAIGN_DIR/evaluation_results/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
 RESOLVED="$CAMPAIGN_DIR/metadata/resolved_config_${KIND}.yaml"
 TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND}.json"
-OVERRIDES=("++run_name=$RUN_NAME" "++generation.dataloader.dataset.nres.nsamples=$SEEDS" "++generation.filter.filter_samples_limit=$EXPECT")
+# ++seed is passed explicitly rather than left to the pipeline yaml, because it
+# decides what a run produces: nres draws its binder lengths under it and the
+# sampler noise follows, so two kinds sharing a seed draw overlapping designs.
+# It is part of the generation digest, so a kind that changes it cannot resume
+# another kind's shards by accident.
+OVERRIDES=("++run_name=$RUN_NAME" "++seed=$RNG_SEED" "++generation.dataloader.dataset.nres.nsamples=$SEEDS" "++generation.filter.filter_samples_limit=$EXPECT")
 
 # Campaign-specific preparation, before anything validates or resolves: MSA
 # building, target extraction, whatever this package needs. Declared in

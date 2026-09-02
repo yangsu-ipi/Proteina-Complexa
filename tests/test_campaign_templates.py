@@ -359,3 +359,78 @@ def test_the_templates_have_no_undefined_names():
         text=True,
     )
     assert r.returncode == 0, r.stdout
+
+
+# ---------------------------------------------------------------------------
+# The scale kind. A larger draw than production, with its own RNG seed.
+# ---------------------------------------------------------------------------
+
+
+def test_every_kind_gets_its_own_run_name():
+    """RUN_NAME feeds both the inference and evaluation directory, so two kinds
+    sharing one would generate into each other's output -- and generation
+    refuses rather than merges, so the second kind would simply not run."""
+    runner = RUNNER.read_text()
+    case = runner[runner.index('case "$KIND" in') : runner.index("esac")]
+    names = [line for line in case.splitlines() if "RUN_NAME=" in line]
+    assert len(names) == 3, "smoke, production, scale"
+    suffixes = {line.split("RUN_PREFIX}_")[1].split('"')[0] for line in names}
+    assert suffixes == {"smoke", "production", "scale"}
+
+
+def test_the_usage_line_mentions_every_kind_the_case_accepts():
+    """An undocumented kind is one nobody uses."""
+    runner = RUNNER.read_text()
+    usage = runner[: runner.index('case "$KIND" in')]
+    for kind in ("smoke", "production", "scale"):
+        assert kind in usage, f"{kind} missing from the usage line"
+
+
+def test_the_seed_is_passed_rather_than_left_to_the_pipeline_yaml():
+    """It is part of the generation digest now, so leaving it implicit means two
+    kinds silently share a draw -- and the campaign could not tell them apart."""
+    runner = RUNNER.read_text()
+    assert '"++seed=$RNG_SEED"' in runner
+
+
+def test_scale_draws_from_a_different_seed_than_production():
+    """numpy's randint is prefix-stable in count, so a scale run sharing
+    production's seed would redraw production's lengths as a prefix -- paying to
+    regenerate and re-evaluate designs already on disk. Independent seeds waste
+    nothing and the two runs pool afterwards."""
+    config = CONFIG_EXAMPLE.read_text()
+    seeds = {}
+    for kind in ("SMOKE", "PRODUCTION", "SCALE"):
+        line = next(li for li in config.splitlines() if li.startswith(f"{kind}_RNG_SEED="))
+        seeds[kind] = line.split("=", 1)[1].strip()
+    assert seeds["SCALE"] != seeds["PRODUCTION"]
+    assert seeds["SMOKE"] == seeds["PRODUCTION"] == "5", (
+        "the value the pipeline yaml carried; changing it would make every marker "
+        "already on disk describe a different request"
+    )
+
+
+def test_scale_is_larger_than_production_and_multiplies_out():
+    """RAW configures nothing -- it is the preflight's assertion that the sizing
+    set still multiplies out. A scale kind whose numbers disagree fails there,
+    after generation has been paid for."""
+    config = CONFIG_EXAMPLE.read_text()
+    val = {}
+    for line in config.splitlines():
+        if line.startswith(("SCALE_", "PRODUCTION_", "SHARDS=")) and "=" in line and "RNG" not in line:
+            key, _, rhs = line.partition("=")
+            val[key] = int(rhs.strip())
+    assert val["SCALE_SEEDS"] > val["PRODUCTION_SEEDS"]
+    beam = val["PRODUCTION_RAW"] // val["PRODUCTION_SEEDS"]
+    assert val["SCALE_RAW"] == val["SCALE_SEEDS"] * beam, "seeds x beam width"
+    assert val["SCALE_EXPECT"] == val["SCALE_KEEP"] * val["SHARDS"], "keep is per shard"
+    per_shard = val["SCALE_RAW"] // val["SHARDS"]
+    assert val["SCALE_KEEP"] <= per_shard, "cannot retain more than a shard produces"
+
+
+def test_a_retrofitted_campaign_env_is_told_what_to_add():
+    """An older campaign.env predates these. set -u alone would say only
+    'unbound variable'; the guard names the file to edit."""
+    runner = RUNNER.read_text()
+    for kind in ("SMOKE", "PRODUCTION", "SCALE"):
+        assert f"${{{kind}_RNG_SEED:?set {kind}_RNG_SEED in campaign.env}}" in runner
