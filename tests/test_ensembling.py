@@ -296,3 +296,38 @@ def test_chains_are_weighted_by_their_length():
     reference has to be too -- otherwise the ratio measures the chain split."""
     assert residue_weighted_mean([1.0, 0.0], [3, 1]) == pytest.approx(0.75)
     assert residue_weighted_mean([1.0, 0.0], [1, 3]) == pytest.approx(0.25)
+
+
+def test_the_advisory_scorer_splits_its_plddt_too():
+    """mean_chain_plddt has two call sites now. The seed count shipped with one
+    of four wired, so a second call site is worth a test of its own."""
+    from proteinfoundation.metrics.consensus_folding import _esmfold2_metrics
+
+    class Result:
+        plddt = [0.94] * 4 + [0.60] * 2
+        ptm = None
+        iptm = None
+        pae = None
+
+    metrics = _esmfold2_metrics(Result(), target_len=4)
+    assert metrics["target_pLDDT"] == pytest.approx(0.94)
+    assert metrics["binder_pLDDT"] == pytest.approx(0.60)
+    assert metrics["pLDDT"] == pytest.approx(sum(Result.plddt) / 6), "the complex mean still stands"
+
+
+def test_the_per_chain_metrics_are_emitted_at_all():
+    """Column emission filters on CONSENSUS_METRIC_SUFFIXES, so a metric the
+    scorer computes but the tuple omits never reaches a column."""
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_METRIC_SUFFIXES
+
+    assert {"target_pLDDT", "binder_pLDDT"} <= set(CONSENSUS_METRIC_SUFFIXES)
+
+
+def test_the_advisory_per_chain_columns_cannot_be_mistaken_for_gated_ones():
+    """ESMFold2 runs on a compressed scale -- a native protein folds to ~0.65 --
+    so these must stay out of any gate. The guard is what enforces that."""
+    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+
+    columns = [advisory_column("mpnn", "esmfold2", m) for m in ("target_pLDDT", "binder_pLDDT")]
+    gated = {"mpnn_complex_target_pLDDT", "mpnn_complex_binder_pLDDT", "mpnn_complex_pLDDT"}
+    assert_columns_are_advisory(columns, gated)

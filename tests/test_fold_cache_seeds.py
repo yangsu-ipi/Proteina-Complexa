@@ -436,3 +436,16 @@ def test_a_pinned_advisory_seed_means_one_fold():
     src = pathlib.Path("src/proteinfoundation/metrics/consensus_folding.py").read_text()
     body = src[src.index("def seeds_for(") : src.index("def first_seed_for(")]
     assert "if pinned is not None:" in body and "return [int(pinned)]" in body
+
+
+def test_adding_an_advisory_metric_invalidates_the_advisory_cache(monkeypatch):
+    """A cache written before a metric existed holds structures that could answer
+    for it and scores that cannot. Reusing it leaves the new columns absent
+    rather than wrong, which looks exactly like a config change that did not
+    take -- so the metric set is part of the scorer's identity."""
+    from proteinfoundation.metrics import consensus_folding
+
+    cfg, target = {"n_seeds": 3}, ["MKV"]
+    before = consensus_folding.consensus_fingerprint("esmfold2", cfg, target)
+    monkeypatch.setattr(consensus_folding, "CONSENSUS_METRIC_SUFFIXES", ("i_pAE", "pLDDT"))
+    assert consensus_folding.consensus_fingerprint("esmfold2", cfg, target) != before

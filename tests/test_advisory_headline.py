@@ -26,8 +26,26 @@ BACKEND = "esmfold2"
 
 # Three redesigns. The ranked best is index 1, which is what made the original bug
 # invisible in any test using a single sequence or a best-of-first ordering.
-PRIMARY = {"i_pAE": [0.30, 0.10, 0.25], "i_pTM": [0.5, 0.9, 0.6], "pTM": [0.6, 0.8, 0.7], "pLDDT": [0.80, 0.95, 0.88]}
-ADVISORY = {"i_pAE": [0.40, 0.15, 0.35], "i_pTM": [0.4, 0.8, 0.5], "pTM": [0.5, 0.7, 0.6], "pLDDT": [0.70, 0.93, 0.82]}
+# Every metric in CONSENSUS_METRIC_SUFFIXES, since build_row iterates it: a metric
+# added there without a fixture entry fails loudly here rather than going
+# unchecked. The per-chain pair moves with the complex mean, as it would on a
+# real row -- the binder is what varies between redesigns, the target barely.
+PRIMARY = {
+    "i_pAE": [0.30, 0.10, 0.25],
+    "i_pTM": [0.5, 0.9, 0.6],
+    "pTM": [0.6, 0.8, 0.7],
+    "pLDDT": [0.80, 0.95, 0.88],
+    "target_pLDDT": [0.94, 0.96, 0.95],
+    "binder_pLDDT": [0.55, 0.92, 0.70],
+}
+ADVISORY = {
+    "i_pAE": [0.40, 0.15, 0.35],
+    "i_pTM": [0.4, 0.8, 0.5],
+    "pTM": [0.5, 0.7, 0.6],
+    "pLDDT": [0.70, 0.93, 0.82],
+    "target_pLDDT": [0.80, 0.84, 0.82],
+    "binder_pLDDT": [0.45, 0.80, 0.60],
+}
 BEST = 1
 
 

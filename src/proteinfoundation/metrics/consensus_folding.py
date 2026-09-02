@@ -62,9 +62,14 @@ from collections.abc import Callable
 import numpy as np
 from loguru import logger
 
+from proteinfoundation.metrics.ensembling import mean_chain_plddt
+
 # Metrics a backend may report. Named to mirror the primary backend's metrics so
 # a column-to-column comparison reads naturally, without reusing its prefix.
-CONSENSUS_METRIC_SUFFIXES = ("i_pAE", "i_pTM", "pTM", "pLDDT")
+# target_pLDDT and binder_pLDDT split the complex mean the way the AF2 side does.
+# Advisory like everything else here: ESMFold2 runs on a compressed scale (see
+# above), so these are for looking at, not for filtering on.
+CONSENSUS_METRIC_SUFFIXES = ("i_pAE", "i_pTM", "pTM", "pLDDT", "target_pLDDT", "binder_pLDDT")
 
 # One cache file per backend. A single shared file would thrash the moment two
 # backends are enabled together: each writes its own fingerprint, and the other's
@@ -184,8 +189,6 @@ def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
     Field names are as declared on the dataclass (plddt, ptm, iptm, pae); each is
     optional there, so every one is guarded.
     """
-    from esm.models.esmfold2.interface_metrics import pae_interaction
-
     metrics: dict[str, float] = {}
     if getattr(result, "iptm", None) is not None:
         metrics["i_pTM"] = float(result.iptm)
@@ -193,9 +196,19 @@ def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
         metrics["pTM"] = float(result.ptm)
     plddt = getattr(result, "plddt", None)
     if plddt is not None:
-        metrics["pLDDT"] = float(_np(plddt).mean())
+        array = _np(plddt)
+        metrics["pLDDT"] = float(array.mean())
+        # The complex mean is mostly target on any real binder target, so it
+        # barely moves when a binder folds badly. Splitting it costs nothing
+        # here: the per-residue array is already in hand.
+        metrics.update(mean_chain_plddt(array, target_len))
     pae = getattr(result, "pae", None)
     if pae is not None:
+        # Imported here rather than at the top of the function: it is the only
+        # metric that needs esm, and a result without a pae should not pay for
+        # loading it.
+        from esm.models.esmfold2.interface_metrics import pae_interaction
+
         metrics["i_pAE"] = float(pae_interaction(_np(pae), target_len))
     return metrics
 
@@ -442,6 +455,12 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
             # binder sequence as the entry key, an explicit cfg.seed in cfg --
             # but the derivation that turns them into a seed is not.
             "seed_derivation": SEED_DERIVATION_VERSION,
+            # Which metrics were read off the fold, not only how it was folded.
+            # A cache written before a metric existed holds structures that could
+            # answer for it and scores that cannot, and reusing it would leave the
+            # new columns quietly absent rather than wrong -- which looks exactly
+            # like a config change that did not take.
+            "metrics": sorted(CONSENSUS_METRIC_SUFFIXES),
         },
         sort_keys=True,
         default=str,
