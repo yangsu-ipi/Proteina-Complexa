@@ -384,3 +384,22 @@ def test_the_apo_path_folds_every_seed_too():
     body = src[src.index("def apo_refold(") : src.index("def ", src.index("def apo_refold(") + 10)]
     assert "_fold_seeds(" in body, "the apo branch must derive its seeds"
     assert "average_folds(" in body, "and average across them"
+
+
+def test_the_advisory_path_inherits_the_seed_count():
+    """consensus_cfg is a separate dict, so metric.n_esmfold2_seeds did not reach
+    it -- three seeds everywhere except the complex folds, which are the expensive
+    ones. An explicit consensus_cfg.n_seeds still wins."""
+    src = pathlib.Path("src/proteinfoundation/evaluation/binder_eval.py").read_text()
+    i = src.index("consensus_cfg = dict(")
+    window = src[i : i + 700]
+    assert 'consensus_cfg.setdefault("n_seeds", n_esmfold2_seeds)' in window
+    assert src.index("n_esmfold2_seeds = max(") < i, "the count must be resolved before it is inherited"
+
+
+def test_a_pinned_advisory_seed_means_one_fold():
+    """A pinned seed names a specific sample; folding it three times would be one
+    draw counted three times, and the mean of a value with itself."""
+    src = pathlib.Path("src/proteinfoundation/metrics/consensus_folding.py").read_text()
+    body = src[src.index("def seeds_for(") : src.index("def first_seed_for(")]
+    assert "if pinned is not None:" in body and "return [int(pinned)]" in body

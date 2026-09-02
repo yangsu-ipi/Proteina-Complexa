@@ -559,6 +559,12 @@ def compute_binder_metrics(
     consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
     consensus_best_only = cfg_metric.get("consensus_best_only", False)
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
+    # The advisory folds are ESMFold2 too, so they answer to the same knob --
+    # otherwise metric.n_esmfold2_seeds means "three seeds, except for the
+    # expensive folds", which is not what it says. consensus_cfg.n_seeds still
+    # wins if a config sets it, since the complex fold is several times the cost
+    # of a monomer one and is the sensible place to want a different count.
+    consensus_cfg.setdefault("n_seeds", n_esmfold2_seeds)
     reuse_cached_consensus = cfg_metric.get("reuse_cached_consensus", True)
     consensus_target_seqs: list[str] = []
     if consensus_backends:
