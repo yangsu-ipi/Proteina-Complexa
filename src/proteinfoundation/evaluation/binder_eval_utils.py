@@ -537,7 +537,6 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
     """
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
     from proteinfoundation.result_analysis.binder_analysis_utils import (
-        build_column_name,
         expand_model_criteria,
         redesign_pass_vector,
     )
