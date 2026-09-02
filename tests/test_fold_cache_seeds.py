@@ -31,11 +31,12 @@ from proteinfoundation.metrics.seeding import deterministic_seed, deterministic_
 class Result:
     """The fields write_monomer_fold_cache reads off a DesignabilityResult."""
 
-    def __init__(self, seqs=("AAAA",), rmsd=1.0):
+    def __init__(self, seqs=("AAAA",), rmsd=1.0, plddt=0.9):
         self.sequences = list(seqs)
         self.rmsd_values = {"esmfold": {"ca": [rmsd]}}
         self.best_rmsd = rmsd
         self.folded_paths = []
+        self.plddt = {"esmfold": [plddt]}
 
 
 # ------------------------------------------------------------ the seed sequence

@@ -31,6 +31,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     TMOL_METRIC_COLS,
     apo_column,
     apo_fold_fingerprint,
+    apo_plddt_column,
     check_thresholds_are_computable,
     extract_binder_chain_to_pdb,
     get_binder_chain_from_complex,
@@ -46,6 +47,7 @@ from proteinfoundation.evaluation.esm_eval import (
     compute_esm_ppl_for_sequences,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
+    per_model_plddt,
     write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
@@ -317,9 +319,11 @@ def apo_refold(
     ``self_apo_scRMSD_{mode}_{model}`` is an alias of
     ``_res_co_scRMSD_{mode}_{model}`` sharing one fold.
 
-    Returns ``{(mode, model): [rmsd per sequence]}``. Empty when nothing could be
-    folded; a failed fold is ``inf`` for that sequence, not a missing row, so the
-    lists stay aligned with the sequences they describe.
+    Returns ``({(mode, model): [rmsd per sequence]}, {model: [pLDDT per
+    sequence]})``. Empty when nothing could be folded; a failed fold is ``inf``
+    for that sequence, not a missing row, so the lists stay aligned with the
+    sequences they describe. A fold with no readable confidence is NaN, which is
+    the same distinction: unmeasured rather than bad.
     """
     from proteinfoundation.evaluation.monomer_eval import (
         compute_scrmsd_from_folded,
@@ -356,12 +360,15 @@ def apo_refold(
                 f"{result.sequences} but the row reports {sequences}. Dropping the apo columns for "
                 f"this design rather than pairing a fold with another sequence's metrics."
             )
-            return {}
-        return {
-            (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
-            for mode in rmsd_modes
-            for m in folding_models
-        }
+            return {}, {}
+        return (
+            {
+                (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
+                for mode in rmsd_modes
+                for m in folding_models
+            },
+            per_model_plddt(result.plddt, folding_models, len(sequences)),
+        )
 
     suffix = f"apo_{seq_type}"
     fingerprint = apo_fold_fingerprint(
@@ -416,15 +423,17 @@ def apo_refold(
             "rmsd_values": scored.rmsd_values,
             "best_rmsd": scored.best_rmsd,
             "folded_paths": list(scored.folded_paths),
+            "plddt": scored.plddt,
         }
 
     averaged = average_folds(per_seed) or {}
     values = averaged.get("rmsd_values", {})
-    return {
+    rmsds = {
         (mode, m): values.get(mode, {}).get(m, [float("inf")] * len(sequences))
         for mode in rmsd_modes
         for m in folding_models
     }
+    return rmsds, per_model_plddt(averaged.get("plddt"), folding_models, len(sequences))
 
 
 def _target_chain_sequences(target_pdb_path: str, target_pdb_chain: list[str]) -> list[str]:
@@ -825,7 +834,21 @@ def compute_binder_metrics(
                         )
                     except Exception as exc:
                         logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")
-                        apo_values = {}
+                        apo_values = ({}, {})
+
+                    apo_values, apo_plddt = apo_values
+                    for model, values in (apo_plddt or {}).items():
+                        # Advisory. The campaign folds apo with esmfold2, which
+                        # runs on a compressed scale -- a native protein reaches
+                        # ~0.65 there -- so an AF2-calibrated floor would reject
+                        # nearly everything. Emitted for looking at, and picked
+                        # up by the outlier flags in analyze.
+                        col = apo_plddt_column(seq_type, model)
+                        row_dict[col] = values[best_idx] if best_idx < len(values) else np.nan
+                        row_dict[f"{col}_all"] = values
+                        for name in (col, f"{col}_all"):
+                            if name not in all_columns:
+                                all_columns.append(name)
 
                     for (mode, model), values in apo_values.items():
                         col = apo_column(seq_type, mode, model)

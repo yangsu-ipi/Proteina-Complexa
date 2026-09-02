@@ -38,6 +38,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
+from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
@@ -314,19 +315,26 @@ def compute_scrmsd_from_folded(
     ref_mask = torch.tensor(ref_prot.atom_mask, dtype=torch.bool)
 
     rmsd_values = {mode: {} for mode in rmsd_modes}
+    plddt: dict[str, list[float]] = {}
     folded_paths = []
 
     for model_name, results in folding_results.items():
         for mode in rmsd_modes:
             rmsd_values[mode][model_name] = []
+        plddt[model_name] = []
 
         for result in results:
             if not result.success or result.pdb_path is None:
                 for mode in rmsd_modes:
                     rmsd_values[mode][model_name].append(float("inf"))
+                plddt[model_name].append(float("nan"))
                 continue
 
             folded_paths.append(result.pdb_path)
+            # Read here because this is already the one place that opens every
+            # folded structure. The backends write per-residue pLDDT into the
+            # B-factor column, so it costs a parse of a file being parsed anyway.
+            plddt[model_name].append(mean_plddt_from_pdb(result.pdb_path))
 
             try:
                 folded_prot = load_pdb(result.pdb_path)
@@ -360,6 +368,7 @@ def compute_scrmsd_from_folded(
         rmsd_values=rmsd_values,
         best_rmsd=best_rmsd,
         folded_paths=folded_paths,
+        plddt=plddt,
     )
 
 
@@ -398,6 +407,7 @@ def _result_from_cache(
             best_rmsd={m: cached["best_rmsd"][m] for m in rmsd_modes},
             folded_paths=paths,
             sequences=sequences,
+            plddt=dict(cached.get("plddt") or {}),
         )
 
     models = sorted({model for by_model in have.values() for model in by_model})
@@ -435,6 +445,7 @@ def _result_from_cache(
         best_rmsd={m: merged_best[m] for m in rmsd_modes},
         folded_paths=paths,
         sequences=sequences,
+        plddt=dict(cached.get("plddt") or {}) or extra.plddt,
     )
 
 

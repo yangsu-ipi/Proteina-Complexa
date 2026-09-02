@@ -120,3 +120,65 @@ def test_the_flags_cannot_reach_a_verdict():
     for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values():
         metric = spec.get("metric") or ""
         assert not metric.endswith(("_low_outlier", "_robust_z"))
+
+
+# ---------------------------------------------------------------------------
+# Apo confidence. The apo fold is the binder alone, so its pLDDT is the binder's
+# -- but the campaign folds apo with esmfold2, which runs compressed, so this is
+# emitted for looking at rather than gated.
+# ---------------------------------------------------------------------------
+
+
+def test_the_apo_plddt_column_is_named_for_its_model():
+    """Two backends disagree about confidence more than about geometry, so the
+    model has to be in the name -- as it already is for the apo RMSDs."""
+    from proteinfoundation.evaluation.binder_eval_utils import apo_column, apo_plddt_column
+
+    assert apo_plddt_column("mpnn", "esmfold2") == "mpnn_apo_pLDDT_esmfold2"
+    assert apo_plddt_column("mpnn", "esmfold2") != apo_column("mpnn", "ca", "esmfold2")
+
+
+def test_apo_confidence_is_padded_to_the_sequence_count():
+    """Every apo column is positionally aligned with the holo columns beside it.
+    A fold cached before pLDDT was recorded has none, and a short list would
+    shift that alignment instead of admitting the gap."""
+    from proteinfoundation.evaluation.monomer_eval_utils import per_model_plddt
+
+    padded_short = per_model_plddt({"esmfold2": [0.7]}, ["esmfold2"], 3)["esmfold2"]
+    assert padded_short == pytest.approx([0.7, float("nan"), float("nan")], nan_ok=True)
+
+    truncated = per_model_plddt({"esmfold2": [0.7, 0.8, 0.9]}, ["esmfold2"], 2)["esmfold2"]
+    assert truncated == pytest.approx([0.7, 0.8]), "and never longer than the sequences it describes"
+    padded = per_model_plddt(None, ["esmfold2"], 2)["esmfold2"]
+    assert len(padded) == 2 and all(math.isnan(v) for v in padded)
+
+
+def test_a_model_that_reported_nothing_still_gets_a_column():
+    from proteinfoundation.evaluation.monomer_eval_utils import per_model_plddt
+
+    out = per_model_plddt({"esmfold2": [0.7, 0.8]}, ["esmfold2", "esmfold"], 2)
+    assert set(out) == {"esmfold2", "esmfold"}
+    assert all(math.isnan(v) for v in out["esmfold"])
+
+
+def test_apo_confidence_is_not_gated():
+    """esmfold2 runs on a compressed scale, so an AF2-calibrated floor would
+    reject nearly every design. No threshold spec may read this column."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values():
+        metric = spec.get("metric") or ""
+        assert not (spec.get("column_prefix") == "apo" and "pLDDT" in metric)
+
+
+def test_the_binder_half_of_the_af2_plddt_is_gated():
+    """The AF2 side is on its native scale, where 0.9 is the bar complex_pLDDT
+    already sets."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        build_column_name,
+    )
+
+    spec = DEFAULT_PROTEIN_BINDER_THRESHOLDS["complex_binder_pLDDT"]
+    assert (spec["threshold"], spec["op"]) == (0.9, ">=")
+    assert build_column_name("mpnn", spec["column_prefix"], spec["metric"]) == "mpnn_complex_binder_pLDDT_all"

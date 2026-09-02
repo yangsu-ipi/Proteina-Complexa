@@ -609,3 +609,13 @@ def apo_column(seq_type: str, mode: str, model: str) -> str:
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
     return f"{seq_type}_apo_scRMSD_{mode}_{model}"
+
+
+def apo_plddt_column(seq_type: str, model: str) -> str:
+    """Column for the apo fold's mean pLDDT, per sequence type and folding model.
+
+    Model-suffixed like the apo RMSDs, since two backends disagree about
+    confidence more than they disagree about geometry. No target/binder split
+    here: the apo fold is the binder alone, so its pLDDT is the binder's.
+    """
+    return f"{seq_type}_apo_pLDDT_{model}"

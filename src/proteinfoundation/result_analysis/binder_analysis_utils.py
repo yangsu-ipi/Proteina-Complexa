@@ -92,6 +92,20 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
         "column_prefix": "complex",
         "metric": "i_pAE",
     },
+    # The binder half of complex_pLDDT, which is the half a design controls. The
+    # complex mean is roughly three quarters target on a CBLN1-shaped complex,
+    # and the target is templated from its own structure in every prediction, so
+    # a badly modelled binder can clear the confounded gate on the target's
+    # score alone. 0.9 is the same bar complex_pLDDT already sets and means the
+    # same thing here: AF2 pLDDT is on its native scale. It does not transfer to
+    # ESMFold2, which runs compressed -- see consensus_folding.
+    "complex_binder_pLDDT": {
+        "threshold": 0.9,
+        "op": ">=",
+        "scale": 1.0,
+        "column_prefix": "complex",
+        "metric": "binder_pLDDT",
+    },
     "complex_pLDDT": {
         "threshold": 0.9,
         "op": ">=",

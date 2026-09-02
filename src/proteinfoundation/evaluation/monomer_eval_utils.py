@@ -72,6 +72,10 @@ class DesignabilityResult:
     best_rmsd: dict[str, dict[str, float]]  # mode -> model -> best rmsd
     folded_paths: list[str] = field(default_factory=list)
     sequences: list[str] = field(default_factory=list)
+    # model -> per-sequence mean pLDDT of the fold, positionally aligned with
+    # sequences like everything else here. Empty for folds cached before it was
+    # recorded; a reader must treat absence as unmeasured, not as zero.
+    plddt: dict[str, list[float]] = field(default_factory=dict)
 
 
 # =============================================================================
@@ -184,6 +188,22 @@ def _fold_seeds(name: str, suffix: str, sequences: list[str], folding_models: li
     return deterministic_seeds(name, suffix, *sequences, count=n)
 
 
+def per_model_plddt(plddt: dict | None, folding_models: list[str], n: int) -> dict[str, list[float]]:
+    """Per-model apo pLDDT, padded to the sequence count.
+
+    Folds cached before pLDDT was recorded have none, and a model that produced
+    no readable confidence has none either. Both come back as NaN rather than as
+    a short list, because every apo column is positionally aligned with the holo
+    columns beside it and a short list would silently shift that alignment.
+    """
+    stored = plddt or {}
+    out = {}
+    for model in folding_models:
+        values = list(stored.get(model) or [])
+        out[model] = (values + [float("nan")] * n)[:n]
+    return out
+
+
 def average_folds(folds: dict[int, dict]) -> dict | None:
     """One fold's worth of numbers, averaged across the seeds that produced them.
 
@@ -198,6 +218,10 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
 
     ``folded_paths`` are concatenated rather than averaged: a path is not a
     measurement, and each is a real structure a reader may want.
+
+    ``plddt`` follows the same rule as the RMSDs, with NaN standing in for the
+    RMSDs' infinity: a seed that produced no usable confidence did not produce a
+    slightly less confident fold.
     """
     usable = [f for f in (folds or {}).values() if f and f.get("rmsd_values")]
     if not usable:
@@ -217,8 +241,19 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
                 else float("inf")
                 for i in range(width)
             ]
+    merged_plddt: dict[str, list[float]] = {}
+    for model in usable[0].get("plddt") or {}:
+        per_seed = [f.get("plddt", {}).get(model, []) for f in usable]
+        width = min((len(v) for v in per_seed), default=0)
+        merged_plddt[model] = [
+            sum(v[i] for v in per_seed) / len(per_seed) if all(math.isfinite(v[i]) for v in per_seed) else float("nan")
+            for i in range(width)
+        ]
+
     averaged = dict(usable[0])
     averaged["rmsd_values"] = merged
+    if merged_plddt:
+        averaged["plddt"] = merged_plddt
     averaged["folded_paths"] = [p for f in usable for p in f.get("folded_paths", [])]
     averaged["n_seeds"] = len(usable)
     return averaged
@@ -373,6 +408,7 @@ def write_monomer_fold_cache(
         "rmsd_values": result.rmsd_values,
         "best_rmsd": result.best_rmsd,
         "folded_paths": list(result.folded_paths) if keep_outputs else [],
+        "plddt": result.plddt,
         "structures_kept": bool(keep_outputs),
     }
     from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION, deterministic_seed
