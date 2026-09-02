@@ -30,9 +30,9 @@ from proteinfoundation.evaluation.binder_eval_utils import extract_binder_chain_
 from proteinfoundation.evaluation.monomer_eval_utils import (
     DesignabilityResult,
     FoldingResult,
-    monomer_fold_fingerprint,
     _fold_seeds,
     average_folds,
+    monomer_fold_fingerprint,
     read_monomer_folds,
     write_monomer_fold_cache,
 )
