@@ -431,3 +431,74 @@ def test_a_retrofitted_campaign_env_is_told_what_to_add():
     runner = RUNNER.read_text()
     for var in ("SMOKE_RNG_SEED", "PRODUCTION_RNG_SEED", "PRODUCTION_SEEDS"):
         assert f"${{{var}:?" in runner, f"{var} is read without a message naming campaign.env"
+
+
+# ---------------------------------------------------------------------------
+# Submitting a run as a dependency chain.
+# ---------------------------------------------------------------------------
+
+SUBMIT = TEMPLATES / "submit_campaign.sh"
+GENERIC_SBATCH = TEMPLATES / "campaign.sbatch.generic"
+
+
+def test_the_submitter_and_generic_sbatch_parse():
+    for script in (SUBMIT, GENERIC_SBATCH):
+        assert subprocess.run(["bash", "-n", str(script)]).returncode == 0, script.name
+
+
+def test_every_stage_waits_on_the_one_before_it():
+    """afterok, not afterany: a stage that runs on the output of a job that
+    failed produces a result nobody can trust, and the failure is upstream."""
+    text = SUBMIT.read_text()
+    assert "afterok:" in text and "--dependency=" in text
+    assert "afterany" not in text
+
+
+def test_only_the_folding_stages_ask_for_gpus():
+    """filter, analyze and the pooled report read files the GPU stages wrote.
+    Holding two GPUs idle through them is hours of a shared machine."""
+    text = SUBMIT.read_text()
+    stages = text[text.index("STAGES=(") : text.index("\n", text.index("STAGES=("))]
+    assert "generate:gpu" in stages and "evaluate:gpu" in stages
+    assert "filter:cpu" in stages and "analyze:cpu" in stages
+    assert 'submit "${TAG}-pooled" cpu' in text
+
+
+def test_the_followup_index_is_pinned_across_the_chain():
+    """Every stage re-plans, and an unpinned index comes from the records on
+    disk -- so generate and evaluate would take consecutive indices and become
+    two different runs, the second reading a directory the first never wrote."""
+    submitter = SUBMIT.read_text()
+    assert "export FOLLOWUP_INDEX=" in submitter
+    assert "FOLLOWUP_INDEX=${FOLLOWUP_INDEX}" in submitter, "and reaches the job environment"
+    runner = RUNNER.read_text()
+    assert '${FOLLOWUP_INDEX:+--index "$FOLLOWUP_INDEX"}' in runner, "and the runner honours it"
+
+
+def test_a_followup_is_planned_before_anything_is_queued():
+    """So a chain that sits in the queue for a day is already auditable, and so
+    the index exists before the jobs that share it."""
+    text = SUBMIT.read_text()
+    assert text.index("plan_followup.py") < text.index("STAGES=(")
+
+
+def test_the_pooled_report_runs_last_and_not_for_smoke():
+    """It reads every run's results, so before analyze it would report a number
+    that predates the run just submitted. Smoke is not part of the pool."""
+    text = SUBMIT.read_text()
+    assert text.index("STAGES=(") < text.index('"${TAG}-pooled"')
+    assert '"$KIND" != smoke' in text
+
+
+def test_the_submitter_can_be_previewed_without_submitting():
+    """A chain of five jobs against a shared cluster is worth reading first."""
+    assert "DRY_RUN" in SUBMIT.read_text()
+
+
+def test_the_generic_sbatch_takes_the_stage_rather_than_hardcoding_it():
+    """One entry point, because five sbatch files that differ only in their last
+    word are five files that drift apart."""
+    text = GENERIC_SBATCH.read_text()
+    assert 'run_campaign.sh" "$@"' in text
+    assert "--job-name" not in text, "the name differs per stage and comes from the submitter"
+    assert "--gres" not in text, "so does the GPU request"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# One sbatch entry point for every stage. The job name, time limit and GPU
+# request come from submit_campaign.sh on the command line, because they differ
+# per stage -- generate and evaluate want GPUs for hours, filter and the pooled
+# report want neither -- and encoding that in one file per stage is how a
+# campaign ends up with five sbatch files that drift apart.
+#SBATCH --partition=batch
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=58G
+#SBATCH --output=logs/slurm/%x-%j.out
+#SBATCH --error=logs/slurm/%x-%j.err
+set -euo pipefail
+CAMPAIGN_DIR="${CAMPAIGN_DIR:?set CAMPAIGN_DIR, or edit this line to the package path}"
+export CAMPAIGN_DIR
+exec "$CAMPAIGN_DIR/scripts/run_campaign.sh" "$@"

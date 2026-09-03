@@ -75,3 +75,22 @@ and is not checked.
 `generate` → `trim_shards.py` → `filter` → `evaluate` → `analyze` → `verify_run_outputs.py`.
 Generation and evaluation run one process per shard, each pinned to its own GPU. Filter and
 analyze are single-process and operate on the whole campaign.
+
+## Running a campaign
+
+    scripts/submit_campaign.sh production
+    scripts/submit_campaign.sh followup 900
+    DRY_RUN=1 scripts/submit_campaign.sh followup 900   # print the chain, submit nothing
+
+Each submits generate, filter, evaluate, analyze and the pooled report as
+separate jobs joined by `afterok`. Separate rather than one long job because a
+failure then costs the stage that failed and not the hours before it, and
+because generate and evaluate want GPUs for hours while the rest want none.
+
+A follow-up takes only the number of additional designs wanted. Seeds, raw,
+keep, expect and its own RNG seed are derived from what the production run
+actually produced, recorded in `metadata/followup_<n>.json` before anything is
+queued, and it is deduplicated against every earlier pooled run.
+
+`SLURM_TIME_GPU` and `SLURM_TIME_CPU` in campaign.env override the wall clocks;
+both have defaults, so neither has to be set.

@@ -13,6 +13,12 @@ KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS 
 # followup takes the one number that cannot be predicted before a production run:
 # how many more designs are wanted. Everything else is derived from what
 # production actually produced -- see scripts/plan_followup.py.
+#
+# FOLLOWUP_INDEX pins which follow-up this is. Every stage re-plans, and the
+# index otherwise comes from the records already on disk -- so a chained
+# generate and evaluate would take consecutive indices and become two different
+# runs, the second reading an inference directory the first never wrote.
+# submit_campaign.sh sets it once for the whole chain.
 if [[ "$KIND" == followup ]]; then
   WANT_DESIGNS="${2:?followup needs a design count, e.g. run_campaign.sh followup 700}"
   STAGE="${3:-all}"
@@ -74,7 +80,8 @@ if [[ "$KIND" == followup ]]; then
     --campaign-dir "$CAMPAIGN_DIR" --want-designs "$WANT_DESIGNS" --shards "$SHARDS" \
     --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
     --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
-    --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME")"
+    --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME" \
+    ${FOLLOWUP_INDEX:+--index "$FOLLOWUP_INDEX"})"
   eval "$PLAN"
   RUN_NAME="$FOLLOWUP_RUN_NAME"
   SEEDS=$FOLLOWUP_SEEDS
