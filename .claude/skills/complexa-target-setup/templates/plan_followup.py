@@ -110,6 +110,40 @@ def plan(want_designs: int, shards: int, base_seed: int, index: int, observed: d
     }
 
 
+def pool_dirs(campaign_dir: Path, config_name: str, task_name: str, run_prefix: str, upto: int) -> list[str]:
+    """The inference directories a follow-up must not duplicate.
+
+    Production and every earlier follow-up -- the runs whose designs are part of
+    the deliverable. Deliberately not the smoke run: those designs are a throwaway
+    check, and letting one of them claim a sequence would make a production
+    design disappear because a test happened to draw it first.
+
+    A run whose filter output is missing is refused rather than skipped. Skipping
+    would under-deduplicate silently, and the duplicates it let through could not
+    be identified afterwards without re-deriving every sequence.
+    """
+    root = campaign_dir / "inference"
+    names = [f"{run_prefix}_production"] + [f"{run_prefix}_followup{i}" for i in range(1, upto)]
+    dirs = []
+    for name in names:
+        directory = root / f"{config_name}_{task_name}_{name}"
+        if not directory.is_dir():
+            continue
+        retained = directory / f"top_samples_{config_name}.csv"
+        if not retained.exists():
+            raise SystemExit(
+                f"Cannot pool against {directory.name}: {retained.name} is missing, so what that run "
+                f"kept is unknown. Run its filter stage, or move the directory aside."
+            )
+        dirs.append(str(directory))
+    if not dirs:
+        raise SystemExit(
+            f"Cannot plan a follow-up: no completed run found under {root}. A follow-up is sized "
+            f"from a production run and deduplicated against it."
+        )
+    return dirs
+
+
 def next_index(campaign_dir: Path) -> int:
     """One past the highest follow-up already recorded.
 
@@ -136,6 +170,8 @@ def main() -> int:
     p.add_argument("--reference-kind", default="production")
     p.add_argument("--reference-seeds", type=int, required=True)
     p.add_argument("--run-prefix", required=True)
+    p.add_argument("--config-name", required=True)
+    p.add_argument("--task-name", required=True)
     p.add_argument("--index", type=int, default=None, help="override; defaults to the next unused")
     p.add_argument("--check", action="store_true", help="verify the derivation reproduces the reference")
     args = p.parse_args()
@@ -160,12 +196,22 @@ def main() -> int:
     planned = plan(args.want_designs, args.shards, args.base_seed, index, observed)
     planned["run_name"] = f"{args.run_prefix}_followup{index}"
 
+    # Written before the run, because what a run was deduplicated against cannot
+    # be recovered from its outputs -- a design absent from the results looks the
+    # same whether it was never drawn or dropped as a duplicate.
+    pool = pool_dirs(args.campaign_dir, args.config_name, args.task_name, args.run_prefix, index)
+    manifest = args.campaign_dir / "metadata" / f"pool_followup{index}.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"for_run": planned["run_name"], "inference_dirs": pool}, indent=2) + "\n")
+    planned["pool_manifest"] = str(manifest)
+    planned["pooled_against"] = pool
+
     record = args.campaign_dir / "metadata" / f"followup_{index}.json"
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(json.dumps(planned, indent=2, sort_keys=True) + "\n")
 
     # Shell-evalable, so the runner needs no parsing of its own.
-    for key in ("run_name", "seeds", "raw", "keep", "expect", "rng_seed", "index"):
+    for key in ("run_name", "seeds", "raw", "keep", "expect", "rng_seed", "index", "pool_manifest"):
         print(f"FOLLOWUP_{key.upper()}={planned[key]}")
     print(f"FOLLOWUP_RECORD={record}")
     return 0

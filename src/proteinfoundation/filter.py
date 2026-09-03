@@ -153,6 +153,32 @@ def main(cfg):
             f"Sequence deduplication: {before_dedup} -> {after_dedup} samples ({before_dedup - after_dedup} duplicates removed)"
         )
 
+    # Cross-run deduplication. The dedup above is scoped to this run's own reward
+    # files, which is right for one run and wrong for a campaign: a follow-up
+    # exists because production fell short, and it samples the same target from
+    # the same model, so it regenerates designs production already has. Within a
+    # single production run 32% of samples were duplicates, so the collision rate
+    # across runs is not small, and nothing downstream would notice -- the pooled
+    # set would simply be smaller than its row count.
+    pool_manifest = filter_cfg.get("dedup_against_manifest", None)
+    if pool_manifest:
+        from proteinfoundation.utils.run_pooling import pooled_aatypes, read_pool_manifest
+
+        prior_dirs = read_pool_manifest(pool_manifest)
+        taken = pooled_aatypes(prior_dirs, config_name)
+        before_pool = len(combined_rewards)
+        combined_rewards = combined_rewards[~combined_rewards["aatype"].isin(taken)]
+        dropped = before_pool - len(combined_rewards)
+        logger.info(
+            f"Cross-run deduplication against {len(prior_dirs)} earlier run(s) holding {len(taken)} "
+            f"sequences: {before_pool} -> {len(combined_rewards)} samples ({dropped} already in the pool)"
+        )
+        if not len(combined_rewards):
+            logger.error(
+                "Every sample in this run duplicates an earlier one. The follow-up added nothing, "
+                "which usually means it reused an earlier run's seed."
+            )
+
     # Select top N samples or samples above the threshold
     try:
         default_samples = cfg.generation.dataloader.dataset.nres.nsamples

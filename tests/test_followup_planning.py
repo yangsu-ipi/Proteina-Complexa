@@ -163,3 +163,98 @@ def test_a_worse_yielding_target_needs_more_seeds(tmp_path):
         campaign(tmp_path / "b", outputs={**PROD_OUTPUTS, "live_after_global_dedup": 170}), "production", 64
     )
     assert plan_followup.plan(700, 2, 5, 1, stingy)["seeds"] > plan_followup.plan(700, 2, 5, 1, generous)["seeds"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-run deduplication. A follow-up samples the same target from the same
+# model as the run it follows, so it regenerates designs that run already has.
+# ---------------------------------------------------------------------------
+
+
+def _run_dir(campaign, config, task, name, aatypes):
+    d = campaign / "inference" / f"{config}_{task}_{name}"
+    d.mkdir(parents=True, exist_ok=True)
+    rows = "aatype,total_reward\n" + "".join(f'"{a}",1.0\n' for a in aatypes)
+    (d / f"top_samples_{config}.csv").write_text(rows)
+    return d
+
+
+def test_the_pool_is_production_and_earlier_followups(tmp_path):
+    root = campaign(tmp_path)
+    for name in ("p_production", "p_followup1", "p_followup2", "p_smoke"):
+        _run_dir(root, "cfg", "TASK", name, ["1,2", "3,4"])
+    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=3)
+    names = [pathlib.Path(d).name for d in pool]
+    assert names == ["cfg_TASK_p_production", "cfg_TASK_p_followup1", "cfg_TASK_p_followup2"]
+
+
+def test_the_smoke_run_never_claims_a_sequence(tmp_path):
+    """Smoke designs are a throwaway check. Letting one claim a sequence would
+    make a production design vanish because a test drew it first."""
+    root = campaign(tmp_path)
+    _run_dir(root, "cfg", "TASK", "p_production", ["1,2"])
+    _run_dir(root, "cfg", "TASK", "p_smoke", ["9,9"])
+    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=1)
+    # basenames, because pytest puts this test's own name in tmp_path
+    assert all("smoke" not in pathlib.Path(d).name for d in pool)
+    assert len(pool) == 1
+
+
+def test_a_run_that_never_filtered_is_refused_not_skipped(tmp_path):
+    """Skipping would under-deduplicate silently, and the duplicates it let
+    through could not be identified afterwards."""
+    root = campaign(tmp_path)
+    _run_dir(root, "cfg", "TASK", "p_production", ["1,2"])
+    (root / "inference" / "cfg_TASK_p_followup1").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="is missing"):
+        plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=2)
+
+
+def test_no_completed_run_is_refused(tmp_path):
+    root = campaign(tmp_path)
+    (root / "inference").mkdir(exist_ok=True)
+    with pytest.raises(SystemExit, match="no completed run"):
+        plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=1)
+
+
+def test_the_pooled_keys_are_the_union_of_what_each_run_kept(tmp_path):
+    from proteinfoundation.utils.run_pooling import pooled_aatypes, retained_aatypes
+
+    root = campaign(tmp_path)
+    a = _run_dir(root, "cfg", "TASK", "p_production", ["1,2", "3,4"])
+    b = _run_dir(root, "cfg", "TASK", "p_followup1", ["3,4", "5,6"])
+    assert retained_aatypes(str(a), "cfg") == {"1,2", "3,4"}
+    assert pooled_aatypes([str(a), str(b)], "cfg") == {"1,2", "3,4", "5,6"}
+
+
+def test_a_missing_filter_output_is_loud(tmp_path):
+    from proteinfoundation.utils.run_pooling import retained_aatypes
+
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(FileNotFoundError, match="is missing"):
+        retained_aatypes(str(tmp_path / "empty"), "cfg")
+
+
+def test_the_wrong_column_is_caught_rather_than_matching_nothing(tmp_path):
+    """aatype is comma-joined integers, not the letter sequence. Comparing the
+    wrong representation would deduplicate nothing and look like it worked."""
+    from proteinfoundation.utils.run_pooling import retained_aatypes
+
+    d = tmp_path / "r"
+    d.mkdir()
+    (d / "top_samples_cfg.csv").write_text("binder_sequence,total_reward\nMKV,1.0\n")
+    with pytest.raises(KeyError, match="aatype"):
+        retained_aatypes(str(d), "cfg")
+
+
+def test_the_manifest_round_trips(tmp_path):
+    from proteinfoundation.utils.run_pooling import read_pool_manifest
+
+    path = tmp_path / "pool.json"
+    path.write_text(json.dumps({"for_run": "x", "inference_dirs": ["/a", "/b"]}))
+    assert read_pool_manifest(str(path)) == ["/a", "/b"]
+    path.write_text(json.dumps(["/a"]))
+    assert read_pool_manifest(str(path)) == ["/a"], "a bare list is accepted too"
+    path.write_text(json.dumps({"inference_dirs": "not a list"}))
+    with pytest.raises(ValueError, match="list of inference directories"):
+        read_pool_manifest(str(path))

@@ -59,7 +59,7 @@ if [[ "$KIND" == followup ]]; then
     --campaign-dir "$CAMPAIGN_DIR" --want-designs "$WANT_DESIGNS" --shards "$SHARDS" \
     --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
     --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
-    --run-prefix "$RUN_PREFIX")"
+    --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME")"
   eval "$PLAN"
   RUN_NAME="$FOLLOWUP_RUN_NAME"
   SEEDS=$FOLLOWUP_SEEDS
@@ -70,6 +70,7 @@ if [[ "$KIND" == followup ]]; then
   KIND_TAG="followup${FOLLOWUP_INDEX}"
   echo "follow-up #${FOLLOWUP_INDEX}: ${WANT_DESIGNS} more designs -> ${SEEDS} seeds, seed ${RNG_SEED}"
   echo "  parameters recorded in ${FOLLOWUP_RECORD}"
+  echo "  deduplicated against the runs in ${FOLLOWUP_POOL_MANIFEST}"
 else
   KIND_TAG="$KIND"
 fi
@@ -84,6 +85,13 @@ TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND_TAG}.json"
 # It is part of the generation digest, so a kind that changes it cannot resume
 # another kind's shards by accident.
 OVERRIDES=("++run_name=$RUN_NAME" "++seed=$RNG_SEED" "++generation.dataloader.dataset.nres.nsamples=$SEEDS" "++generation.filter.filter_samples_limit=$EXPECT")
+# A follow-up exists because production fell short, and it samples the same
+# target from the same model -- so it regenerates designs production already
+# has. Without this the pooled set is smaller than its row count, and which rows
+# were duplicates cannot be recovered afterwards.
+if [[ "$KIND" == followup ]]; then
+  OVERRIDES+=("++generation.filter.dedup_against_manifest=$FOLLOWUP_POOL_MANIFEST")
+fi
 
 # Campaign-specific preparation, before anything validates or resolves: MSA
 # building, target extraction, whatever this package needs. Declared in

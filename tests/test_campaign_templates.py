@@ -237,6 +237,7 @@ def test_the_runner_reads_nothing_the_config_does_not_define():
         "FOLLOWUP_RNG_SEED",
         "FOLLOWUP_INDEX",
         "FOLLOWUP_RECORD",
+        "FOLLOWUP_POOL_MANIFEST",
     }
     unresolved = read - assigned - config_sets - environmental
     assert not unresolved, f"runner reads variables nothing defines: {sorted(unresolved)}"
