@@ -258,3 +258,108 @@ def test_the_manifest_round_trips(tmp_path):
     path.write_text(json.dumps({"inference_dirs": "not a list"}))
     with pytest.raises(ValueError, match="list of inference directories"):
         read_pool_manifest(str(path))
+
+
+# ---------------------------------------------------------------------------
+# The pooled report. A campaign reaches its number over several runs, so the
+# campaign total is not any one run's analyze output.
+# ---------------------------------------------------------------------------
+
+
+def test_the_pool_membership_rule_is_shared_not_duplicated():
+    """The planner deduplicates against these runs and the report counts over
+    them. Two copies of the rule would drift, and the failure is silent both
+    ways: designs deduplicated against a run the report ignores, or counted from
+    a run the dedup never saw."""
+    from proteinfoundation.utils.run_pooling import is_pooled_run
+
+    for suffix, expected in (
+        ("production", True),
+        ("followup1", True),
+        ("followup12", True),
+        ("smoke", False),
+        ("smoke_bw8", False),
+        ("followupX", False),
+        ("", False),
+    ):
+        name = f"cfg_TASK_p_{suffix}" if suffix else "cfg_TASK_p_"
+        assert is_pooled_run(name, "cfg", "TASK", "p") is expected, suffix
+
+
+def test_an_unanticipated_smoke_variant_is_excluded_by_default():
+    """Matched rather than pattern-excluded: _smoke_bw8 exists in a real campaign
+    and nobody wrote a rule for it."""
+    from proteinfoundation.utils.run_pooling import is_pooled_run
+
+    assert not is_pooled_run("cfg_TASK_p_smoke_bw8", "cfg", "TASK", "p")
+
+
+def test_pooled_runs_are_ordered_production_first(tmp_path):
+    from proteinfoundation.utils.run_pooling import pooled_run_dirs
+
+    root = tmp_path / "evaluation_results"
+    for suffix in ("followup2", "production", "followup10", "followup1", "smoke"):
+        (root / f"cfg_TASK_p_{suffix}").mkdir(parents=True)
+    got = [pathlib.Path(d).name.split("_p_")[-1] for d in pooled_run_dirs(str(root), "cfg", "TASK", "p")]
+    assert got == ["production", "followup1", "followup2", "followup10"]
+
+
+def test_a_sequence_in_two_runs_is_reported_as_an_overcount():
+    """Cross-run dedup should make this impossible. If it happens, a run was
+    filtered without its pool manifest and every pooled count is too high."""
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import duplicate_audit
+
+    df = pd.DataFrame(
+        {"binder_sequence": ["AAA", "BBB", "AAA"], "pooled_run": ["r_production", "r_production", "r_followup1"]}
+    )
+    audit = duplicate_audit(df)
+    assert audit["sequences_in_more_than_one_run"] == 1
+    assert audit["unique_sequences"] == 2 and audit["rows"] == 3
+
+
+def test_a_clean_pool_reports_no_duplicates():
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import duplicate_audit
+
+    df = pd.DataFrame({"binder_sequence": ["AAA", "BBB"], "pooled_run": ["r_production", "r_followup1"]})
+    assert duplicate_audit(df)["sequences_in_more_than_one_run"] == 0
+
+
+def test_the_summary_counts_sequences_not_designs():
+    """A design carries several sequences, and it is sequences that get ordered."""
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import summarise
+
+    df = pd.DataFrame(
+        {
+            "pooled_run": ["r_production", "r_followup1"],
+            "self_pass_all": ["[1]", "[0]"],
+            "mpnn_pass_all": ["[1, 0]", "[1, 1]"],
+            "self_pass": [1, 0],
+            "mpnn_pass": [1, 1],
+        }
+    )
+    got = summarise(df, ["self", "mpnn"])
+    assert got["pooled"]["sequences"] == 6, "1 self + 2 mpnn per design"
+    assert got["pooled"]["orderable_sequences"] == 4
+    assert got["pooled"]["designs_with_a_passing_sequence"] == 2
+    assert set(got["per_run"]) == {"r_production", "r_followup1"}
+    assert got["per_run"]["r_production"]["orderable_sequences"] == 2
+
+
+def test_stringified_verdicts_survive_the_csv_round_trip():
+    """The pooled frame is read back with pd.read_csv, which returns the text of
+    a list column. Counting its characters is a bug this codebase has already
+    shipped once."""
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import summarise
+
+    text = pd.DataFrame({"pooled_run": ["r"], "self_pass_all": ["[1, 0, 1]"]})
+    real = pd.DataFrame({"pooled_run": ["r"], "self_pass_all": [[1, 0, 1]]})
+    assert summarise(text, ["self"])["pooled"] == summarise(real, ["self"])["pooled"]
+    assert summarise(text, ["self"])["pooled"]["sequences"] == 3

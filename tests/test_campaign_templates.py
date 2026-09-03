@@ -382,7 +382,7 @@ def test_the_runner_accepts_exactly_the_kinds_it_documents():
     runner = RUNNER.read_text()
     case = runner[runner.index('case "$KIND" in') : runner.index("esac")]
     arms = {a.strip() for line in case.splitlines() if ")" in line for a in [line.split(")")[0]] if a.strip().isalpha()}
-    assert arms == {"smoke", "production", "followup"}
+    assert arms == {"smoke", "production", "followup", "pooled"}
     usage = runner[: runner.index('case "$KIND" in')]
     for kind in arms:
         assert kind in usage, f"{kind} missing from the usage line"

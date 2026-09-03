@@ -9,7 +9,7 @@
 # pinning, and the JAX memory fraction. Re-deriving this per campaign is how those
 # bugs come back.
 set -euo pipefail
-KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS [STAGE]}"
+KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS [STAGE] | pooled}"
 # followup takes the one number that cannot be predicted before a production run:
 # how many more designs are wanted. Everything else is derived from what
 # production actually produced -- see scripts/plan_followup.py.
@@ -28,6 +28,7 @@ case "$KIND" in
   smoke)      RUN_NAME="${RUN_PREFIX}_smoke";      SEEDS=$SMOKE_SEEDS;      RAW=$SMOKE_RAW;      KEEP=$SMOKE_KEEP;      EXPECT=$SMOKE_EXPECT;      RNG_SEED=${SMOKE_RNG_SEED:?set SMOKE_RNG_SEED in campaign.env} ;;
   production) RUN_NAME="${RUN_PREFIX}_production"; SEEDS=$PRODUCTION_SEEDS; RAW=$PRODUCTION_RAW; KEEP=$PRODUCTION_KEEP; EXPECT=$PRODUCTION_EXPECT; RNG_SEED=${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env} ;;
   followup)   : ;;  # derived below, once conda and the campaign dir are up
+  pooled)     : ;;  # reports over finished runs; no sizing of its own
   *) echo "invalid run kind: $KIND" >&2; exit 2 ;;
 esac
 
@@ -42,6 +43,20 @@ set -a; source "$COMPLEXA_REPO/env.sh"; set +a
 export CCD_MIRROR_PATH="" PDB_MIRROR_PATH=""
 cd "$CAMPAIGN_DIR"
 mkdir -p metadata logs/slurm
+
+# A campaign reaches its number over several runs, so the campaign total is not
+# any one run's analyze output. One threshold set over every pooled run, with
+# verdicts re-derived rather than read -- changing a threshold changes no metric,
+# so this costs a comparison and not a re-evaluation.
+if [[ "$KIND" == pooled ]]; then
+  python -m proteinfoundation.analyze_pooled \
+    --evaluation-root "$CAMPAIGN_DIR/evaluation_results" \
+    --config-name "$CONFIG_NAME" --task-name "$TASK_NAME" --run-prefix "$RUN_PREFIX" \
+    --output "$CAMPAIGN_DIR/metadata/pooled_analysis.json" \
+    --pooled-csv "$CAMPAIGN_DIR/evaluation_results/pooled_results.csv"
+  echo "Completed kind=pooled report=$CAMPAIGN_DIR/metadata/pooled_analysis.json"
+  exit 0
+fi
 
 COMMUNITY_MODELS_PATH="${COMMUNITY_MODELS_PATH:-$COMPLEXA_REPO/community_models}"
 export COMMUNITY_MODELS_PATH

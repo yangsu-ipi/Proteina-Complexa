@@ -80,3 +80,44 @@ def read_pool_manifest(path: str) -> list[str]:
     if not isinstance(dirs, list) or not all(isinstance(d, str) for d in dirs):
         raise ValueError(f"{path} does not hold a list of inference directories")
     return dirs
+
+
+# Exactly the runs whose designs are part of the deliverable. Matched rather than
+# pattern-excluded, so a smoke variant nobody anticipated -- `_smoke_bw8`, say --
+# is left out by default instead of by having been thought of.
+_POOLED_SUFFIXES = ("production",)
+
+
+def is_pooled_run(dir_name: str, config_name: str, task_name: str, run_prefix: str) -> bool:
+    """Whether a run directory belongs to the campaign's pooled deliverable.
+
+    The one rule, shared by the follow-up planner (which deduplicates against
+    these) and the pooled analysis (which reports over them). Two copies would
+    drift, and the failure would be silent in both directions: designs
+    deduplicated against a run the analysis ignores, or counted from a run the
+    dedup never saw.
+    """
+    stem = f"{config_name}_{task_name}_{run_prefix}_"
+    if not dir_name.startswith(stem):
+        return False
+    suffix = dir_name[len(stem) :]
+    if suffix in _POOLED_SUFFIXES:
+        return True
+    return suffix.startswith("followup") and suffix[len("followup") :].isdigit()
+
+
+def pooled_run_dirs(root: str, config_name: str, task_name: str, run_prefix: str) -> list[str]:
+    """Pooled run directories under *root*, production first then follow-ups.
+
+    Ordered so a pooled report reads chronologically rather than however the
+    filesystem happened to list them.
+    """
+    if not os.path.isdir(root):
+        return []
+    names = [n for n in os.listdir(root) if is_pooled_run(n, config_name, task_name, run_prefix)]
+
+    def order(name: str) -> tuple[int, int]:
+        suffix = name[len(f"{config_name}_{task_name}_{run_prefix}_") :]
+        return (0, 0) if suffix == "production" else (1, int(suffix[len("followup") :]))
+
+    return [os.path.join(root, n) for n in sorted(names, key=order)]
