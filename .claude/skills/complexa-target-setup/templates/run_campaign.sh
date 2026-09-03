@@ -9,8 +9,16 @@
 # pinning, and the JAX memory fraction. Re-deriving this per campaign is how those
 # bugs come back.
 set -euo pipefail
-KIND="${1:?usage: run_campaign.sh smoke|production|scale [all|generate|filter|evaluate|analyze]}"
-STAGE="${2:-all}"
+KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS [STAGE]}"
+# followup takes the one number that cannot be predicted before a production run:
+# how many more designs are wanted. Everything else is derived from what
+# production actually produced -- see scripts/plan_followup.py.
+if [[ "$KIND" == followup ]]; then
+  WANT_DESIGNS="${2:?followup needs a design count, e.g. run_campaign.sh followup 700}"
+  STAGE="${3:-all}"
+else
+  STAGE="${2:-all}"
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
@@ -19,7 +27,7 @@ source "$HERE/campaign.env"
 case "$KIND" in
   smoke)      RUN_NAME="${RUN_PREFIX}_smoke";      SEEDS=$SMOKE_SEEDS;      RAW=$SMOKE_RAW;      KEEP=$SMOKE_KEEP;      EXPECT=$SMOKE_EXPECT;      RNG_SEED=${SMOKE_RNG_SEED:?set SMOKE_RNG_SEED in campaign.env} ;;
   production) RUN_NAME="${RUN_PREFIX}_production"; SEEDS=$PRODUCTION_SEEDS; RAW=$PRODUCTION_RAW; KEEP=$PRODUCTION_KEEP; EXPECT=$PRODUCTION_EXPECT; RNG_SEED=${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env} ;;
-  scale)      RUN_NAME="${RUN_PREFIX}_scale";      SEEDS=$SCALE_SEEDS;      RAW=$SCALE_RAW;      KEEP=$SCALE_KEEP;      EXPECT=$SCALE_EXPECT;      RNG_SEED=${SCALE_RNG_SEED:?set SCALE_RNG_SEED in campaign.env} ;;
+  followup)   : ;;  # derived below, once conda and the campaign dir are up
   *) echo "invalid run kind: $KIND" >&2; exit 2 ;;
 esac
 
@@ -44,11 +52,32 @@ fi
 [[ -L community_models ]] || ln -s "$COMMUNITY_MODELS_PATH" community_models
 [[ "$(readlink community_models)" == "$COMMUNITY_MODELS_PATH" ]] || { echo "community_models symlink points elsewhere" >&2; exit 2; }
 
+# Follow-ups are numbered, so their metadata does not overwrite each other's --
+# a campaign's audit trail is one file per run, not one file per kind.
+if [[ "$KIND" == followup ]]; then
+  PLAN="$(python scripts/plan_followup.py \
+    --campaign-dir "$CAMPAIGN_DIR" --want-designs "$WANT_DESIGNS" --shards "$SHARDS" \
+    --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
+    --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
+    --run-prefix "$RUN_PREFIX")"
+  eval "$PLAN"
+  RUN_NAME="$FOLLOWUP_RUN_NAME"
+  SEEDS=$FOLLOWUP_SEEDS
+  RAW=$FOLLOWUP_RAW
+  KEEP=$FOLLOWUP_KEEP
+  EXPECT=$FOLLOWUP_EXPECT
+  RNG_SEED=$FOLLOWUP_RNG_SEED
+  KIND_TAG="followup${FOLLOWUP_INDEX}"
+  echo "follow-up #${FOLLOWUP_INDEX}: ${WANT_DESIGNS} more designs -> ${SEEDS} seeds, seed ${RNG_SEED}"
+  echo "  parameters recorded in ${FOLLOWUP_RECORD}"
+else
+  KIND_TAG="$KIND"
+fi
 CONFIG="$CAMPAIGN_DIR/${CONFIG_NAME}.yaml"
 INF="$CAMPAIGN_DIR/inference/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
 EVAL="$CAMPAIGN_DIR/evaluation_results/${CONFIG_NAME}_${TASK_NAME}_${RUN_NAME}"
-RESOLVED="$CAMPAIGN_DIR/metadata/resolved_config_${KIND}.yaml"
-TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND}.json"
+RESOLVED="$CAMPAIGN_DIR/metadata/resolved_config_${KIND_TAG}.yaml"
+TRIM="$CAMPAIGN_DIR/metadata/shard_trim_${KIND_TAG}.json"
 # ++seed is passed explicitly rather than left to the pipeline yaml, because it
 # decides what a run produces: nres draws its binder lengths under it and the
 # sampler noise follows, so two kinds sharing a seed draw overlapping designs.
@@ -89,8 +118,8 @@ python scripts/validate_resolved_config.py --config "$CONFIG" --expected-seeds "
   --output "$RESOLVED" --override "${OVERRIDES[@]}"
 python "$COMPLEXA_REPO/docs/binder-target-setup/scripts/check_target_pdb.py" \
   --pdb "$TARGET_PDB" --chain "$TARGET_CHAIN" --target-input "$TARGET_INPUT"
-bash "$COMPLEXA_REPO/.claude/skills/_shared/scripts/preflight.sh" --quiet --out "metadata/preflight_${KIND}.json"
-python scripts/check_preflight.py "metadata/preflight_${KIND}.json" --resolved-config "$RESOLVED" \
+bash "$COMPLEXA_REPO/.claude/skills/_shared/scripts/preflight.sh" --quiet --out "metadata/preflight_${KIND_TAG}.json"
+python scripts/check_preflight.py "metadata/preflight_${KIND_TAG}.json" --resolved-config "$RESOLVED" \
   --expected-designs "$EXPECT" --min-vram-gb "$MIN_VRAM_GB" \
   "${REQUIRE_HF_REPOS[@]/#/--require-hf-repo=}"
 
@@ -131,7 +160,7 @@ if [[ "$STAGE" == all || "$STAGE" == analyze ]]; then
     "++job_id=0" "++base_config_name=$CONFIG_NAME" "${OVERRIDES[@]}"
   python scripts/verify_run_outputs.py --inference-dir "$INF" --evaluation-dir "$EVAL" \
     --expected-retained "$EXPECT" --resolved-config "$RESOLVED" --shards "$SHARDS" --trim-report "$TRIM" \
-    --redesign-model "$REDESIGN_MODEL" --output "metadata/run_outputs_${KIND}.json" \
+    --redesign-model "$REDESIGN_MODEL" --output "metadata/run_outputs_${KIND_TAG}.json" \
     "${REQUIRE_COLUMNS[@]/#/--require-column=}"
 fi
 echo "Completed kind=$KIND stage=$STAGE inference=$INF evaluation=$EVAL"

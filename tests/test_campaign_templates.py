@@ -226,6 +226,17 @@ def test_the_runner_reads_nothing_the_config_does_not_define():
         "XLA_PYTHON_CLIENT_MEM_FRACTION",
         "CCD_MIRROR_PATH",
         "PDB_MIRROR_PATH",
+        # Assigned by `eval "$PLAN"` from plan_followup.py's output, so the
+        # parser cannot see the assignment. Listed rather than ignored, because
+        # a typo in one of these names is exactly what this test is for.
+        "FOLLOWUP_RUN_NAME",
+        "FOLLOWUP_SEEDS",
+        "FOLLOWUP_RAW",
+        "FOLLOWUP_KEEP",
+        "FOLLOWUP_EXPECT",
+        "FOLLOWUP_RNG_SEED",
+        "FOLLOWUP_INDEX",
+        "FOLLOWUP_RECORD",
     }
     unresolved = read - assigned - config_sets - environmental
     assert not unresolved, f"runner reads variables nothing defines: {sorted(unresolved)}"
@@ -366,71 +377,56 @@ def test_the_templates_have_no_undefined_names():
 # ---------------------------------------------------------------------------
 
 
-def test_every_kind_gets_its_own_run_name():
-    """RUN_NAME feeds both the inference and evaluation directory, so two kinds
-    sharing one would generate into each other's output -- and generation
-    refuses rather than merges, so the second kind would simply not run."""
+def test_the_runner_accepts_exactly_the_kinds_it_documents():
     runner = RUNNER.read_text()
     case = runner[runner.index('case "$KIND" in') : runner.index("esac")]
-    names = [line for line in case.splitlines() if "RUN_NAME=" in line]
-    assert len(names) == 3, "smoke, production, scale"
-    suffixes = {line.split("RUN_PREFIX}_")[1].split('"')[0] for line in names}
-    assert suffixes == {"smoke", "production", "scale"}
-
-
-def test_the_usage_line_mentions_every_kind_the_case_accepts():
-    """An undocumented kind is one nobody uses."""
-    runner = RUNNER.read_text()
+    arms = {a.strip() for line in case.splitlines() if ")" in line for a in [line.split(")")[0]] if a.strip().isalpha()}
+    assert arms == {"smoke", "production", "followup"}
     usage = runner[: runner.index('case "$KIND" in')]
-    for kind in ("smoke", "production", "scale"):
+    for kind in arms:
         assert kind in usage, f"{kind} missing from the usage line"
 
 
-def test_the_seed_is_passed_rather_than_left_to_the_pipeline_yaml():
-    """It is part of the generation digest now, so leaving it implicit means two
-    kinds silently share a draw -- and the campaign could not tell them apart."""
+def test_followup_takes_a_design_count_and_nothing_else():
+    """The one number that cannot be predicted before a production run. Anything
+    else on the command line would be a number the user had to work out."""
     runner = RUNNER.read_text()
-    assert '"++seed=$RNG_SEED"' in runner
+    assert 'WANT_DESIGNS="${2:?' in runner, "required, with a message"
+    assert 'STAGE="${3:-all}"' in runner, "the stage shifts along"
 
 
-def test_scale_draws_from_a_different_seed_than_production():
-    """numpy's randint is prefix-stable in count, so a scale run sharing
-    production's seed would redraw production's lengths as a prefix -- paying to
-    regenerate and re-evaluate designs already on disk. Independent seeds waste
-    nothing and the two runs pool afterwards."""
+def test_a_followup_gets_its_own_run_name_and_metadata():
+    """RUN_NAME feeds both output directories and KIND_TAG feeds the metadata, so
+    two follow-ups sharing either would overwrite each other -- and generation
+    refuses to write into a shard whose marker disagrees, so the second would
+    simply not run."""
+    runner = RUNNER.read_text()
+    assert 'RUN_NAME="$FOLLOWUP_RUN_NAME"' in runner
+    assert 'KIND_TAG="followup${FOLLOWUP_INDEX}"' in runner
+    for path in ("resolved_config_", "shard_trim_", "preflight_", "run_outputs_"):
+        assert f"{path}${{KIND_TAG}}" in runner, f"{path} is not per-run"
+
+
+def test_the_run_name_exists_before_the_paths_built_from_it():
+    """INF and EVAL interpolate RUN_NAME, and the follow-up derives it at run
+    time -- so the derivation has to come first or `set -u` aborts every
+    follow-up."""
+    runner = RUNNER.read_text()
+    assert runner.index('RUN_NAME="$FOLLOWUP_RUN_NAME"') < runner.index('INF="$CAMPAIGN_DIR/inference')
+
+
+def test_nothing_needs_editing_to_size_a_followup():
+    """The whole point: no SCALE_SEEDS to compute, no config to touch."""
     config = CONFIG_EXAMPLE.read_text()
-    seeds = {}
-    for kind in ("SMOKE", "PRODUCTION", "SCALE"):
-        line = next(li for li in config.splitlines() if li.startswith(f"{kind}_RNG_SEED="))
-        seeds[kind] = line.split("=", 1)[1].strip()
-    assert seeds["SCALE"] != seeds["PRODUCTION"]
-    assert seeds["SMOKE"] == seeds["PRODUCTION"] == "5", (
-        "the value the pipeline yaml carried; changing it would make every marker "
-        "already on disk describe a different request"
-    )
-
-
-def test_scale_is_larger_than_production_and_multiplies_out():
-    """RAW configures nothing -- it is the preflight's assertion that the sizing
-    set still multiplies out. A scale kind whose numbers disagree fails there,
-    after generation has been paid for."""
-    config = CONFIG_EXAMPLE.read_text()
-    val = {}
-    for line in config.splitlines():
-        if line.startswith(("SCALE_", "PRODUCTION_", "SHARDS=")) and "=" in line and "RNG" not in line:
-            key, _, rhs = line.partition("=")
-            val[key] = int(rhs.strip())
-    assert val["SCALE_SEEDS"] > val["PRODUCTION_SEEDS"]
-    beam = val["PRODUCTION_RAW"] // val["PRODUCTION_SEEDS"]
-    assert val["SCALE_RAW"] == val["SCALE_SEEDS"] * beam, "seeds x beam width"
-    assert val["SCALE_EXPECT"] == val["SCALE_KEEP"] * val["SHARDS"], "keep is per shard"
-    per_shard = val["SCALE_RAW"] // val["SHARDS"]
-    assert val["SCALE_KEEP"] <= per_shard, "cannot retain more than a shard produces"
+    assert "SCALE_" not in config
+    assert "FOLLOWUP_SEEDS=" not in config, "a follow-up derives its size, it is not configured"
 
 
 def test_a_retrofitted_campaign_env_is_told_what_to_add():
-    """An older campaign.env predates these. set -u alone would say only
-    'unbound variable'; the guard names the file to edit."""
+    """An older campaign.env predates the seed variables. set -u alone would say
+    only 'unbound variable'; the guard names the file to edit. PRODUCTION_SEEDS
+    and PRODUCTION_RNG_SEED are load-bearing for follow-ups, which read them as
+    the reference run's parameters."""
     runner = RUNNER.read_text()
-    for kind in ("SMOKE", "PRODUCTION", "SCALE"):
-        assert f"${{{kind}_RNG_SEED:?set {kind}_RNG_SEED in campaign.env}}" in runner
+    for var in ("SMOKE_RNG_SEED", "PRODUCTION_RNG_SEED", "PRODUCTION_SEEDS"):
+        assert f"${{{var}:?" in runner, f"{var} is read without a message naming campaign.env"
