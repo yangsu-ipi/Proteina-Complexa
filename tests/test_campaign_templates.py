@@ -392,8 +392,8 @@ def test_followup_takes_a_design_count_and_nothing_else():
     """The one number that cannot be predicted before a production run. Anything
     else on the command line would be a number the user had to work out."""
     runner = RUNNER.read_text()
-    assert 'WANT_DESIGNS="${2:?' in runner, "required, with a message"
-    assert 'STAGE="${3:-all}"' in runner, "the stage shifts along"
+    assert 'WANT_DESIGNS="${1:?' in runner, "required, with a message"
+    assert 'STAGE="all"' in runner and 'STAGE="$1"' in runner, "the stage is optional and shifts along"
 
 
 def test_a_followup_gets_its_own_run_name_and_metadata():
@@ -502,3 +502,51 @@ def test_the_generic_sbatch_takes_the_stage_rather_than_hardcoding_it():
     assert 'run_campaign.sh" "$@"' in text
     assert "--job-name" not in text, "the name differs per stage and comes from the submitter"
     assert "--gres" not in text, "so does the GPU request"
+
+
+def test_a_single_run_can_differ_from_the_campaign_config():
+    """Editing pipeline.yaml to change one run changes every run that ever
+    re-reads it, including a re-evaluation of an earlier one."""
+    runner = RUNNER.read_text()
+    assert 'EXTRA_OVERRIDES=("$@")' in runner
+    assert 'OVERRIDES+=("${EXTRA_OVERRIDES[@]}")' in runner
+
+
+def test_caller_overrides_win_over_the_runners_own():
+    """Appended last, so `++generation.dataloader.dataset.nres.nsamples=N` from a
+    caller beats the sizing the runner derived, rather than being silently
+    ignored because Hydra took the first."""
+    runner = RUNNER.read_text()
+    appended = runner.index('OVERRIDES+=("${EXTRA_OVERRIDES[@]}")')
+    assert runner.index('OVERRIDES=("++run_name=') < appended, "after the runner's own"
+    assert runner.index("dedup_against_manifest") < appended, "and after the follow-up's"
+
+
+def test_overrides_reach_every_stage_of_a_chain():
+    """A redesign count set for generate but not evaluate would refold a
+    different number of sequences than were designed."""
+    submitter = SUBMIT.read_text()
+    stage_call = submitter[submitter.index('dep="$(submit "${TAG}-${stage}"') :][:220]
+    assert "EXTRA_OVERRIDES" in stage_call
+
+
+def test_the_pooled_report_takes_no_metric_overrides():
+    """It reads finished CSVs and applies thresholds; a metric override there
+    would describe folding that already happened."""
+    submitter = SUBMIT.read_text()
+    pooled_call = submitter[submitter.index('submit "${TAG}-pooled"') :][:120]
+    assert "EXTRA_OVERRIDES" not in pooled_call
+
+
+def test_the_stage_is_still_optional_with_overrides_present():
+    """`followup 900 -- ++x=1` must not read `--` as the stage name."""
+    runner = RUNNER.read_text()
+    assert '"${1}" != --*' in runner, "a leading -- is not mistaken for a stage"
+
+
+def test_what_a_run_actually_used_stays_recoverable():
+    """The resolved config is written from the same override list, so a run that
+    differed from pipeline.yaml still says how."""
+    runner = RUNNER.read_text()
+    resolved = runner[runner.index("validate_resolved_config.py") :][:260]
+    assert '"${OVERRIDES[@]}"' in resolved

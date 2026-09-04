@@ -14,7 +14,8 @@
 # hold them idle.
 set -euo pipefail
 
-KIND="${1:?usage: submit_campaign.sh smoke|production [STAGE_LIST] | followup N_DESIGNS}"
+KIND="${1:?usage: submit_campaign.sh smoke|production | followup N_DESIGNS [-- HYDRA_OVERRIDE...]}"
+shift
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$HERE/campaign.env"
@@ -31,7 +32,8 @@ CPU_TIME="${SLURM_TIME_CPU:-04:00:00}"
 RUN_ARGS=("$KIND")
 TAG="$KIND"
 if [[ "$KIND" == followup ]]; then
-  WANT_DESIGNS="${2:?followup needs a design count, e.g. submit_campaign.sh followup 900}"
+  WANT_DESIGNS="${1:?followup needs a design count, e.g. submit_campaign.sh followup 900}"
+  shift
   RUN_ARGS=(followup "$WANT_DESIGNS")
   # Planned once, here, so every job in the chain is the same follow-up. Left to
   # each job, the index would come from the records on disk and advance between
@@ -50,6 +52,13 @@ if [[ "$KIND" == followup ]]; then
   echo "  planned in ${FOLLOWUP_RECORD}"
   echo "  deduplicated against ${FOLLOWUP_POOL_MANIFEST}"
 fi
+
+# Everything left is passed to Hydra by every stage, so a run that differs from
+# the campaign's config differs the same way at each step -- a redesign count set
+# for generate and not for evaluate would refold a different number of sequences
+# than were designed.
+[[ "${1:-}" == "--" ]] && shift
+EXTRA_OVERRIDES=("$@")
 
 # generate and evaluate are the GPU stages; the rest are bookkeeping over files
 # those two produced.
@@ -80,7 +89,7 @@ submit() {  # name kind_of_node dependency args...
 dep=""
 for entry in "${STAGES[@]}"; do
   stage="${entry%%:*}"; node="${entry##*:}"
-  dep="$(submit "${TAG}-${stage}" "$node" "$dep" "${RUN_ARGS[@]}" "$stage")"
+  dep="$(submit "${TAG}-${stage}" "$node" "$dep" "${RUN_ARGS[@]}" "$stage" ${EXTRA_OVERRIDES[@]+"${EXTRA_OVERRIDES[@]}"})"
   echo "  ${stage} -> job ${dep}"
 done
 

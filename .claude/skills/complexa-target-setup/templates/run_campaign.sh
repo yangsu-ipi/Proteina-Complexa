@@ -9,7 +9,7 @@
 # pinning, and the JAX memory fraction. Re-deriving this per campaign is how those
 # bugs come back.
 set -euo pipefail
-KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS [STAGE] | pooled}"
+KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS [STAGE] | pooled [-- HYDRA_OVERRIDE...]}"
 # followup takes the one number that cannot be predicted before a production run:
 # how many more designs are wanted. Everything else is derived from what
 # production actually produced -- see scripts/plan_followup.py.
@@ -19,12 +19,20 @@ KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS 
 # generate and evaluate would take consecutive indices and become two different
 # runs, the second reading an inference directory the first never wrote.
 # submit_campaign.sh sets it once for the whole chain.
+shift
 if [[ "$KIND" == followup ]]; then
-  WANT_DESIGNS="${2:?followup needs a design count, e.g. run_campaign.sh followup 700}"
-  STAGE="${3:-all}"
-else
-  STAGE="${2:-all}"
+  WANT_DESIGNS="${1:?followup needs a design count, e.g. run_campaign.sh followup 700}"
+  shift
 fi
+STAGE="all"
+if [[ $# -gt 0 && "${1}" != --* ]]; then STAGE="$1"; shift; fi
+# Anything after the stage is passed to Hydra as-is, so a single run can differ
+# from the campaign's config without editing it -- `++metric.num_redesign_seqs=4`
+# for one follow-up, say, which would otherwise change every run that ever
+# re-reads pipeline.yaml. The effective values land in metadata/resolved_config_
+# <tag>.yaml, so what a run actually used stays recoverable.
+[[ "${1:-}" == "--" ]] && shift
+EXTRA_OVERRIDES=("$@")
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
@@ -113,6 +121,11 @@ OVERRIDES=("++run_name=$RUN_NAME" "++seed=$RNG_SEED" "++generation.dataloader.da
 # were duplicates cannot be recovered afterwards.
 if [[ "$KIND" == followup ]]; then
   OVERRIDES+=("++generation.filter.dedup_against_manifest=$FOLLOWUP_POOL_MANIFEST")
+fi
+# Last, so a caller can override anything the runner set.
+if ((${#EXTRA_OVERRIDES[@]})); then
+  OVERRIDES+=("${EXTRA_OVERRIDES[@]}")
+  echo "extra overrides: ${EXTRA_OVERRIDES[*]}"
 fi
 
 # Campaign-specific preparation, before anything validates or resolves: MSA
