@@ -156,3 +156,29 @@ def test_the_two_engines_disagree_which_is_why_it_must_be_recorded(tmp_path, sc_
     b, _, _ = pr_alternative_score_interface(pdb, binder_chain="B", target_chain="A", sasa_engine="biopython")
     assert a["sasa_engine"] != b["sasa_engine"]
     assert a["sasa_radii"] != b["sasa_radii"]
+
+
+def test_an_engulfed_binder_is_not_reported_as_having_no_interface(tmp_path, monkeypatch, sc_stub):
+    """binder_sasa_in_complex == 0 is the largest interface there is. Reporting
+    interface_fraction 0.0 for it was backwards, not merely missing."""
+    monkeypatch.setattr(
+        pau, "_compute_sasa_metrics_with_freesasa",
+        lambda *a, **k: (0.3, 0.0, 1200.0, 500.0, 900.0),  # binder fully buried
+    )
+    with pytest.raises(SasaError, match="no exposed surface"):
+        pr_alternative_score_interface(
+            complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
+        )
+
+
+def test_no_interface_residues_gives_nan_hydrophobicity_not_zero(tmp_path, monkeypatch, sc_stub):
+    """A binder that misses its target has no interface composition. 0.0 says
+    'entirely non-hydrophobic', which a threshold would read as a real value."""
+    import math
+
+    monkeypatch.setattr(pau, "hotspot_residues", lambda *a, **k: {})
+    scores, _, _ = pr_alternative_score_interface(
+        complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
+    )
+    assert scores["interface_nres"] == 0
+    assert math.isnan(scores["interface_hydrophobicity"])

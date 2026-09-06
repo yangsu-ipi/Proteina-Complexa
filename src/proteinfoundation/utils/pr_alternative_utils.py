@@ -1099,10 +1099,20 @@ def pr_alternative_score_interface(
     interface_binder_dSASA = _buried(binder_sasa_monomer, binder_sasa_in_complex, "binder")
     interface_target_dSASA = _buried(target_sasa_monomer, target_sasa_in_complex, "target")
     interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
-    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
-    interface_binder_fraction = (
-        (interface_total_dSASA / binder_sasa_in_complex * 100.0) if binder_sasa_in_complex > 0.0 else 0.0
-    )
+    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN
+    # COMPLEX. Note this is not "the fraction of the binder that is buried" --
+    # the denominator is what remains exposed, not the free monomer -- so it
+    # rises as the interface grows and is not bounded by 100.
+    #
+    # A zero denominator means the binder is completely engulfed: the largest
+    # interface there is. Reporting 0.0 for it, as this did, is not merely
+    # missing but backwards.
+    if binder_sasa_in_complex <= 0.0:
+        raise SasaError(
+            f"binder has no exposed surface in the complex ({binder_sasa_in_complex}) "
+            f"for {pdb_file}; interface_fraction is undefined"
+        )
+    interface_binder_fraction = interface_total_dSASA / binder_sasa_in_complex * 100.0
 
     # Calculate shape complementarity using SCASA
     t0_sc = time.time()
@@ -1131,8 +1141,14 @@ def pr_alternative_score_interface(
         "interface_sc": interface_sc,
         "interface_dSASA": interface_total_dSASA,
         "interface_fraction": interface_binder_fraction,
+        # No interface residues is a design that misses its target, not a
+        # composition of 0% hydrophobic. NaN rather than an exception: an
+        # unengaged binder is a legitimate, if poor, outcome, and a gate should
+        # reject it rather than the run failing on it.
         "interface_hydrophobicity": (
-            (sum(interface_AA[aa] for aa in "ACFILMPVWY") / interface_nres * 100.0) if interface_nres > 0 else 0.0
+            (sum(interface_AA[aa] for aa in "ACFILMPVWY") / interface_nres * 100.0)
+            if interface_nres > 0
+            else float("nan")
         ),
         "interface_nres": interface_nres,
     }
