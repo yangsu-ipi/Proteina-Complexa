@@ -186,7 +186,45 @@ def _create_backbone_restraint_force(system, fixer, restraint_k_kcal_mol_A2):
 
 
 # Chothia/NACCESS-like atomic radii (heavy atoms dominate SASA)
-R_CHOTHIA = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
+# Bondi (1964) van der Waals radii. Named R_CHOTHIA for a long time, which it is
+# not: Chothia's set is united-atom (C 1.87/1.76, N 1.65/1.50, O 1.40, S 1.85) and
+# is what NACCESS and DSSP use. Bondi is an ALL-ATOM set, so applying it to the
+# hydrogen-free structures this pipeline produces under-counts implicit hydrogens
+# -- the "H" entry below can never match anything. Kept only for the explicit
+# biopython engine; the default engine pins ProtOr instead.
+R_BONDI = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80}
+
+# What the default SASA engine is pinned to. Recorded rather than implied: the
+# spread between radii conventions is ~6% on interface dSASA, so a number without
+# its radii set is not reproducible.
+SASA_ENGINE = "freesasa"
+SASA_ALGORITHM = "Lee-Richards"
+SASA_RADII = "ProtOr"
+SASA_PROBE_RADIUS = 1.4
+SASA_N_SLICES = 20
+# hetatm: a ligand target is HETATM, and dropping it would silently compute the
+# binder against nothing. halt-at-unknown: an unrecognised atom must stop the
+# calculation rather than be handed a guessed radius.
+SASA_STRUCTURE_OPTIONS = {"hetatm": True, "hydrogen": False, "join-models": False,
+                          "skip-unknown": False, "halt-at-unknown": True}
+# Rounding slack on buried area, in A^2. Anything more negative is a real disagreement.
+_DSASA_TOLERANCE = 1.0
+
+
+def sasa_provenance() -> dict:
+    """The settings that determine a SASA number, for the metric fingerprint."""
+    return {"engine": SASA_ENGINE, "algorithm": SASA_ALGORITHM, "radii": SASA_RADII,
+            "probe_radius": SASA_PROBE_RADIUS, "n_slices": SASA_N_SLICES}
+
+
+class SasaError(RuntimeError):
+    """SASA could not be computed.
+
+    Raised rather than returned as a placeholder. The values this replaced --
+    0.30 surface hydrophobicity and 0.0 for every area -- are indistinguishable
+    from measurements once they reach a column, and a zero binder-in-complex
+    area silently turns interface dSASA into the binder's entire surface.
+    """
 
 # (Unused) _MAX_ASA removed during cleanup.
 
@@ -360,7 +398,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
         # Compute atom-level SASA for the entire complex
         complex_structure = parser.get_structure("complex", pdb_file_path)
         complex_model = complex_structure[0]
-        sr_complex = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
+        sr_complex = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_BONDI)
         sr_complex.compute(complex_model, level="A")
 
         # Binder chain SASA within complex
@@ -381,7 +419,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             binder_only_model.add(binder_only_chain)
             binder_only_structure.add(binder_only_model)
 
-            sr_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
+            sr_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_BONDI)
             sr_mono.compute(binder_only_model, level="A")
             binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
 
@@ -409,20 +447,14 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             target_only_chain = copy.deepcopy(complex_model[target_chain])
             target_only_model.add(target_only_chain)
             target_only_structure.add(target_only_model)
-            sr_target_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_CHOTHIA)
+            sr_target_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_BONDI)
             sr_target_mono.compute(target_only_model, level="A")
             target_sasa_monomer = _chain_total_sasa(target_only_chain)
 
         elapsed = time.time() - t0
         print(f"[SASA-Biopython] Completed for {basename} in {elapsed:.2f}s")
     except Exception as e_sasa:
-        print(f"[Biopython-SASA] ERROR for {pdb_file_path}: {e_sasa}")
-        # Fallbacks chosen to match original behavior
-        surface_hydrophobicity_fraction = 0.30
-        binder_sasa_in_complex = 0.0
-        binder_sasa_monomer = 0.0
-        target_sasa_in_complex = 0.0
-        target_sasa_monomer = 0.0
+        raise SasaError(f"Biopython SASA failed for {pdb_file_path}: {e_sasa}") from e_sasa
 
     return (
         surface_hydrophobicity_fraction,
@@ -448,31 +480,27 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
         if not _HAS_FREESASA:
             raise RuntimeError("FreeSASA not available")
 
-        # Optional classifier (e.g., NACCESS) via repo file or env var FREESASA_CONFIG
-        classifier_obj = None
-        try:
-            classifier_path = os.environ.get("FREESASA_CONFIG")
-            if not classifier_path or not os.path.isfile(classifier_path):
-                # default to repo-provided NACCESS config
-                module_dir = os.path.dirname(os.path.abspath(__file__))
-                default_cfg = os.path.join(module_dir, "freesasa_naccess.cfg")
-                if os.path.isfile(default_cfg):
-                    classifier_path = default_cfg
-            if classifier_path and os.path.isfile(classifier_path):
-                classifier_obj = freesasa.Classifier(classifier_path)  # type: ignore[name-defined]
-                print(f"[SASA-FreeSASA] Using classifier: {classifier_path}")
-        except Exception:
-            classifier_obj = None
+        # Radii and algorithm are pinned, not discovered. This used to look for a
+        # NACCESS config next to this module -- a path that has never existed, since
+        # the file ships under result_analysis/ -- and fall through to FreeSASA's
+        # default when it was not found. So the radii in force were an accident of
+        # that miss, and "fixing" the path would have silently switched every dSASA
+        # by ~0.8%. Name the classifier instead.
+        classifier_obj = freesasa.Classifier.getStandardClassifier("protor")  # type: ignore[name-defined]
+        params = freesasa.Parameters(  # type: ignore[name-defined]
+            {"algorithm": freesasa.LeeRichards, "n-slices": SASA_N_SLICES,  # type: ignore[name-defined]
+             "probe-radius": SASA_PROBE_RADIUS, "n-threads": 1}
+        )
 
         # Complex SASA
-        if classifier_obj is not None:
-            structure_complex = freesasa.Structure(pdb_file_path, classifier=classifier_obj)  # type: ignore[name-defined]
-        else:
-            structure_complex = freesasa.Structure(pdb_file_path)  # type: ignore[name-defined]
-        result_complex = freesasa.calc(structure_complex)  # type: ignore[name-defined]
+        structure_complex = freesasa.Structure(  # type: ignore[name-defined]
+            pdb_file_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
+        )
+        result_complex = freesasa.calc(structure_complex, params)  # type: ignore[name-defined]
 
-        binder_sasa_in_complex = 0.0
-        target_sasa_in_complex = 0.0
+        # A failed selection used to leave these at 0.0, which makes the binder's
+        # interface dSASA its entire monomer surface -- a large, plausible, wrong
+        # number. There is no value here that means "not measured".
         try:
             # FreeSASA Python API expects a list of selection definition strings: "name, selector"
             selection_defs = [
@@ -480,20 +508,22 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                 f"target, chain {target_chain!s}",
             ]
             sel_area = freesasa.selectArea(selection_defs, structure_complex, result_complex)  # type: ignore[name-defined]
-            # sel_area is a dict-like mapping from selection name to area
-            binder_sasa_in_complex = float(sel_area.get("binder", 0.0))
-            target_sasa_in_complex = float(sel_area.get("target", 0.0))
-        except Exception:
-            pass
+            binder_sasa_in_complex = float(sel_area["binder"])
+            target_sasa_in_complex = float(sel_area["target"])
+        except Exception as exc:
+            raise SasaError(
+                f"FreeSASA could not select chains binder={binder_chain!r} "
+                f"target={target_chain!r} in {pdb_file_path}: {exc}"
+            ) from exc
 
         # Prepare monomer PDBs via Bio.PDB (only used for chain extraction)
         parser = PDBParser(QUIET=True)
         complex_structure_bp = parser.get_structure("complex_for_freesasa", pdb_file_path)
         complex_model_bp = complex_structure_bp[0]
 
-        binder_sasa_monomer = 0.0
-        target_sasa_monomer = 0.0
-        surface_hydrophobicity_fraction = 0.0
+        for label, chain in (("binder", binder_chain), ("target", target_chain)):
+            if chain not in complex_model_bp:
+                raise SasaError(f"{label} chain {chain!r} absent from {pdb_file_path}")
 
         tmp_binder_path = None
         tmp_target_path = None
@@ -512,11 +542,10 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                 tmp_binder_path = tmp_b.name
                 io_b.save(tmp_binder_path)
 
-                if classifier_obj is not None:
-                    structure_binder_only = freesasa.Structure(tmp_binder_path, classifier=classifier_obj)  # type: ignore[name-defined]
-                else:
-                    structure_binder_only = freesasa.Structure(tmp_binder_path)  # type: ignore[name-defined]
-                result_binder_only = freesasa.calc(structure_binder_only)  # type: ignore[name-defined]
+                structure_binder_only = freesasa.Structure(  # type: ignore[name-defined]
+                    tmp_binder_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
+                )
+                result_binder_only = freesasa.calc(structure_binder_only, params)  # type: ignore[name-defined]
                 binder_sasa_monomer = float(result_binder_only.totalArea())
 
                 # FreeSASA residue selection only: hydrophobic residues / total (no fallback)
@@ -524,12 +553,14 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     sel_defs = ["hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"]
                     with _suppress_freesasa_warnings():
                         sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
-                    hydro_area = float(sel_area.get("hydro", 0.0))
-                    if binder_sasa_monomer > 0.0:
-                        surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
-                except Exception:
-                    # Keep default 0.0 if selection fails
-                    pass
+                    hydro_area = float(sel_area["hydro"])
+                    if binder_sasa_monomer <= 0.0:
+                        raise SasaError(f"binder monomer SASA is {binder_sasa_monomer} in {pdb_file_path}")
+                    surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
+                except Exception as exc:
+                    raise SasaError(
+                        f"FreeSASA hydrophobic-residue selection failed for {pdb_file_path}: {exc}"
+                    ) from exc
 
             if target_chain in complex_model_bp:
                 target_only_structure = Structure.Structure("target_only")
@@ -545,11 +576,10 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                 tmp_target_path = tmp_t.name
                 io_t.save(tmp_target_path)
 
-                if classifier_obj is not None:
-                    structure_target_only = freesasa.Structure(tmp_target_path, classifier=classifier_obj)  # type: ignore[name-defined]
-                else:
-                    structure_target_only = freesasa.Structure(tmp_target_path)  # type: ignore[name-defined]
-                result_target_only = freesasa.calc(structure_target_only)  # type: ignore[name-defined]
+                structure_target_only = freesasa.Structure(  # type: ignore[name-defined]
+                    tmp_target_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
+                )
+                result_target_only = freesasa.calc(structure_target_only, params)  # type: ignore[name-defined]
                 target_sasa_monomer = float(result_target_only.totalArea())
         finally:
             if tmp_binder_path and os.path.isfile(tmp_binder_path):
@@ -572,9 +602,13 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
             target_sasa_in_complex,
             target_sasa_monomer,
         )
+    except SasaError:
+        raise
     except Exception as e_fsasa:
-        print(f"[FreeSASA] ERROR for {pdb_file_path}: {e_fsasa}")
-        return _compute_sasa_metrics(pdb_file_path, binder_chain=binder_chain, target_chain=target_chain)
+        # This used to fall back to the Biopython engine, which carries different
+        # radii: the same input silently produced numbers ~2.9% apart on interface
+        # dSASA with nothing in the output recording which engine ran.
+        raise SasaError(f"FreeSASA failed for {pdb_file_path}: {e_fsasa}") from e_fsasa
 
 
 def openmm_relax(
@@ -1016,9 +1050,20 @@ def pr_alternative_score_interface(
     for pdb_res_num, aa_type in interface_residues_set.items():
         interface_AA[aa_type] += 1
 
-    # SASA-based calculations: select engine
+    # SASA-based calculations: select engine. "auto" used to mean "FreeSASA if it
+    # happens to be importable, else Biopython" -- so the radii, and with them every
+    # dSASA, depended on what was installed. FreeSASA is a declared dependency now,
+    # so auto resolves to it and its absence is an error rather than a quiet
+    # substitution.
     t0_sasa = time.time()
-    if str(sasa_engine).lower() == "biopython":
+    engine = str(sasa_engine).lower()
+    if engine == "auto":
+        engine = SASA_ENGINE
+    if engine == "freesasa" and not _HAS_FREESASA:
+        raise SasaError("FreeSASA is not importable; it is a declared dependency of this package")
+    if engine not in ("freesasa", "biopython"):
+        raise SasaError(f"unknown sasa_engine {sasa_engine!r}; expected 'freesasa', 'biopython' or 'auto'")
+    if engine == "biopython":
         print("[Alt-Score] Computing SASA with Biopython Shrake-Rupley...")
         (
             surface_hydrophobicity_fraction,
@@ -1027,7 +1072,7 @@ def pr_alternative_score_interface(
             target_sasa_in_complex,
             target_sasa_monomer,
         ) = _compute_sasa_metrics(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
-    elif str(sasa_engine).lower() == "freesasa":
+    else:
         print("[Alt-Score] Computing SASA with FreeSASA...")
         (
             surface_hydrophobicity_fraction,
@@ -1036,34 +1081,23 @@ def pr_alternative_score_interface(
             target_sasa_in_complex,
             target_sasa_monomer,
         ) = _compute_sasa_metrics_with_freesasa(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
-    else:
-        if _HAS_FREESASA:
-            print("[Alt-Score] Computing SASA with FreeSASA (auto)...")
-            (
-                surface_hydrophobicity_fraction,
-                binder_sasa_in_complex,
-                binder_sasa_monomer,
-                target_sasa_in_complex,
-                target_sasa_monomer,
-            ) = _compute_sasa_metrics_with_freesasa(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
-        else:
-            print("[Alt-Score] Computing SASA with Biopython (auto fallback)...")
-            (
-                surface_hydrophobicity_fraction,
-                binder_sasa_in_complex,
-                binder_sasa_monomer,
-                target_sasa_in_complex,
-                target_sasa_monomer,
-            ) = _compute_sasa_metrics(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
     print(f"[Alt-Score] SASA computations finished in {time.time() - t0_sasa:.2f}s")
 
-    # Compute buried SASA: binder-side and total (binder + target)
-    interface_binder_dSASA = max(binder_sasa_monomer - binder_sasa_in_complex, 0.0)
-    interface_target_dSASA = 0.0
-    try:
-        interface_target_dSASA = max(target_sasa_monomer - target_sasa_in_complex, 0.0)
-    except Exception as e_idsasa:
-        print(f"[Biopython-SASA] WARN interface_target_dSASA for {pdb_file}: {e_idsasa}")
+    # Compute buried SASA: binder-side and total (binder + target). Burial cannot be
+    # negative, so a clamp at zero is right for rounding noise and wrong for anything
+    # larger -- that would mean the monomer and complex areas disagree about which
+    # atoms exist, and clamping would turn it into a confident 0.0.
+    def _buried(monomer: float, in_complex: float, label: str) -> float:
+        buried = monomer - in_complex
+        if buried < -_DSASA_TOLERANCE:
+            raise SasaError(
+                f"{label} buried area is {buried:.2f} A^2 (monomer {monomer:.2f}, "
+                f"in complex {in_complex:.2f}) for {pdb_file}"
+            )
+        return max(buried, 0.0)
+
+    interface_binder_dSASA = _buried(binder_sasa_monomer, binder_sasa_in_complex, "binder")
+    interface_target_dSASA = _buried(target_sasa_monomer, target_sasa_in_complex, "target")
     interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
     # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN COMPLEX
     interface_binder_fraction = (
@@ -1089,6 +1123,10 @@ def pr_alternative_score_interface(
     # interface_dG_SASA_ratio = 0.0                                       # informational (no active filter)
 
     interface_scores = {
+        # Which engine and radii produced the areas below. A dSASA carries a ~6%
+        # spread across radii conventions, so the number alone is not reproducible.
+        "sasa_engine": engine,
+        "sasa_radii": SASA_RADII if engine == "freesasa" else "Bondi",
         "surface_hydrophobicity": surface_hydrophobicity_fraction,
         "interface_sc": interface_sc,
         "interface_dSASA": interface_total_dSASA,
