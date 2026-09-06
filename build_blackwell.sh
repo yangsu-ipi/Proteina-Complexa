@@ -139,8 +139,11 @@ echo "  AF2 params: $(ls "$AF2/params" | grep -c npz) npz (set AF2_DIR=$AF2 in .
 # [6d] External tools for the analyze stage's diversity metrics (foldseek + mmseqs, via bioconda).
 #   Point FOLDSEEK_EXEC / MMSEQS_EXEC (or the UV_* vars in .env) at these. Without them the pipeline
 #   still completes but logs "Foldseek/MMseqs diversity failed" and skips clustering.
-command -v mamba >/dev/null 2>&1 && "$CONDA" install -y -p "$ENV_DIR" -c conda-forge -c bioconda foldseek mmseqs2 \
-  || echo "  (install foldseek + mmseqs2 into the env for diversity metrics)"
+#   $CONDA is already mamba-or-conda from the top of this script. This was gated on
+#   `command -v mamba`, which skipped the install outright on a conda-only box -- and said so in the
+#   voice of advice, so a machine that never got the tools read the same as one where they failed.
+"$CONDA" install -y -p "$ENV_DIR" -c conda-forge -c bioconda foldseek mmseqs2 \
+  || echo "  WARNING: foldseek + mmseqs2 install failed -- analyze will skip diversity clustering"
 echo "  set in .env: UV_FOLDSEEK_EXEC=$ENV_DIR/bin/foldseek  UV_MMSEQS_EXEC=$ENV_DIR/bin/mmseqs"
 
 # [6e] ESMC + ESMFold2 -- ON by default (WITH_ESMFOLD2=0 to skip). This env therefore runs on
