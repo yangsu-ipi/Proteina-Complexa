@@ -34,6 +34,19 @@ if [ "$WITH_ESMFOLD2" != "0" ] && [ ! -f "$ESM_SRC/pyproject.toml" ]; then
   exit 1
 fi
 
+# [0b] conda-forge layer, placed before any pip so the two never fight over site-packages.
+#   freesasa is a compiled Python extension and PyPI ships NO linux wheel for it, so pip would
+#   compile the sdist on every build; conda-forge has a prebuilt linux-64 py3.12 binary. It has to
+#   land before [5], because pyproject.toml declares freesasa and `pip install -e .` would
+#   otherwise build it from source before conda ever got a turn.
+#   It belongs here and not in [6e]: utils/pr_alternative_utils.py uses it for the SASA
+#   bioinformatics metrics, which have nothing to do with ESMFold2. It used to ride along in [6e]'s
+#   pip line, so WITH_ESMFOLD2=0 silently dropped it -- silently because that import has a
+#   Biopython fallback, which changes the numbers rather than raising.
+#   Non-fatal: if conda cannot place it, [5] still installs it from the sdist.
+"$CONDA" install -y -p "$ENV_DIR" -c conda-forge freesasa \
+  || echo "  [0b] conda-forge freesasa failed -- [5] will build it from the sdist instead"
+
 "$PIP" install --upgrade pip
 # [1] torch cu128 for Blackwell (upstream uses 2.7.0+cu126):
 "$PIP" install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
@@ -185,7 +198,7 @@ PYEOF
   # cuequivariance: cuequivariance_ops_torch is imported inside esm/models/esmfold2/fast.py, reached
   # only via enable_fast_inference(), which this repo never calls. Add it later for the ~4.8x trunk
   # speedup at L~=768 (Linux-only wheels).
-  "$PIP" install -c "$CONS" accelerate freesasa rdkit msgpack-numpy brotli attrs cloudpathlib \
+  "$PIP" install -c "$CONS" accelerate rdkit msgpack-numpy brotli attrs cloudpathlib \
     httpx tenacity zstd ipywidgets ipython py3dmol pydssp boto3 pygtrie dna_features_viewer
   # [6b]'s jax verification ran BEFORE this step, so nothing here has yet re-checked that jax
   # still works -- a check that runs before the thing that can break it. AF2 reward guidance is

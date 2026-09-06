@@ -53,6 +53,11 @@ dependencies = [
     "biopython",
     "biotite>=0.41.0", # it gets later reset to 1.4.0 in the build_uv_env.sh script but it causes a conflict if set here
     "cpdb-protein==0.2.0",
+    # SASA metrics in utils/pr_alternative_utils.py. Imported under try/except with a Biopython
+    # fallback, so a missing freesasa changes the numbers instead of raising -- declaring it is what
+    # stops that. PyPI has no linux wheel, so pip compiles the C sdist; build_blackwell.sh [0b]
+    # installs the conda-forge binary first and pip then finds this satisfied.
+    "freesasa>=2.2",
     "mdtraj==1.10.2",
     "ProDy==2.6.1", #error with 2.4.1 
     
