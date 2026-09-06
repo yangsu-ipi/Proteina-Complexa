@@ -219,6 +219,20 @@ def _chain_total_sasa(chain_entity):
     return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
 
 
+# The sc-rs binary shipped with the repo, resolved from this module rather than
+# the working directory. The two callers used to carry different defaults --
+# "./env/docker/internal/sc" in the reward path, "/usr/local/bin/sc" in
+# evaluation -- so which binary ran, and whether one ran at all, depended on the
+# entry point and the cwd. $SC_EXEC still overrides, for a build that ships it
+# elsewhere.
+DEFAULT_SC_EXEC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "result_analysis", "sc")
+
+
+def resolve_sc_bin(sc_bin: str | None = None) -> str:
+    """Which sc-rs to run: an explicit path, else $SC_EXEC, else the repo's own."""
+    return sc_bin or os.environ.get("SC_EXEC") or DEFAULT_SC_EXEC
+
+
 class ShapeComplementarityError(RuntimeError):
     """sc-rs could not produce a shape complementarity value.
 
@@ -257,16 +271,13 @@ def _calculate_shape_complementarity(
     Raises
     ------
     ShapeComplementarityError
-        If sc-rs is not configured, cannot be run, fails, times out, or returns
+        If sc-rs cannot be run, fails, times out, or returns
         no usable value. Every failure path raises: there is no value this can
         return that means "not measured".
     """
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
-    if not sc_bin:
-        raise ShapeComplementarityError(
-            f"no sc-rs binary configured for {basename}; set SC_EXEC to the sc-rs executable"
-        )
+    sc_bin = resolve_sc_bin(sc_bin)
     print(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
 
     # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
@@ -286,7 +297,10 @@ def _calculate_shape_complementarity(
             f"sc-rs exited {exc.returncode} for {basename}: {getattr(exc, 'stderr', '')}"
         ) from exc
     except OSError as exc:
-        raise ShapeComplementarityError(f"could not run sc-rs at {sc_bin!r} for {basename}: {exc}") from exc
+        raise ShapeComplementarityError(
+            f"could not run sc-rs at {sc_bin!r} for {basename}: {exc}; "
+            f"set SC_EXEC to a working sc-rs binary"
+        ) from exc
 
     stdout = (proc.stdout or "").strip()
     if not stdout:

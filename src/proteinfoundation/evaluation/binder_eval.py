@@ -1084,15 +1084,14 @@ def compute_bioinformatics_metrics_single(
         pdb_path: Path to PDB file
         binder_chain: Chain ID of the binder
         target_chain: Chain ID(s) of the target (comma-separated if multiple)
-        sc_bin: Path to shape complementarity binary
+        sc_bin: Path to shape complementarity binary. None resolves to $SC_EXEC,
+            else the sc-rs shipped with the repo.
 
     Returns:
         Dictionary of metric names to values. Returns NaN if dependencies unavailable.
     """
     if not PR_ALTERNATIVE_AVAILABLE:
         return dict.fromkeys(BIOINFORMATICS_METRIC_COLS, np.nan)
-
-    sc_bin = sc_bin or os.environ.get("SC_EXEC", "/usr/local/bin/sc")
 
     try:
         scores, _, _ = pr_alternative_score_interface(

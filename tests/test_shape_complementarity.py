@@ -8,6 +8,7 @@ failure path raises instead.
 """
 
 import json
+import os
 import stat
 
 import pytest
@@ -15,8 +16,10 @@ import pytest
 Bio = pytest.importorskip("Bio", reason="pr_alternative_utils imports Bio.PDB")
 
 from proteinfoundation.utils.pr_alternative_utils import (
+    DEFAULT_SC_EXEC,
     ShapeComplementarityError,
     _calculate_shape_complementarity,
+    resolve_sc_bin,
 )
 
 
@@ -48,9 +51,37 @@ def test_a_value_embedded_in_chatter_is_still_read(tmp_path, pdb):
     assert _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin) == pytest.approx(0.5)
 
 
-def test_no_binary_configured_raises(pdb):
-    with pytest.raises(ShapeComplementarityError, match="SC_EXEC"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=None)
+def test_the_default_binary_is_the_one_in_the_repo(monkeypatch):
+    """Both callers used to carry their own default -- "./env/docker/internal/sc"
+    and "/usr/local/bin/sc" -- so which binary ran depended on the entry point,
+    and one of them was relative to the working directory."""
+    monkeypatch.delenv("SC_EXEC", raising=False)
+    assert resolve_sc_bin() == DEFAULT_SC_EXEC
+    assert os.path.isabs(DEFAULT_SC_EXEC)
+    assert os.path.exists(DEFAULT_SC_EXEC), "the repo ships sc at result_analysis/sc"
+
+
+def test_the_default_does_not_depend_on_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("SC_EXEC", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert resolve_sc_bin() == DEFAULT_SC_EXEC
+
+
+def test_sc_exec_overrides_the_default(monkeypatch):
+    monkeypatch.setenv("SC_EXEC", "/opt/sc-rs/sc")
+    assert resolve_sc_bin() == "/opt/sc-rs/sc"
+
+
+def test_an_explicit_path_overrides_sc_exec(monkeypatch):
+    monkeypatch.setenv("SC_EXEC", "/opt/sc-rs/sc")
+    assert resolve_sc_bin("/tmp/mine/sc") == "/tmp/mine/sc"
+
+
+def test_the_resolved_default_is_used_when_none_is_passed(tmp_path, pdb, monkeypatch):
+    """sc_bin=None must reach the resolver, not the subprocess."""
+    sc_bin = fake_sc(tmp_path, 'echo \'{"sc": 0.42}\'')
+    monkeypatch.setenv("SC_EXEC", sc_bin)
+    assert _calculate_shape_complementarity(pdb, "B", "A", sc_bin=None) == pytest.approx(0.42)
 
 
 def test_a_missing_binary_raises(tmp_path, pdb):

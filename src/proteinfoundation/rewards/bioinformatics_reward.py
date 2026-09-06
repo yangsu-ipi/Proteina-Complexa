@@ -11,7 +11,6 @@ for evaluating protein-protein interfaces, including:
 """
 
 import logging
-import os
 from typing import Any
 
 import torch
@@ -23,7 +22,10 @@ from proteinfoundation.rewards.base_reward import BaseRewardModel, standardize_r
 # PR Alternative (bioinformatics interface scoring) - may have missing dependencies
 PR_ALTERNATIVE_AVAILABLE = False
 try:
-    from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
+    from proteinfoundation.utils.pr_alternative_utils import (
+        pr_alternative_score_interface,
+        resolve_sc_bin,
+    )
 
     PR_ALTERNATIVE_AVAILABLE = True
 except (ImportError, Exception) as e:
@@ -62,7 +64,7 @@ class BioinformaticsRewardModel(BaseRewardModel):
         self.reward_weights = reward_weights
         self.reward_thresholds = reward_thresholds or {}
         self.reward_threshold_modes = reward_threshold_modes or {}
-        self.sc_bin = os.environ.get("SC_EXEC", "./env/docker/internal/sc")
+        self.sc_bin = resolve_sc_bin() if PR_ALTERNATIVE_AVAILABLE else None
         self.structure_source = structure_source
 
         # Validate threshold modes
