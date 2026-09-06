@@ -79,6 +79,8 @@ def summarise(df: pd.DataFrame, seq_types: list[str]) -> dict:
     def counts(frame: pd.DataFrame) -> dict:
         out = {"designs": len(frame)}
         total_slots = total_pass = 0
+        counted = False
+        any_pass = pd.Series(False, index=frame.index)
         for seq_type in seq_types:
             column = f"{seq_type}_pass_all"
             if column not in frame.columns:
@@ -89,12 +91,20 @@ def summarise(df: pd.DataFrame, seq_types: list[str]) -> dict:
             out[seq_type] = {"sequences": slots, "passed": passes}
             total_slots += slots
             total_pass += passes
+            counted = True
+            # Read off the same vectors that produce orderable_sequences, so a
+            # design counted here is exactly a design that contributed one. The
+            # headline {seq_type}_pass column holds only the first sequence's
+            # verdict, so reading it here silently dropped every design whose
+            # redesigns were the sequences that passed.
+            any_pass |= pd.Series(
+                [any(str(x) in ("1", "True") for x in v) for v in vectors],
+                index=frame.index,
+            )
         out["sequences"] = total_slots
         out["orderable_sequences"] = total_pass
         out["pass_rate"] = round(total_pass / total_slots, 4) if total_slots else None
-        headline = [c for c in (f"{s}_pass" for s in seq_types) if c in frame.columns]
-        if headline:
-            any_pass = frame[headline].apply(lambda row: any(str(v) == "1" for v in row), axis=1)
+        if counted:
             out["designs_with_a_passing_sequence"] = int(any_pass.sum())
         return out
 

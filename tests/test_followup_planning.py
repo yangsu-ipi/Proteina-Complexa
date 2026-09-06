@@ -351,6 +351,45 @@ def test_the_summary_counts_sequences_not_designs():
     assert got["per_run"]["r_production"]["orderable_sequences"] == 2
 
 
+def test_a_design_counts_when_only_its_redesign_passes():
+    """The headline {seq_type}_pass column is the first sequence's verdict alone.
+
+    A design whose original sequence fails and whose redesign passes still has
+    an orderable sequence, so it belongs in the design count -- reading the
+    headline column instead of the per-sequence vector undercounted exactly
+    those designs, while orderable_sequences (read from the vector) was right.
+    """
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import summarise
+
+    df = pd.DataFrame(
+        {
+            "pooled_run": ["r"],
+            "self_pass_all": ["[0]"],
+            "mpnn_pass_all": ["[0, 1]"],
+            "self_pass": [0],
+            "mpnn_pass": [0],  # what the headline says: nothing passed
+        }
+    )
+    got = summarise(df, ["self", "mpnn"])["pooled"]
+    assert got["orderable_sequences"] == 1
+    assert got["designs_with_a_passing_sequence"] == 1
+
+
+def test_the_design_count_agrees_with_the_sequence_count():
+    """Neither can be nonzero while the other is zero: both are read off the
+    same per-sequence vectors."""
+    import pandas as pd
+
+    from proteinfoundation.analyze_pooled import summarise
+
+    none_pass = pd.DataFrame({"pooled_run": ["r", "r"], "self_pass_all": ["[0, 0]", "[0]"]})
+    got = summarise(none_pass, ["self"])["pooled"]
+    assert got["orderable_sequences"] == 0
+    assert got["designs_with_a_passing_sequence"] == 0
+
+
 def test_stringified_verdicts_survive_the_csv_round_trip():
     """The pooled frame is read back with pd.read_csv, which returns the text of
     a list column. Counting its characters is a bug this codebase has already
