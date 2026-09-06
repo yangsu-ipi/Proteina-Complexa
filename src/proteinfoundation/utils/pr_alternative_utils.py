@@ -219,13 +219,24 @@ def _chain_total_sasa(chain_entity):
     return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
 
 
+class ShapeComplementarityError(RuntimeError):
+    """sc-rs could not produce a shape complementarity value.
+
+    Raised rather than returned as a placeholder. A fabricated SC is
+    indistinguishable from a measured one once it reaches a results column, and
+    the 0.70 this used to invent reads as a well-packed interface -- so a
+    missing binary produced a column of plausible passes, announced only on
+    stdout. Callers that want to survive a failed interface scoring pass catch
+    this and record NaN, which says "not measured" where 0.70 said "good".
+    """
+
+
 def _calculate_shape_complementarity(
     pdb_file_path, binder_chain="B", target_chain="A", distance=4.0, sc_bin: str = None
 ):
     """
-    Calculate shape complementarity using sc-rs CLI when available.
+    Calculate shape complementarity using the sc-rs CLI.
     Looks first for a local binary placed next to this module (e.g., 'functions/sc' or 'functions/sc-rs').
-    Falls back to a conservative placeholder (0.70) if sc-rs is not installed or fails.
 
     Parameters
     ----------
@@ -242,14 +253,25 @@ def _calculate_shape_complementarity(
     -------
     float
         Shape complementarity in [0, 1]
-    """
-    try:
-        start_time = time.time()
-        basename = os.path.basename(pdb_file_path)
-        print(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
 
-        # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
-        cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), "--json"]
+    Raises
+    ------
+    ShapeComplementarityError
+        If sc-rs is not configured, cannot be run, fails, times out, or returns
+        no usable value. Every failure path raises: there is no value this can
+        return that means "not measured".
+    """
+    start_time = time.time()
+    basename = os.path.basename(pdb_file_path)
+    if not sc_bin:
+        raise ShapeComplementarityError(
+            f"no sc-rs binary configured for {basename}; set SC_EXEC to the sc-rs executable"
+        )
+    print(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
+
+    # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
+    cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), "--json"]
+    try:
         proc = subprocess.run(
             cmd,
             check=True,
@@ -257,45 +279,48 @@ def _calculate_shape_complementarity(
             text=True,
             timeout=120,
         )
-        stdout = (proc.stdout or "").strip()
-        if not stdout:
-            print(f"[SC-RS] Empty output; using placeholder 0.70 for {basename}")
-            return 0.70
+    except subprocess.TimeoutExpired as exc:
+        raise ShapeComplementarityError(f"sc-rs timed out after 120s for {basename}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise ShapeComplementarityError(
+            f"sc-rs exited {exc.returncode} for {basename}: {getattr(exc, 'stderr', '')}"
+        ) from exc
+    except OSError as exc:
+        raise ShapeComplementarityError(f"could not run sc-rs at {sc_bin!r} for {basename}: {exc}") from exc
 
-        # Parse JSON strictly, else try to extract from mixed output
-        try:
-            payload = json.loads(stdout)
-        except Exception:
-            payload = None
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        raise ShapeComplementarityError(f"sc-rs produced no output for {basename}")
+
+    # Parse JSON strictly, else try to extract from mixed output
+    try:
+        payload = json.loads(stdout)
+    except ValueError:
+        payload = None
+        s_idx = stdout.rfind("{")
+        e_idx = stdout.rfind("}")
+        if s_idx != -1 and e_idx > s_idx:
             try:
-                s_idx = stdout.rfind("{")
-                e_idx = stdout.rfind("}")
-                if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
-                    payload = json.loads(stdout[s_idx : e_idx + 1])
-            except Exception:
+                payload = json.loads(stdout[s_idx : e_idx + 1])
+            except ValueError:
                 payload = None
+    if not isinstance(payload, dict):
+        raise ShapeComplementarityError(f"sc-rs output for {basename} was not JSON: {stdout[:200]}")
 
-        if isinstance(payload, dict):
-            try:
-                sc_key = "sc" if "sc" in payload else ("sc_value" if "sc_value" in payload else None)
-                if sc_key is not None:
-                    sc_val = float(payload[sc_key])
-                    if 0.0 <= sc_val <= 1.0:
-                        elapsed = time.time() - start_time
-                        print(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {elapsed:.2f}s")
-                        return sc_val
-            except Exception:
-                pass
-    except subprocess.TimeoutExpired:
-        print(f"[SC-RS] ERROR: sc-rs timed out for {os.path.basename(pdb_file_path)}")
-    except subprocess.CalledProcessError as e:
-        print(f"[SC-RS] ERROR running sc-rs: {e}. stderr: {getattr(e, 'stderr', '')}")
-    except Exception as e:
-        print(f"[SC-RS] WARN: Failed to compute SC for {pdb_file_path}: {e}")
+    sc_key = "sc" if "sc" in payload else ("sc_value" if "sc_value" in payload else None)
+    if sc_key is None:
+        raise ShapeComplementarityError(f"sc-rs output for {basename} has no SC field: {sorted(payload)}")
+    try:
+        sc_val = float(payload[sc_key])
+    except (TypeError, ValueError) as exc:
+        raise ShapeComplementarityError(
+            f"sc-rs returned a non-numeric SC for {basename}: {payload[sc_key]!r}"
+        ) from exc
+    if not 0.0 <= sc_val <= 1.0:
+        raise ShapeComplementarityError(f"sc-rs returned SC={sc_val} outside [0, 1] for {basename}")
 
-    # Fallback to placeholder to keep pipelines running
-    print(f"[SC-RS] Fallback placeholder 0.70 for {os.path.basename(pdb_file_path)}")
-    return 0.70
+    print(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {time.time() - start_time:.2f}s")
+    return sc_val
 
 
 def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
