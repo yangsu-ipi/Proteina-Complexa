@@ -499,11 +499,14 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
             # binder sequence as the entry key, an explicit cfg.seed in cfg --
             # but the derivation that turns them into a seed is not.
             "seed_derivation": SEED_DERIVATION_VERSION,
-            # Which metrics were read off the fold, not only how it was folded.
-            # A cache written before a metric existed holds structures that could
-            # answer for it and scores that cannot, and reusing it would leave the
-            # new columns quietly absent rather than wrong -- which looks exactly
-            # like a config change that did not take.
+            # Which metrics the FOLDER reports, not only how it folded. These
+            # come out of the prediction -- i_pAE, i_pTM, pTM and the pLDDTs are
+            # not recoverable from a PDB -- so a cache written before one of them
+            # existed holds no way to answer for it, and refolding is the only
+            # repair. Metrics that ARE readable from the kept structure belong in
+            # consensus_derivation_fingerprint instead, where a change re-reads
+            # the file rather than spending minutes per complex reproducing a
+            # structure the folder would return unchanged.
             "metrics": sorted(CONSENSUS_METRIC_SUFFIXES),
         },
         sort_keys=True,
@@ -514,11 +517,58 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
 
 CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binder, seed)
 
+# Metrics read off a kept advisory structure rather than reported by the folder.
+# They are not part of a structure's identity: the same fold answers for any of
+# them, so changing which are computed -- or how -- must re-read the PDBs already
+# on disk. Empty until a caller registers one; the mechanism exists so that
+# registering is cheap.
+CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = ()
+# Bumped when the derivation of any registered metric changes without its name
+# changing, which the name alone cannot express.
+CONSENSUS_DERIVATION_VERSION = 1
+
+
+def consensus_derivation_fingerprint() -> str:
+    """Identity of what is read OFF an advisory structure, not of the structure.
+
+    Kept apart from :func:`consensus_fingerprint` so a metrics-only change
+    re-derives from kept structures instead of refolding: on the CBLN1 campaign
+    that is the difference between re-reading 22k PDBs and folding them again,
+    three seeds deep, for numbers the folder does not influence.
+    """
+    canonical = json.dumps(
+        {"derived": sorted(CONSENSUS_DERIVED_SUFFIXES), "version": CONSENSUS_DERIVATION_VERSION},
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def derive_from_structure(pdb_path: str, n_target_chains: int) -> dict[str, float]:
+    """Read the registered derived metrics off one advisory structure.
+
+    Returns ``{}`` while nothing is registered, which is what makes the split
+    inert until a caller opts in. Raises nothing of its own: a caller treats a
+    failure as "not derivable for this structure" and leaves the columns absent,
+    so one unreadable PDB does not cost a refold of everything.
+    """
+    if not CONSENSUS_DERIVED_SUFFIXES:
+        return {}
+    raise NotImplementedError(
+        f"{sorted(CONSENSUS_DERIVED_SUFFIXES)} are registered as derived metrics "
+        f"but derive_from_structure has no implementation for them"
+    )
+
 
 def read_consensus_cache(
-    cache_dir: str, backend: str, fingerprint: str, seed_for=None
-) -> dict[str, dict[int, dict[str, float | str]]]:
-    """Cached advisory scores as ``{binder_seq: {seed: metrics}}``.
+    cache_dir: str, backend: str, fingerprint: str, seed_for=None, derivation: str | None = None
+) -> tuple[dict[str, dict[int, dict[str, float | str]]], bool]:
+    """Cached advisory scores as ``({binder_seq: {seed: metrics}}, derivation_stale)``.
+
+    *derivation* is the current :func:`consensus_derivation_fingerprint`. A cache
+    written under a different one still holds usable structures and folder
+    metrics, so it is returned rather than discarded, with the flag set: the
+    caller re-reads the kept PDBs for the derived metrics. Returning the flag
+    instead of a bare dict is deliberate -- a caller cannot then forget to ask.
 
     Keyed by seed VALUE rather than position, for the reason the monomer cache is:
     a seed is what produced a result, while "the k-th seed" means something only
@@ -531,7 +581,7 @@ def read_consensus_cache(
     """
     path = consensus_cache_path(cache_dir, backend)
     if not os.path.exists(path):
-        return {}
+        return {}, False
     try:
         with open(path) as handle:
             cached = json.load(handle)
@@ -540,14 +590,21 @@ def read_consensus_cache(
                 f"Advisory fold cache at {path} was produced by a different scorer "
                 f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
             )
-            return {}
+            return {}, False
+        stale = derivation is not None and cached.get("derivation") != derivation
+        if stale:
+            logger.info(
+                f"Advisory fold cache at {path} was read off under a different derivation "
+                f"({str(cached.get('derivation'))[:12]} != {derivation[:12]}); "
+                f"re-deriving from the kept structures rather than refolding"
+            )
         raw = cached.get("scores") or {}
         if cached.get("schema") == CONSENSUS_CACHE_SCHEMA:
             return {
                 seq: {int(k): v for k, v in by_seed.items() if isinstance(v, dict)}
                 for seq, by_seed in raw.items()
                 if isinstance(by_seed, dict)
-            }
+            }, stale
         out: dict[str, dict[int, dict]] = {}
         for seq, metrics in raw.items():
             if not isinstance(metrics, dict):
@@ -557,13 +614,16 @@ def read_consensus_cache(
             out[seq] = {int(seed_for(seq)): metrics}
         if out:
             logger.info(f"Adopted {len(out)} schema-1 advisory entries at {path} under their derived seeds")
-        return out
+        return out, stale
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.warning(f"Ignoring unusable advisory fold cache {path}: {exc}")
-        return {}
+        return {}, False
 
 
-def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores: dict[str, dict[int, dict]]) -> None:
+def write_consensus_cache(
+    cache_dir: str, backend: str, fingerprint: str, scores: dict[str, dict[int, dict]],
+    derivation: str | None = None,
+) -> None:
     """Persist ``{binder_seq: {seed: metrics}}``, merging with what is there.
 
     Merging rather than replacing is what lets a later run add seeds to an
@@ -583,7 +643,18 @@ def write_consensus_cache(cache_dir: str, backend: str, fingerprint: str, scores
     for seq, by_seed in scores.items():
         merged.setdefault(seq, {}).update({str(seed): metrics for seed, metrics in by_seed.items()})
     try:
-        blob = json.dumps({"fingerprint": fingerprint, "schema": CONSENSUS_CACHE_SCHEMA, "scores": merged})
+        # Merged on the fold fingerprint alone, then stamped with the current
+        # derivation: entries that could not be re-derived (no kept structure)
+        # keep their folder metrics and simply lack the derived ones, and the
+        # missing-key check on the next read picks them up if the PDB reappears.
+        blob = json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "schema": CONSENSUS_CACHE_SCHEMA,
+                "derivation": derivation if derivation is not None else consensus_derivation_fingerprint(),
+                "scores": merged,
+            }
+        )
         with open(path, "w") as handle:
             handle.write(blob)
     except (OSError, TypeError, ValueError) as exc:
@@ -675,6 +746,10 @@ def score_binders(
     from proteinfoundation.metrics.seeding import deterministic_seed, deterministic_seeds
 
     fingerprint = consensus_fingerprint(backend, cfg, target_seqs)
+    # Only ask about the derivation when something is actually read off the
+    # structures. With nothing registered there is no staleness that matters, and
+    # asking would report every pre-split cache as stale on every run.
+    derivation = consensus_derivation_fingerprint() if CONSENSUS_DERIVED_SUFFIXES else None
 
     # Seeds are derived here rather than inside the scorer, so one place decides
     # what a fold's identity is and the scorer stays a pure function of its
@@ -694,8 +769,45 @@ def score_binders(
 
     # per binder sequence: {seed: metrics}
     scores: dict[str, dict[int, dict[str, float | str]]] = {}
+    derivation_stale = False
     if cache_dir and reuse_cache:
-        scores = read_consensus_cache(cache_dir, backend, fingerprint, seed_for=first_seed_for)
+        scores, derivation_stale = read_consensus_cache(
+            cache_dir, backend, fingerprint, seed_for=first_seed_for, derivation=derivation
+        )
+
+    # Re-read the kept structures for metrics that are read off them, rather than
+    # refolding. Runs when the derivation changed, and also when an entry simply
+    # lacks a derived key -- an entry cached before its structure existed heals
+    # itself once the PDB is there, instead of staying blank forever behind a
+    # derivation fingerprint that already matches.
+    if scores and CONSENSUS_DERIVED_SUFFIXES and cache_dir:
+        rederived: dict[str, dict[int, dict[str, float | str]]] = {}
+        failed = 0
+        for seq, by_seed in scores.items():
+            for seed, metrics in by_seed.items():
+                if not derivation_stale and all(k in metrics for k in CONSENSUS_DERIVED_SUFFIXES):
+                    continue
+                pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, seed)
+                if not (isinstance(pdb, str) and os.path.exists(pdb)):
+                    continue
+                try:
+                    derived = derive_from_structure(pdb, len(target_seqs))
+                except Exception as exc:
+                    failed += 1
+                    logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")
+                    continue
+                usable = {k: float(v) for k, v in derived.items() if v == v}
+                if usable:
+                    metrics.update(usable)
+                    rederived.setdefault(seq, {})[seed] = metrics
+        if rederived:
+            write_consensus_cache(cache_dir, backend, fingerprint, rederived, derivation=derivation)
+            logger.info(
+                f"Advisory backend '{backend}' re-derived metrics for "
+                f"{sum(len(v) for v in rederived.values())} (sequence, seed) structures without refolding"
+            )
+        if failed:
+            logger.warning(f"Advisory re-derivation failed for {failed} structures; their columns stay absent")
 
     # A cached score does not imply the structure this run asked for. An earlier
     # run with keep_folding_outputs=false cached metrics and wrote no PDB, so
@@ -746,7 +858,7 @@ def score_binders(
         for seq, by_seed in fresh.items():
             scores.setdefault(seq, {}).update(by_seed)
         if cache_dir and fresh:
-            write_consensus_cache(cache_dir, backend, fingerprint, fresh)
+            write_consensus_cache(cache_dir, backend, fingerprint, fresh, derivation=derivation)
         folded = sum(len(v) for v in fresh.values())
         logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, seed) folds")
 

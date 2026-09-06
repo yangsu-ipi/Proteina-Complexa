@@ -166,8 +166,9 @@ from proteinfoundation.metrics.consensus_folding import (
 def test_advisory_folds_are_kept_per_binder_and_seed(tmp_path):
     fp = "fp"
     write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {11: {"pLDDT": 0.8}, 22: {"pLDDT": 0.9}}})
-    got = read_consensus_cache(str(tmp_path), "esmfold2", fp)
+    got, stale = read_consensus_cache(str(tmp_path), "esmfold2", fp)
     assert got == {"AAAA": {11: {"pLDDT": 0.8}, 22: {"pLDDT": 0.9}}}
+    assert stale is False, "no derivation asked about, so nothing to be stale against"
 
 
 def test_adding_a_seed_keeps_the_others(tmp_path):
@@ -175,12 +176,12 @@ def test_adding_a_seed_keeps_the_others(tmp_path):
     fp = "fp"
     write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {11: {"pLDDT": 0.8}}})
     write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {22: {"pLDDT": 0.9}}})
-    assert set(read_consensus_cache(str(tmp_path), "esmfold2", fp)["AAAA"]) == {11, 22}
+    assert set(read_consensus_cache(str(tmp_path), "esmfold2", fp)[0]["AAAA"]) == {11, 22}
 
 
 def test_a_different_scorer_discards_the_advisory_cache(tmp_path):
     write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {11: {"pLDDT": 0.8}}})
-    assert read_consensus_cache(str(tmp_path), "esmfold2", "new") == {}
+    assert read_consensus_cache(str(tmp_path), "esmfold2", "new") == ({}, False)
 
 
 def test_schema_1_advisory_entries_are_adopted_under_their_derived_seed(tmp_path):
@@ -195,10 +196,10 @@ def test_schema_1_advisory_entries_are_adopted_under_their_derived_seed(tmp_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"fingerprint": "fp", "scores": {"AAAA": {"pLDDT": 0.77}}}))
 
-    adopted = read_consensus_cache(str(tmp_path), "esmfold2", "fp", seed_for=lambda seq: 99)
+    adopted, _ = read_consensus_cache(str(tmp_path), "esmfold2", "fp", seed_for=lambda seq: 99)
     assert adopted == {"AAAA": {99: {"pLDDT": 0.77}}}
     # Without a way to recover the seed, an unlabelled fold is not guessed at.
-    assert read_consensus_cache(str(tmp_path), "esmfold2", "fp") == {}
+    assert read_consensus_cache(str(tmp_path), "esmfold2", "fp") == ({}, False)
 
 
 def test_a_structure_folded_before_seeds_existed_is_still_found(tmp_path):
@@ -550,3 +551,101 @@ def test_recovery_survives_a_real_cache_round_trip(tmp_path):
 
     got = read_monomer_folds(str(tmp_path), "apo_mpnn", fp)
     assert got[seed]["plddt"]["esmfold2"] == pytest.approx([0.66])
+
+
+# ---------------------------------------------------------------------------
+# Advisory: structure identity vs derivation identity
+# ---------------------------------------------------------------------------
+
+
+def test_a_folder_metric_change_still_refolds(tmp_path):
+    """Metrics the FOLDER reports -- i_pAE, i_pTM, pTM, the pLDDTs -- are not
+    recoverable from a PDB, so a cache that predates one holds no way to answer
+    for it and refolding is the only repair."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    target = ["MTARGET"]
+    before = cf.consensus_fingerprint("esmfold2", {}, target)
+    original = cf.CONSENSUS_METRIC_SUFFIXES
+    try:
+        cf.CONSENSUS_METRIC_SUFFIXES = original + ("new_folder_metric",)
+        assert cf.consensus_fingerprint("esmfold2", {}, target) != before
+    finally:
+        cf.CONSENSUS_METRIC_SUFFIXES = original
+
+
+def test_a_derived_metric_change_does_not_touch_the_fold_fingerprint(tmp_path):
+    """The point of the split. Adding a metric that is read off the structure
+    must not invalidate the structure -- on CBLN1 that would refold three seeds
+    of complex and apo for every sequence, to obtain numbers the folder does not
+    influence."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    target = ["MTARGET"]
+    fold_before = cf.consensus_fingerprint("esmfold2", {}, target)
+    deriv_before = cf.consensus_derivation_fingerprint()
+    original = cf.CONSENSUS_DERIVED_SUFFIXES
+    try:
+        cf.CONSENSUS_DERIVED_SUFFIXES = original + ("ss_helix",)
+        assert cf.consensus_fingerprint("esmfold2", {}, target) == fold_before, "the fold is unchanged"
+        assert cf.consensus_derivation_fingerprint() != deriv_before, "what is read off it is not"
+    finally:
+        cf.CONSENSUS_DERIVED_SUFFIXES = original
+
+
+def test_a_derivation_version_bump_is_visible_without_renaming_a_metric():
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    before = cf.consensus_derivation_fingerprint()
+    original = cf.CONSENSUS_DERIVATION_VERSION
+    try:
+        cf.CONSENSUS_DERIVATION_VERSION = original + 1
+        assert cf.consensus_derivation_fingerprint() != before
+    finally:
+        cf.CONSENSUS_DERIVATION_VERSION = original
+
+
+def test_a_stale_derivation_keeps_the_scores_rather_than_discarding_them(tmp_path):
+    """A changed derivation must not read as a changed scorer: the structures and
+    the folder's own metrics are still good."""
+    from proteinfoundation.metrics.consensus_folding import read_consensus_cache, write_consensus_cache
+
+    write_consensus_cache(str(tmp_path), "esmfold2", "fp", {"AAAA": {11: {"pLDDT": 0.8}}}, derivation="d1")
+    scores, stale = read_consensus_cache(str(tmp_path), "esmfold2", "fp", derivation="d2")
+    assert scores == {"AAAA": {11: {"pLDDT": 0.8}}}, "kept, not discarded"
+    assert stale is True
+
+    scores, stale = read_consensus_cache(str(tmp_path), "esmfold2", "fp", derivation="d1")
+    assert stale is False
+
+
+def test_a_changed_scorer_still_wins_over_derivation(tmp_path):
+    """A different fold fingerprint discards regardless: those structures are not
+    the ones this run asked for, so there is nothing to re-derive from."""
+    from proteinfoundation.metrics.consensus_folding import read_consensus_cache, write_consensus_cache
+
+    write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {11: {"pLDDT": 0.8}}}, derivation="d1")
+    assert read_consensus_cache(str(tmp_path), "esmfold2", "new", derivation="d1") == ({}, False)
+
+
+def test_derive_from_structure_is_inert_until_something_is_registered(tmp_path):
+    """The split ships switched off: no registered derived metric, no re-reading,
+    no behaviour change for a campaign that has already run."""
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES, derive_from_structure
+
+    assert CONSENSUS_DERIVED_SUFFIXES == ()
+    assert derive_from_structure(str(tmp_path / "nothing.pdb"), 1) == {}
+
+
+def test_a_registered_metric_without_an_implementation_is_an_error(tmp_path):
+    """Registering a name and forgetting the code would otherwise show up as
+    columns that are quietly always absent."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    original = cf.CONSENSUS_DERIVED_SUFFIXES
+    try:
+        cf.CONSENSUS_DERIVED_SUFFIXES = ("ss_helix",)
+        with pytest.raises(NotImplementedError, match="ss_helix"):
+            cf.derive_from_structure("whatever.pdb", 1)
+    finally:
+        cf.CONSENSUS_DERIVED_SUFFIXES = original
