@@ -550,3 +550,156 @@ def test_what_a_run_actually_used_stays_recoverable():
     runner = RUNNER.read_text()
     resolved = runner[runner.index("validate_resolved_config.py") :][:260]
     assert '"${OVERRIDES[@]}"' in resolved
+
+
+# ---------------------------------------------------------------------------
+# Tool provenance and config-aware tool gating
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_SH = Path(__file__).resolve().parents[1] / ".claude/skills/_shared/scripts/preflight.sh"
+
+
+def preflight_report(tmp_path, tools, metric=None, **overrides):
+    """A minimal report that clears every gate except the one under test."""
+    report = tmp_path / "preflight.json"
+    body = {
+        "gpu": {"available": True, "vram_gb": 80},
+        "checkpoints": {"complexa.ckpt": {"exists": True}, "complexa_ae.ckpt": {"exists": True}},
+        "community_models": {"AF2_DIR": {"exists": True}},
+        "tools": tools,
+        "disk": {"cwd_free_gb": 9999},
+        "env": {},
+    }
+    body.update(overrides)
+    report.write_text(json.dumps(body))
+    cfg = tmp_path / "resolved.yaml"
+    cfg.write_text(yaml.safe_dump({"metric": metric or {}}))
+    return report, cfg
+
+
+PRESENT = {"foldseek": {"exists": True}, "mmseqs": {"exists": True}}
+
+
+def test_sc_is_not_required_by_a_campaign_that_does_not_ask_for_it(tmp_path):
+    """The CBLN1 campaign's own shape: bioinformatics off everywhere. Its
+    SC_EXEC pointed at a file that did not exist, and that was harmless."""
+    report, cfg = preflight_report(
+        tmp_path,
+        {**PRESENT, "sc": {"path": "/nope/sc", "exists": False}},
+        metric={"compute_pre_refolding_metrics": False, "compute_refolded_structure_metrics": False},
+    )
+    r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 100)
+    assert "missing sc" not in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        {"compute_pre_refolding_metrics": True, "pre_refolding": {"bioinformatics": True}},
+        {"compute_refolded_structure_metrics": True, "refolded": {"bioinformatics": True}},
+        # No sub-block at all: evaluate.py defaults the flag to on, so this
+        # config will call sc and the gate has to say so.
+        {"compute_refolded_structure_metrics": True},
+    ],
+)
+def test_sc_is_required_when_the_config_asks_for_bioinformatics(tmp_path, metric):
+    report, cfg = preflight_report(tmp_path, {**PRESENT, "sc": {"path": "/nope/sc", "exists": False}}, metric=metric)
+    r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 100)
+    assert "missing sc" in r.stdout, r.stdout
+    assert "/nope/sc" in r.stdout, "the failure should name the path that was configured"
+
+
+def test_an_explicitly_disabled_sub_flag_does_not_require_sc(tmp_path):
+    report, cfg = preflight_report(
+        tmp_path,
+        {**PRESENT, "sc": {"exists": False}},
+        metric={"compute_refolded_structure_metrics": True, "refolded": {"bioinformatics": False}},
+    )
+    assert "missing sc" not in run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+
+
+def test_a_generation_config_that_rewards_on_sc_requires_it(tmp_path):
+    """The reward path reaches sc too, and does not go through metric flags."""
+    report = tmp_path / "preflight.json"
+    report.write_text(
+        json.dumps(
+            {
+                "gpu": {"available": True, "vram_gb": 80},
+                "checkpoints": {"complexa.ckpt": {"exists": True}, "complexa_ae.ckpt": {"exists": True}},
+                "community_models": {"AF2_DIR": {"exists": True}},
+                "tools": {**PRESENT, "sc": {"exists": False}},
+                "disk": {"cwd_free_gb": 9999},
+                "env": {},
+            }
+        )
+    )
+    cfg = tmp_path / "resolved.yaml"
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "metric": {},
+                "reward_models": {
+                    "bioinformatics": {
+                        "_target_": "proteinfoundation.rewards.bioinformatics_reward.BioinformaticsRewardModel"
+                    }
+                },
+            }
+        )
+    )
+    assert "missing sc" in run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+
+
+def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
+    report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
+    out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+    assert "missing foldseek, needed for diversity clustering" in out, out
+    assert "missing mmseqs, needed for sequence clustering" in out, "an absent entry is a missing tool"
+
+
+def sourced_file_stamp(tmp_path, *paths):
+    """file_stamp lifted out of preflight.sh and run on its own.
+
+    The script itself needs bash 4 for `declare -A`, which macOS does not ship,
+    so running it whole is not portable. The stamping is, and it is the part
+    that has to be right.
+    """
+    src = PREFLIGHT_SH.read_text()
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + re.search(r"^json_str\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        + "\n"
+        + re.search(r"^file_stamp\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        + "\n"
+        + "".join(f'echo "{{$(file_stamp "{p}")}}"\n' for p in paths)
+    )
+    out = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return [json.loads(line) for line in out.stdout.splitlines()]
+
+
+def test_a_tool_is_stamped_with_its_size_and_hash(tmp_path):
+    """Checkpoints were stamped and tools were not, so a report could say which
+    weights ran but not which build of sc-rs wrote a column."""
+    import hashlib
+
+    binary = tmp_path / "sc"
+    binary.write_bytes(b"\x7fELF fake binary")
+    (stamp,) = sourced_file_stamp(tmp_path, binary)
+    assert stamp["size"] == binary.stat().st_size
+    assert stamp["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()[:16]
+
+
+def test_stamping_degrades_to_null_rather_than_failing(tmp_path):
+    """Every probe in preflight.sh degrades rather than aborting the report."""
+    missing, empty, directory = sourced_file_stamp(tmp_path, tmp_path / "nope", "", tmp_path)
+    for stamp in (missing, empty, directory):
+        assert stamp == {"size": None, "sha256": None}, stamp
+
+
+def test_the_script_stamps_both_checkpoints_and_tools(tmp_path):
+    """One stamping rule, two callers -- the divergence this replaced is how the
+    tool entries came to lack hashes in the first place."""
+    src = PREFLIGHT_SH.read_text()
+    assert src.count("$(file_stamp ") == 2, "checkpoints and tools should both stamp"
+    assert "CKPT_ITEMS+=" in src and "TOOL_ITEMS+=" in src

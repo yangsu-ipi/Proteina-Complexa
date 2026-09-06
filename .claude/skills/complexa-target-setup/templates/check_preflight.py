@@ -24,6 +24,29 @@ import argparse, json, os
 from pathlib import Path
 import yaml
 
+def needs_shape_complementarity(cfg: dict, metric: dict) -> bool:
+    """Whether anything in this config routes to the sc-rs binary.
+
+    Evaluation reaches it through the bioinformatics interface metrics, on the
+    generated structures, the refolded ones, or both; generation reaches it
+    through BioinformaticsRewardModel. A sub-flag that is absent counts as on,
+    which is what evaluate.py itself defaults to -- reading it the other way
+    would let a config that will call sc pass a gate that says it will not.
+
+    dssp is deliberately not part of this: the shipped configs comment the
+    bioinformatics block as "requires sc/dssp binaries", but nothing on the
+    interface-scoring path calls dssp, and gating on it would fail campaigns
+    that are fine.
+    """
+    for parent, child in (
+        ("compute_pre_refolding_metrics", "pre_refolding"),
+        ("compute_refolded_structure_metrics", "refolded"),
+    ):
+        if metric.get(parent) and (metric.get(child) or {}).get("bioinformatics", True):
+            return True
+    return "BioinformaticsRewardModel" in json.dumps(cfg, default=str)
+
+
 def hf_repo_present(root: Path, repo: str) -> bool:
     d=root/("models--"+repo.replace("/","--"))
     return d.is_dir() and any((d/"snapshots").glob("*"))
@@ -41,8 +64,18 @@ def main() -> int:
     for ck in ("complexa.ckpt","complexa_ae.ckpt"):
         if not data.get("checkpoints",{}).get(ck,{}).get("exists"): failures.append(f"missing {ck}")
     if metric.get("binder_folding_method")=="colabdesign" and not cm.get("AF2_DIR",{}).get("exists"): failures.append("missing AF2_DIR")
-    for tool in ("foldseek","mmseqs"):
-        if not tools.get(tool,{}).get("exists"): failures.append(f"missing {tool}")
+    # A tool is required because the config routes to it, not because it happens
+    # to be absent. preflight.sh reports facts and is deliberately config-blind;
+    # deciding what this run actually needs is this script's job. Campaigns have
+    # shipped with SC_EXEC pointing at nothing while preflight recorded
+    # exists:false and no one read it.
+    needed = {"foldseek": "diversity clustering", "mmseqs": "sequence clustering"}
+    if needs_shape_complementarity(cfg, metric):
+        needed["sc"] = "shape complementarity (bioinformatics interface metrics)"
+    for tool, why in needed.items():
+        entry = tools.get(tool) or {}
+        if not entry.get("exists"):
+            failures.append(f"missing {tool}, needed for {why}: {entry.get('path') or 'no path configured'}")
     community=Path(os.environ.get("COMMUNITY_MODELS_PATH", os.path.join(os.environ.get("COMPLEXA_REPO",""),"community_models")))
     ckpt=Path(os.environ.get("SOLUBLE_MPNN_CKPT", community/"LigandMPNN/model_params/solublempnn_v_48_020.pt"))
     if not ckpt.is_file(): failures.append(f"missing soluble ProteinMPNN checkpoint: {ckpt}")

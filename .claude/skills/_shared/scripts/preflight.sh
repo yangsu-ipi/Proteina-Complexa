@@ -4,7 +4,9 @@
 # Probes GPU (name/VRAM/count/driver/CUDA), disk free in $CKPT_PATH, the six
 # canonical Complexa ckpts, the six tool binaries (foldseek/mmseqs/dssp/hbplus/
 # sc/rf3), .env loadability + required-var presence, community model paths
-# (AF2_DIR/ESM_DIR/RF3_CKPT_PATH/ESMFOLD), and git SHA. Every probe degrades to
+# (AF2_DIR/ESM_DIR/RF3_CKPT_PATH/ESMFOLD), and git SHA. Checkpoints and tools
+# alike are stamped with size and a short sha256, so a report identifies which
+# build ran, not merely that something was on the path. Every probe degrades to
 # {available:false} / {exists:false} rather than failing.
 #
 # This reports FACTS about the host and is deliberately config-blind — it cannot know
@@ -130,12 +132,14 @@ DISK_JSON=$(printf \
     "$(json_str "$DISK_CWD")"    "$DISK_CWD_FREE"  "$(json_str "$DISK_CWD_FS")" \
     "$DISK_CKPT_FREE")
 
-# ---- Checkpoints ----
-CKPT_ITEMS=()
-for name in complexa.ckpt complexa_ae.ckpt complexa_ligand.ckpt complexa_ligand_ae.ckpt complexa_ame.ckpt complexa_ame_ae.ckpt; do
-    p="${V[CKPT_PATH]%/}/$name"; ex=false; size="null"; sha="null"
-    if [[ -n "${V[CKPT_PATH]:-}" && -f "$p" ]]; then
-        ex=true
+# Size and short sha256 of a file, as JSON fields. Shared by checkpoints and
+# tools: a binary that produced numbers is as much a part of a result's
+# provenance as the weights it ran against, and "which build of sc-rs wrote this
+# column" is not answerable from a path alone. Emits nulls for anything that is
+# not a regular file, so a directory or an unset path still yields valid JSON.
+file_stamp() {
+    local p="${1-}" size="null" sha="null" sz s
+    if [[ -n "$p" && -f "$p" ]]; then
         sz=$(stat -c %s -- "$p" 2>/dev/null || stat -f %z -- "$p" 2>/dev/null || echo "")
         [[ -n "$sz" ]] && size="$sz"
         if command -v sha256sum >/dev/null 2>&1; then
@@ -145,7 +149,15 @@ for name in complexa.ckpt complexa_ae.ckpt complexa_ligand.ckpt complexa_ligand_
         fi
         [[ -n "${s:-}" ]] && sha="$(json_str "$s")"
     fi
-    CKPT_ITEMS+=("$(json_str "$name"):$(printf '{"path":%s,"exists":%s,"size":%s,"sha256":%s}' "$(json_str "$p")" "$ex" "$size" "$sha")")
+    printf '"size":%s,"sha256":%s' "$size" "$sha"
+}
+
+# ---- Checkpoints ----
+CKPT_ITEMS=()
+for name in complexa.ckpt complexa_ae.ckpt complexa_ligand.ckpt complexa_ligand_ae.ckpt complexa_ame.ckpt complexa_ame_ae.ckpt; do
+    p="${V[CKPT_PATH]%/}/$name"; ex=false
+    [[ -n "${V[CKPT_PATH]:-}" && -f "$p" ]] && ex=true
+    CKPT_ITEMS+=("$(json_str "$name"):$(printf '{"path":%s,"exists":%s,%s}' "$(json_str "$p")" "$ex" "$(file_stamp "$p")")")
 done
 CKPT_JSON="{$(IFS=,; echo "${CKPT_ITEMS[*]}")}"
 
@@ -156,7 +168,7 @@ for entry in "foldseek=${V[FOLDSEEK_EXEC]:-}" "mmseqs=${V[MMSEQS_EXEC]:-}" \
              "sc=${V[SC_EXEC]:-}"             "rf3=${V[RF3_EXEC_PATH]:-}"; do
     k="${entry%%=*}"; p="${entry#*=}"; ex=false
     [[ -n "$p" && ( -x "$p" || -f "$p" ) ]] && ex=true
-    TOOL_ITEMS+=("$(json_str "$k"):$(printf '{"path":%s,"exists":%s}' "$(json_str "$p")" "$ex")")
+    TOOL_ITEMS+=("$(json_str "$k"):$(printf '{"path":%s,"exists":%s,%s}' "$(json_str "$p")" "$ex" "$(file_stamp "$p")")")
 done
 TOOLS_JSON="{$(IFS=,; echo "${TOOL_ITEMS[*]}")}"
 
