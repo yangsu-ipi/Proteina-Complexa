@@ -93,8 +93,18 @@ if [[ "$KIND" == followup ]]; then
   # re-run of a follow-up that already exists and must reuse its index. Allocating
   # a fresh one there would name an inference directory nothing ever wrote, and
   # would burn a seed no run will ever use.
+  #
+  # A pre-set FOLLOWUP_INDEX names one outright. That is the way past an ambiguous
+  # design count -- two follow-ups that asked for the same number -- and it is
+  # honoured whatever the starting stage, because naming an index is a stronger
+  # statement than the count is.
   RESUME=()
-  [[ "$FIRST_STAGE" == generate ]] || RESUME=(--resume)
+  if [[ -n "${FOLLOWUP_INDEX:-}" ]]; then
+    RESUME=(--index "$FOLLOWUP_INDEX")
+    echo "follow-up index pinned by the environment: ${FOLLOWUP_INDEX}"
+  elif [[ "$FIRST_STAGE" != generate ]]; then
+    RESUME=(--resume)
+  fi
   # Planned once, here, so every job in the chain is the same follow-up. Left to
   # each job, the index would come from the records on disk and advance between
   # them -- evaluate would then look for an inference directory generate never

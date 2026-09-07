@@ -597,12 +597,18 @@ def campaign_package(tmp_path, *, followups=()):
     return pkg
 
 
-def submit(pkg, *args):
+def submit(pkg, *args, **env):
     proc = subprocess.run(
         ["bash", str(pkg / "scripts" / "submit_campaign.sh"), *map(str, args)],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "DRY_RUN": "1", "CAMPAIGN_DIR": str(pkg), "HOME": str(pkg)},
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "DRY_RUN": "1",
+            "CAMPAIGN_DIR": str(pkg),
+            "HOME": str(pkg),
+            **env,
+        },
     )
     # DRY_RUN prints the planned sbatch lines to stderr; each ends with the
     # arguments run_campaign.sh would receive.
@@ -682,6 +688,28 @@ def test_resuming_a_count_no_followup_asked_for_is_refused(tmp_path):
     proc, _ = submit(pkg, "followup", "1234", "evaluate")
     assert proc.returncode != 0
     assert "no record" in proc.stderr and "#1 wanted 900" in proc.stderr
+
+
+def test_two_followups_wanting_the_same_count_are_refused_not_guessed(tmp_path):
+    """The count is the caller's handle on a follow-up, and it stops being one
+    the moment two runs share it. Picking the newest would re-evaluate a
+    different set of designs than the caller named."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 900)])
+    proc, _ = submit(pkg, "followup", "900", "evaluate")
+    assert proc.returncode != 0
+    assert "[1, 2] all asked for that many" in proc.stderr
+    assert "FOLLOWUP_INDEX=<n>" in proc.stderr, "and the message names the way out"
+
+
+def test_an_explicit_index_settles_an_ambiguous_count(tmp_path):
+    """The way out the message names has to exist. It did not: the error said
+    --index, which submit_campaign.sh had no way to forward."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 900)])
+    proc, stages = submit(pkg, "followup", "900", "evaluate", FOLLOWUP_INDEX="2")
+    assert proc.returncode == 0, proc.stderr
+    assert "follow-up #2:" in proc.stdout
+    assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
+    assert "FOLLOWUP_INDEX=2" in proc.stderr, "and it reaches the job environment"
 
 
 def test_a_generate_rerun_is_a_new_followup_not_a_resumed_one(tmp_path):

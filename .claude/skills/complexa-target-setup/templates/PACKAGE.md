@@ -113,6 +113,14 @@ the earlier hand-written `sbatch ... FOLLOWUP_INDEX=1` workaround was for: an
 unpinned re-plan takes the next index, so the chain evaluates an inference
 directory nothing ever wrote and burns a seed on a run that never happens.
 
+The design count is the caller's handle on a follow-up, and it stops being one as
+soon as two of them share it. Name the run instead:
+
+    FOLLOWUP_INDEX=2 scripts/submit_campaign.sh followup 900 evaluate
+
+An explicit index wins over the count for any starting stage — naming a run is a
+stronger statement than describing it.
+
 A follow-up takes only the number of additional designs wanted. Seeds, raw,
 keep, expect and its own RNG seed are derived from what the production run
 actually produced, recorded in `metadata/followup_<n>.json` before anything is

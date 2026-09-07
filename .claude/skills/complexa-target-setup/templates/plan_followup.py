@@ -192,12 +192,13 @@ def resume_index(campaign_dir: Path, want_designs: int) -> int:
             f"Cannot resume a follow-up for {want_designs} designs: no record under "
             f"{campaign_dir / 'metadata'} asks for that many. Recorded follow-ups: "
             f"{', '.join(known) or 'none'}. Drop the stage argument to plan a new follow-up, "
-            f"or pass --index to name one explicitly."
+            f"or name one outright with FOLLOWUP_INDEX=<n> (--index here)."
         )
     if len(matches) > 1:
         raise SystemExit(
             f"Cannot resume a follow-up for {want_designs} designs: follow-ups "
-            f"{matches} all asked for that many. Pass --index to say which."
+            f"{matches} all asked for that many. Say which with FOLLOWUP_INDEX=<n> "
+            f"(--index here) -- the design count cannot tell them apart."
         )
     return matches[0]
 
