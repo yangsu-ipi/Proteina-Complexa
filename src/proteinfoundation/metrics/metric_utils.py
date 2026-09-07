@@ -5,7 +5,8 @@ This module consolidates commonly used metric functions:
 - rmsd_metric: RMSD computation between structures
 - relax_protein: Amber-based protein relaxation
 - replace_seq_in_generated_pdb: Sequence replacement in PDB files
-- get_interface_residues: Interface residue detection
+- get_interface_residues_atomistic: Interface residues for ligand targets (protein
+  targets use metrics/interface.py, whose radius table is protein-only)
 """
 
 import os
@@ -231,57 +232,6 @@ def replace_seq_in_generated_pdb(
 # =============================================================================
 
 
-def get_interface_residues(
-    pdb_file_path: str,
-    binder_chain: str = "B",
-    cutoff: float = 8.0,
-) -> list[int]:
-    """Get interface residues on the binder chain that are within cutoff distance of target chain.
-
-    This function identifies interface residues using a KD-tree based approach for efficient
-    distance calculations, similar to the reference implementation.
-
-    Args:
-        pdb_file_path: Path to PDB file containing both target and binder
-        binder_chain: Chain ID of the binder protein
-        cutoff: Distance cutoff in Angstroms for interface definition
-
-    Returns:
-        List of 0-indexed residue indices on the binder chain that are at the interface
-    """
-    struct = load_structure(pdb_file_path)
-
-    if isinstance(struct, AtomArrayStack):
-        struct = struct[0]
-
-    struct_ca = struct[struct.atom_name == "CA"]
-
-    binder = struct_ca[struct_ca.chain_id == binder_chain]
-    target = struct_ca[struct_ca.chain_id != binder_chain]
-
-    binder_tree = cKDTree(binder.coord)
-    target_tree = cKDTree(target.coord)
-
-    pairs = target_tree.query_ball_tree(binder_tree, cutoff)
-
-    binder_interface_atoms = np.array(sorted(list(set(sum(pairs, [])))))
-
-    if len(binder_interface_atoms) == 0:
-        logger.warning(f"No interface residues found with cutoff {cutoff}Å")
-        return []
-
-    binder_interface = np.unique(binder[binder_interface_atoms].res_id)
-
-    offset = int(binder.res_id.min())
-
-    interface_residues = []
-    for res in binder_interface:
-        residue_idx = int(res) - offset
-        interface_residues.append(residue_idx)
-
-    logger.info(f"Found {len(interface_residues)} interface residues: {interface_residues}")
-
-    return sorted(interface_residues)
 
 
 def get_interface_residues_atomistic(

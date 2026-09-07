@@ -79,7 +79,7 @@ metric:
   
   # Inverse folding settings
   num_redesign_seqs: 8
-  interface_cutoff: 8.0
+  interface_cutoff: 5.0  # all-atom contact distance; 8.0 was CA-CA and selects ~79% of a binder
   # inverse_folding_model: soluble_mpnn
   inverse_folding_model: ligand_mpnn
 

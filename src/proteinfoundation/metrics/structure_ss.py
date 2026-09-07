@@ -36,23 +36,12 @@ SS_COARSE_STATES = ("helix", "sheet", "loop")
 # renamed: the engine, the state set, or the collapse rule.
 SS_DERIVATION_VERSION = 1
 
-# Interface cutoff for the interface SS subset, in Angstrom. Deliberately the
-# same value hotspot_residues defaults to, so the interface SS composition and
-# the interface_nres / interface_hydrophobicity beside it describe the same set
-# of residues. Note this is NOT the pipeline's configured interface_cutoff
-# (8.0 A for protein targets) -- the two definitions predate this module and
-# reconciling them is a pending decision, at which point this constant is the
-# single place the SS side changes.
-SS_INTERFACE_CUTOFF = 4.0
-
-
 def ss_provenance() -> dict:
     """What determines an SS number, for the metric fingerprint."""
     return {
         "engine": "mdtraj",
         "states": list(SS_STATE_ORDER),
         "collapse": {k: SS_COARSE.get(k, SS_COARSE_DEFAULT) for k in SS_STATE_ORDER},
-        "interface_cutoff": SS_INTERFACE_CUTOFF,
         "version": SS_DERIVATION_VERSION,
     }
 
@@ -146,10 +135,10 @@ def structure_ss(
 ) -> dict[str, list[float] | float]:
     """Eight-state counts for a binder chain, and for its interface subset.
 
-    *interface_resseqs* is passed in rather than computed here so that the
-    interface SS describes exactly the residues the interface composition metrics
-    beside it describe -- one interface definition per call site, not two that
-    can drift. Pass None for a monomer (an apo fold has no interface).
+    *interface_resseqs* is passed in rather than computed here: the interface is
+    decided once, by metrics/interface.py, so the SS of interface residues
+    describes exactly the residues the composition metrics beside it describe.
+    Pass None for a monomer, which has no interface.
     """
     states = chain_states(pdb_path, binder_chain)
     out: dict[str, list[float] | float] = {

@@ -61,6 +61,7 @@ from proteinfoundation.metrics.consensus_folding import (
     score_binders,
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
+from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF
 from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -1076,6 +1077,7 @@ def compute_bioinformatics_metrics_single(
     binder_chain: str,
     target_chain: str,
     sc_bin: str | None = None,
+    interface_cutoff: float = DEFAULT_CONTACT_CUTOFF,
 ) -> dict[str, Any]:
     """
     Compute bioinformatics interface metrics for a single PDB.
@@ -1100,6 +1102,7 @@ def compute_bioinformatics_metrics_single(
             target_chain=target_chain,
             sasa_engine="auto",
             sc_bin=sc_bin,
+            interface_cutoff=interface_cutoff,
         )
         return {
             "binder_surface_hydrophobicity": round(scores["surface_hydrophobicity"], 2),

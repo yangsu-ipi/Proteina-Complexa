@@ -176,7 +176,7 @@ def test_no_interface_residues_gives_nan_hydrophobicity_not_zero(tmp_path, monke
     'entirely non-hydrophobic', which a threshold would read as a real value."""
     import math
 
-    monkeypatch.setattr(pau, "hotspot_residues", lambda *a, **k: {})
+    monkeypatch.setattr(pau, "find_interface_residues", lambda *a, **k: ([], []))
     scores, _, _ = pr_alternative_score_interface(
         complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
     )

@@ -40,7 +40,9 @@ from Bio.PDB import PDBIO, Model, PDBParser, Polypeptide, Structure
 from Bio.PDB.SASA import ShrakeRupley
 from Bio.SeqUtils import seq1
 
-from proteinfoundation.utils.biopython_utils import biopython_align_all_ca, hotspot_residues
+from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF
+from proteinfoundation.metrics.interface import interface_residues as find_interface_residues
+from proteinfoundation.utils.biopython_utils import biopython_align_all_ca, three_to_one_map
 
 # OpenMM imports
 # import openmm
@@ -1005,7 +1007,12 @@ def openmm_relax(
 
 
 def pr_alternative_score_interface(
-    pdb_file, binder_chain="B", target_chain="A", sasa_engine="auto", sc_bin: str = None
+    pdb_file,
+    binder_chain="B",
+    target_chain="A",
+    sasa_engine="auto",
+    sc_bin: str = None,
+    interface_cutoff: float = DEFAULT_CONTACT_CUTOFF,
 ):
     """
     Calculate interface scores using PyRosetta-free alternatives including SCASA shape complementarity.
@@ -1037,18 +1044,28 @@ def pr_alternative_score_interface(
         f"[Alt-Score] Initiating PyRosetta-free scoring for {basename} (binder={binder_chain}, sasa_engine={sasa_engine})"
     )
 
-    # Get interface residues via Biopython (works without PyRosetta)
+    # One interface definition for the whole pipeline. This used to call
+    # hotspot_residues at its 4.0 A default while binder_metrics used CA atoms at
+    # 8.0 -- two columns that both said "interface" describing different residue
+    # sets, mean Jaccard 0.664 over 12 complexes.
     t0_if = time.time()
-    print("[Alt-Score] Finding interface residues (hotspot_residues)...")
-    interface_residues_set = hotspot_residues(pdb_file, binder_chain, target_chain)
-    interface_residues_pdb_ids = [f"{binder_chain}{pdb_res_num}" for pdb_res_num in interface_residues_set.keys()]
+    print("[Alt-Score] Finding interface residues (strict)...")
+    binder_side, _target_side = find_interface_residues(
+        pdb_file,
+        binder_chains=[binder_chain],
+        target_chains=[c for c in str(target_chain).split(",") if c],
+        contact_cutoff=interface_cutoff,
+    )
+    interface_residues_pdb_ids = [f"{binder_chain}{r.resseq}" for r in binder_side]
     interface_residues_pdb_ids_str = ",".join(interface_residues_pdb_ids)
     print(f"[Alt-Score] Found {len(interface_residues_pdb_ids)} interface residues in {time.time() - t0_if:.2f}s")
 
     # Initialize amino acid dictionary for interface composition
     interface_AA = dict.fromkeys("ACDEFGHIKLMNPQRSTVWY", 0)
-    for pdb_res_num, aa_type in interface_residues_set.items():
-        interface_AA[aa_type] += 1
+    for residue in binder_side:
+        one_letter = three_to_one_map.get(residue.resname)
+        if one_letter in interface_AA:
+            interface_AA[one_letter] += 1
 
     # SASA-based calculations: select engine. "auto" used to mean "FreeSASA if it
     # happens to be importable, else Biopython" -- so the radii, and with them every

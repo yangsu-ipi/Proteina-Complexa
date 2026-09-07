@@ -2,93 +2,12 @@
 ################ BioPython functions
 ####################################
 ### Import dependencies
-import gc
 import math
-import os
-import stat
-from collections import defaultdict
 
-import numpy as np
-from Bio.PDB import DSSP, PDBIO, PDBParser, Selection, Superimposer
+from Bio.PDB import PDBIO, PDBParser, Superimposer
 from Bio.PDB.Polypeptide import is_aa
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from scipy.spatial import cKDTree
-
-# Global cache for DSSP results to reduce redundant calculations
-_dssp_cache = {}
-
-
-def safe_dssp_calculation(model, pdb_file, dssp_path, max_retries=3):
-    """
-    Safely calculate DSSP with proper subprocess cleanup and retry logic.
-    Uses caching to avoid redundant calculations on the same file.
-    Returns DSSP object or None if all attempts fail.
-    """
-    # Create a cache key based on the PDB file path
-    cache_key = pdb_file
-
-    # Check if we already have this result cached
-    if cache_key in _dssp_cache:
-        return _dssp_cache[cache_key]
-
-    for attempt in range(max_retries):
-        dssp = None
-        try:
-            # Ensure provided dssp_path is executable if it is a file path
-            if isinstance(dssp_path, str) and os.path.isfile(dssp_path):
-                try:
-                    if not os.access(dssp_path, os.X_OK):
-                        st = os.stat(dssp_path)
-                        os.chmod(
-                            dssp_path,
-                            st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
-                        )
-                except Exception:
-                    pass
-
-            # Primary attempt with configured path
-            try:
-                dssp = DSSP(model, pdb_file, dssp=dssp_path)
-            except Exception as primary_error:
-                # Fallback to system-installed mkdssp/dssp if available on PATH
-                last_error = primary_error
-                for alt_cmd in ("mkdssp", "dssp"):
-                    try:
-                        dssp = DSSP(model, pdb_file, dssp=alt_cmd)
-                        last_error = None
-                        break
-                    except Exception as e_alt:
-                        last_error = e_alt
-                if dssp is None and last_error is not None:
-                    raise last_error
-            # Cache the successful result
-            _dssp_cache[cache_key] = dssp
-            return dssp
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"DSSP attempt {attempt + 1} failed for {pdb_file}: {e}. Retrying...")
-                gc.collect()  # Force cleanup before retry
-            else:
-                print(f"DSSP calculation failed after {max_retries} attempts for {pdb_file}: {e}")
-                # Cache the failure to avoid repeated attempts
-                _dssp_cache[cache_key] = None
-                return None
-        finally:
-            # Ensure any partial DSSP objects are cleaned up
-            if dssp is not None and attempt < max_retries - 1:
-                try:
-                    del dssp
-                except Exception:
-                    pass
-            gc.collect()
-    return None
-
-
-def clear_dssp_cache():
-    """Clear the DSSP cache to free memory."""
-    global _dssp_cache
-    _dssp_cache.clear()
-    gc.collect()
 
 
 # analyze sequence composition of design
@@ -234,118 +153,8 @@ three_to_one_map = {
 }
 
 
-# identify interacting residues at the binder interface
-def hotspot_residues(trajectory_pdb, binder_chain="B", target_chain="A", atom_distance_cutoff=4.0):
-    # Parse the PDB file
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("complex", trajectory_pdb)
-
-    # Get the specified chain
-    binder_atoms = Selection.unfold_entities(structure[0][binder_chain], "A")
-    binder_coords = np.array([atom.coord for atom in binder_atoms])
-
-    # Get atoms and coords for the target chain
-    target_atoms = Selection.unfold_entities(structure[0][target_chain], "A")
-    target_coords = np.array([atom.coord for atom in target_atoms])
-
-    # Build KD trees for both chains
-    binder_tree = cKDTree(binder_coords)
-    target_tree = cKDTree(target_coords)
-
-    # Prepare to collect interacting residues
-    interacting_residues = {}
-
-    # Query the tree for pairs of atoms within the distance cutoff
-    pairs = binder_tree.query_ball_tree(target_tree, atom_distance_cutoff)
-
-    # Process each binder atom's interactions
-    for binder_idx, close_indices in enumerate(pairs):
-        binder_residue = binder_atoms[binder_idx].get_parent()
-        binder_resname = binder_residue.get_resname()
-
-        # Convert three-letter code to single-letter code using the manual dictionary
-        if binder_resname in three_to_one_map:
-            aa_single_letter = three_to_one_map[binder_resname]
-            for close_idx in close_indices:
-                target_atoms[close_idx].get_parent()
-                interacting_residues[binder_residue.id[1]] = aa_single_letter
-
-    return interacting_residues
 
 
-# calculate secondary structure percentage of design
-def calc_ss_percentage(
-    pdb_file,
-    advanced_settings,
-    chain_id="B",
-    target_chain="A",
-    atom_distance_cutoff=4.0,
-):
-    # Parse the structure
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("protein", pdb_file)
-    model = structure[0]  # Consider only the first model in the structure
-
-    # Calculate DSSP for the model with proper cleanup
-    dssp = safe_dssp_calculation(model, pdb_file, advanced_settings["dssp_path"])
-    if dssp is None:
-        print(f"Warning: DSSP calculation failed for {pdb_file}, returning default values")
-        # Return default values if DSSP fails: helix%, beta%, loop%, interface_helix%, interface_beta%, interface_loop%, i_plddt, ss_plddt
-        return 0.0, 0.0, 100.0, 0.0, 0.0, 100.0, 0.0, 0.0
-
-    # Prepare to count residues
-    ss_counts = defaultdict(int)
-    ss_interface_counts = defaultdict(int)
-    plddts_interface = []
-    plddts_ss = []
-
-    # Get chain and interacting residues once
-    chain = model[chain_id]
-    interacting_residues = set(hotspot_residues(pdb_file, chain_id, target_chain, atom_distance_cutoff).keys())
-
-    for residue in chain:
-        residue_id = residue.id[1]
-        if (chain_id, residue_id) in dssp:
-            ss = dssp[(chain_id, residue_id)][2]  # Get the secondary structure
-            ss_type = "loop"
-            if ss in ["H", "G", "I"]:
-                ss_type = "helix"
-            elif ss == "E":
-                ss_type = "sheet"
-
-            ss_counts[ss_type] += 1
-
-            if ss_type != "loop":
-                # calculate secondary structure normalised pLDDT
-                avg_plddt_ss = sum(atom.bfactor for atom in residue) / len(residue)
-                plddts_ss.append(avg_plddt_ss)
-
-            if residue_id in interacting_residues:
-                ss_interface_counts[ss_type] += 1
-
-                # calculate interface pLDDT
-                avg_plddt_residue = sum(atom.bfactor for atom in residue) / len(residue)
-                plddts_interface.append(avg_plddt_residue)
-
-    # Calculate percentages
-    total_residues = sum(ss_counts.values())
-    total_interface_residues = sum(ss_interface_counts.values())
-
-    percentages = calculate_percentages(total_residues, ss_counts["helix"], ss_counts["sheet"])
-    interface_percentages = calculate_percentages(
-        total_interface_residues,
-        ss_interface_counts["helix"],
-        ss_interface_counts["sheet"],
-    )
-
-    i_plddt = round(sum(plddts_interface) / len(plddts_interface) / 100, 2) if plddts_interface else 0
-    ss_plddt = round(sum(plddts_ss) / len(plddts_ss) / 100, 2) if plddts_ss else 0
-
-    # Explicitly clean up references to help with garbage collection
-    del dssp, structure, model, parser
-    gc.collect()
-
-    return (*percentages, *interface_percentages, i_plddt, ss_plddt)
 
 
 def calculate_percentages(total, helix, sheet):

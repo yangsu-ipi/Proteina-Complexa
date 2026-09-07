@@ -47,7 +47,13 @@ DEFAULT_LIGAND_RANKING_CRITERIA = {
 VALID_RANKING_DIRECTIONS = {"minimize", "maximize"}
 
 # Default evaluation parameters
-DEFAULT_INTERFACE_CUTOFF_PROTEIN = 8.0
+# All-atom contact distance for the strict interface definition. Was 8.0, which was
+# a CA-CA distance: a CA sits ~4-5 A inside the surface, so the same number applied
+# to all atoms selects far more. Measured on CBLN1 generated complexes, 8.0 puts 79%
+# of the binder at the interface (64-94% by design) against 49% at 5.0 -- and that
+# set is what mpnn_fixed holds fixed, so the old value would have frozen most of the
+# binder rather than its interface.
+DEFAULT_INTERFACE_CUTOFF_PROTEIN = 5.0
 DEFAULT_INTERFACE_CUTOFF_LIGAND = 6.0
 DEFAULT_NUM_REDESIGN_SEQS_PROTEIN = 8
 DEFAULT_NUM_REDESIGN_SEQS_LIGAND = 1

@@ -13,14 +13,18 @@ from loguru import logger
 from torch import Tensor
 from transformers import logging as hf_logging
 
+from proteinfoundation.evaluation.binder_eval_utils import DEFAULT_INTERFACE_CUTOFF_PROTEIN
 from proteinfoundation.metrics.ensembling import (
     per_model_paths_from_first,
     pop_per_model_paths,
     reduce_rmsd_over_models,
 )
+from proteinfoundation.metrics.interface import (
+    interface_residues as find_interface_residues,
+)
+from proteinfoundation.metrics.interface import resseqs, sequence_indices
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
-    get_interface_residues,
     get_interface_residues_atomistic,
     replace_seq_in_generated_pdb,
     rmsd_metric,
@@ -132,7 +136,7 @@ def run_binder_eval(
     tmp_path: str | Path = "./tmp/metrics/",
     target_pdb_chain: list[str] = ["A"],
     sequence_types: list[Literal["mpnn", "mpnn_fixed", "self"]] = ["self"],
-    interface_cutoff: float = 8.0,
+    interface_cutoff: float = DEFAULT_INTERFACE_CUTOFF_PROTEIN,
     is_target_ligand: bool = False,
     inverse_folding_model: str = "protein_mpnn",
     gen_target_chain: list[str] = None,  # If none, use target_pdb_chain as gen_target_chain
@@ -169,7 +173,10 @@ def run_binder_eval(
             - "mpnn": Use ProteinMPNN redesigned sequences
             - "mpnn_fixed": Use ProteinMPNN redesigned sequences with interface residues fixed
             - "self": Use self-generated sequences from the PDB file
-        interface_cutoff: Distance cutoff in Angstroms for interface definition (for mpnn_fixed)
+        interface_cutoff: Contact distance in Angstroms for the interface definition. Feeds
+            protein-interface's strict mode for protein targets, and the all-atom CA-free
+            path for ligand ones. All-atom, so it is not the 8.0 the CA-based predecessor
+            used -- see metrics/interface.py.
             Default: 8.0
         is_target_ligand: Whether the target is a ligand
             Default: False
@@ -268,7 +275,28 @@ def run_binder_eval(
 
     if num_redesign_seqs is None:
         num_redesign_seqs = 8 if not is_target_ligand else 1
-    get_interface_residues_func = get_interface_residues_atomistic if is_target_ligand else get_interface_residues
+    # Computed once and reused. The four call sites below asked the same question of
+    # the same file, and the answer now costs a SASA pass rather than a KD-tree query.
+    #
+    # Ligand targets keep the all-atom path: protein-interface's radius table is
+    # protein-only, so every ligand atom comes back without a radius -- measured on
+    # generic ligand names, halogens and metals -- and the burial half of the strict
+    # criterion would be silently zero for exactly the atoms that matter.
+    def _interface_seq_indices_and_resseqs() -> tuple[list[int], list[int]]:
+        if is_target_ligand:
+            idx = get_interface_residues_atomistic(updated_pdb_path, binder_chain, interface_cutoff)
+            # The atomistic path returns sequence positions only; fix_pos below has always
+            # assumed resseq == position + 1 for it, and that is unchanged here.
+            return idx, [i + 1 for i in idx]
+        binder_side, _ = find_interface_residues(
+            updated_pdb_path,
+            binder_chains=[binder_chain],
+            target_chains=list(gen_target_chain),
+            contact_cutoff=interface_cutoff,
+        )
+        return sequence_indices(binder_side), sorted(resseqs(binder_side))
+
+    interface_seq_indices, interface_resseqs = _interface_seq_indices_and_resseqs()
 
     if "mpnn" in sequence_types:
         logger.info(f"Running inverse folding: {inverse_folding_model}")
@@ -296,9 +324,7 @@ def run_binder_eval(
         sequences_dict["mpnn"].extend(mpnn_sequences)
         all_sequences.extend(mpnn_sequences)
         sequence_types_list.extend(["mpnn"] * len(mpnn_sequences))
-        # Compute interface residues for mpnn (if needed, else skip)
-        interface_residues_mpnn = get_interface_residues_func(updated_pdb_path, binder_chain, interface_cutoff)
-        all_interface_residues.extend([interface_residues_mpnn] * len(mpnn_sequences))
+        all_interface_residues.extend([interface_seq_indices] * len(mpnn_sequences))
 
     if "mpnn_fixed" in sequence_types:
         # Create a separate directory for mpnn_fixed to avoid conflicts
@@ -315,17 +341,16 @@ def run_binder_eval(
             )
         else:
             # Default: fix interface residues (standard binder eval)
-            interface_residues = get_interface_residues_func(updated_pdb_path, binder_chain, interface_cutoff)
             logger.info(
                 f"Running inverse folding: {inverse_folding_model} with "
-                f"{len(interface_residues)} interface residues fixed"
+                f"{len(interface_resseqs)} interface residues fixed"
             )
-            # Convert to fix_pos format: ["ChainID-ResidueNumber"]
-            fix_pos = [f"{binder_chain}{r + 1}" for r in interface_residues]  # Convert to 1-indexed
+            # Real PDB residue numbers, not position + 1: ProteinMPNN keys fix_pos on the
+            # numbering in the file, and the two coincide only while it starts at 1 with
+            # no gaps.
+            fix_pos = [f"{binder_chain}{r}" for r in interface_resseqs]
 
-        # Always compute interface residues for AA composition tracking,
-        # even when fix_pos was overridden.
-        interface_residues_for_tracking = get_interface_residues_func(updated_pdb_path, binder_chain, interface_cutoff)
+        # Composition tracking uses the same set even when fix_pos was overridden.
 
         mpnn_fixed_sequences = inverse_fold(
             model_type=inverse_folding_model,
@@ -343,7 +368,7 @@ def run_binder_eval(
         sequences_dict["mpnn_fixed"].extend(mpnn_fixed_sequences)
         all_sequences.extend(mpnn_fixed_sequences)
         sequence_types_list.extend(["mpnn_fixed"] * len(mpnn_fixed_sequences))
-        all_interface_residues.extend([interface_residues_for_tracking] * len(mpnn_fixed_sequences))
+        all_interface_residues.extend([interface_seq_indices] * len(mpnn_fixed_sequences))
 
     if "self" in sequence_types:
         logger.info("Running inverse folding: self-generated sequences")
@@ -351,9 +376,7 @@ def run_binder_eval(
         sequences_dict["self"].append(self_sequence)
         all_sequences.append(self_sequence)
         sequence_types_list.append("self")
-        # Compute interface residues for self
-        interface_residues_self = get_interface_residues_func(updated_pdb_path, binder_chain, interface_cutoff)
-        all_interface_residues.append(interface_residues_self)
+        all_interface_residues.append(interface_seq_indices)
 
     if not all_sequences:
         raise ValueError("No sequences to evaluate. Please specify at least one sequence type.")

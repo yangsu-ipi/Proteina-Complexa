@@ -110,7 +110,7 @@ metric:
   num_redesign_seqs: 8
   
   # Interface cutoff distance (Angstroms)
-  interface_cutoff: 8.0
+  interface_cutoff: 5.0  # all-atom contact distance; 8.0 was CA-CA and selects ~79% of a binder
   
   # Inverse folding model
   # Options: "protein_mpnn", "ligand_mpnn", "soluble_mpnn"

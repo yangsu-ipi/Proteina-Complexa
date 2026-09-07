@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from loguru import logger
+
 # protein-interface's own strict defaults, restated rather than imported so a
 # change upstream is a visible diff here instead of a silent shift in what a
 # campaign called an interface.
@@ -42,6 +44,11 @@ INTERFACE_N_POINTS = 960
 INTERFACE_PROBE_RADIUS = 1.4
 # Bumped when what counts as an interface changes without a caller changing.
 INTERFACE_DERIVATION_VERSION = 1
+# Above this, a contact cutoff is almost certainly a CA-CA number applied to all
+# atoms. On CBLN1 generated complexes 8.0 A selects 79% of the binder against 49%
+# at 5.0. Warned rather than refused: it is a config value, and a wide interface
+# is a choice someone may mean -- but not one to make by inheriting a default.
+SUSPICIOUS_CONTACT_CUTOFF = 6.0
 
 
 class InterfaceError(RuntimeError):
@@ -135,6 +142,12 @@ def interface_residues(
     if overlap:
         raise InterfaceError(f"chains {sorted(overlap)} are named as both binder and target in {pdb_path}")
 
+    if contact_cutoff > SUSPICIOUS_CONTACT_CUTOFF:
+        logger.warning(
+            f"interface contact_cutoff={contact_cutoff} A is an all-atom distance; values above "
+            f"{SUSPICIOUS_CONTACT_CUTOFF} were calibrated for CA-CA and select most of a small "
+            f"binder rather than its interface"
+        )
     _require_known_radii(pdb_path, list(binder_chains) + list(target_chains), include_hetatm)
     try:
         classified = pi.classify_residues(

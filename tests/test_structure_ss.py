@@ -10,7 +10,6 @@ import pytest
 
 from proteinfoundation.metrics.structure_ss import (
     SS_COARSE,
-    SS_INTERFACE_CUTOFF,
     SS_STATE_ORDER,
     collapse_counts,
     counts_from_states,
@@ -106,19 +105,20 @@ def test_the_provenance_names_everything_that_moves_a_number():
     assert got["engine"] == "mdtraj"
     assert got["states"] == list(SS_STATE_ORDER)
     assert got["collapse"]["B"] == "loop"
-    assert got["interface_cutoff"] == SS_INTERFACE_CUTOFF
     assert "version" in got
 
 
-def test_the_interface_cutoff_is_not_silently_the_pipelines():
-    """4 A here matches hotspot_residues, so interface SS describes the same
-    residues as the interface composition beside it. The pipeline configures 8 A
-    for a different purpose; reconciling them is a pending decision and this
-    pins which value the SS side currently uses."""
-    from proteinfoundation.evaluation.binder_eval_utils import DEFAULT_INTERFACE_CUTOFF_PROTEIN
+def test_the_interface_is_decided_elsewhere():
+    """This module does not define an interface; it reports SS over whichever
+    residues metrics/interface.py named. Two definitions here is what the
+    unification removed."""
+    import inspect
 
-    assert SS_INTERFACE_CUTOFF == 4.0
-    assert SS_INTERFACE_CUTOFF != DEFAULT_INTERFACE_CUTOFF_PROTEIN
+    from proteinfoundation.metrics import structure_ss
+
+    assert not hasattr(structure_ss, "SS_INTERFACE_CUTOFF")
+    assert "interface_cutoff" not in ss_provenance()
+    assert "interface_resseqs" in inspect.signature(structure_ss.structure_ss).parameters
 
 
 def test_states_are_read_from_the_complex_not_the_isolated_chain(tmp_path):
