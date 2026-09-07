@@ -478,6 +478,7 @@ def _add_refolded_structure_metrics(
         compute_bioinformatics=compute_bioinformatics,
         compute_tmol=compute_tmol,
         show_progress=show_progress,
+        n_af2_models=max(1, int(cfg_metric.get("n_af2_models", 1))),
     )
 
     bad_columns = [c for c in df.columns if "dataset_target_dict" in c]

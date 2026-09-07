@@ -1363,6 +1363,47 @@ def merge_metrics_to_df(
     return updated_df
 
 
+def compute_interface_metrics_over_models(
+    pdb_paths: list[str],
+    n_af2_models: int = 1,
+    compute_bioinformatics: bool = False,
+    compute_tmol: bool = False,
+    show_progress: bool = False,
+) -> list[dict]:
+    """Interface metrics per structure, averaged over the models a refold produced.
+
+    Each entry of *pdb_paths* names one model -- ``{design}_model1.pdb`` -- and
+    its siblings are derived from it. All-or-nothing per design: averaging three
+    of five would report a number the design did not earn, and silently, since
+    nothing downstream records how many models a value came from. A design whose
+    siblings are absent, or a backend that does not produce them, falls back to
+    the single structure it has.
+
+    The reduction itself is :func:`mean_interface_metrics`, which lives with the
+    other per-model reductions and is unit-testable without this module's stack.
+    """
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics, per_model_paths_from_first
+
+    expanded: list[list[str]] = []
+    for path in pdb_paths:
+        siblings = per_model_paths_from_first(path, n_af2_models) if n_af2_models > 1 else None
+        expanded.append(siblings or [path])
+
+    flat = [p for group in expanded for p in group]
+    computed = compute_interface_metrics(
+        pdb_paths=flat,
+        compute_bioinformatics=compute_bioinformatics,
+        compute_tmol=compute_tmol,
+        show_progress=show_progress,
+    )
+    by_path = dict(zip(flat, computed, strict=True))
+
+    return [
+        {"pdb_path": path, **mean_interface_metrics([by_path[p] for p in group])}
+        for path, group in zip(pdb_paths, expanded, strict=True)
+    ]
+
+
 def compute_interface_metrics_on_refolded_structures(
     df: pd.DataFrame,
     best_paths_dict: dict[str, dict[str, str]],
@@ -1371,6 +1412,7 @@ def compute_interface_metrics_on_refolded_structures(
     compute_bioinformatics: bool = False,
     compute_tmol: bool = False,
     show_progress: bool = False,
+    n_af2_models: int = 1,
 ) -> pd.DataFrame:
     """
     Compute force field and bioinformatics metrics on successful refolded structures.
@@ -1383,6 +1425,9 @@ def compute_interface_metrics_on_refolded_structures(
         compute_bioinformatics: Whether to compute bioinformatics metrics (SC, SASA, hydrophobicity).
         compute_tmol: Whether to compute TMOL force field metrics.
         show_progress: Whether to show progress bar (default: False).
+        n_af2_models: How many models the complex refold produced. Above one, the
+            interface metrics are computed on every model and averaged, the way
+            the confidence and geometry families already are.
 
     Returns:
         DataFrame with added refolded structure metrics.
@@ -1437,9 +1482,15 @@ def compute_interface_metrics_on_refolded_structures(
         sample_names = [s[0] for s in samples]
         structure_paths = [s[1] for s in samples]
 
-        # Compute metrics using unified function with individual flags
-        metrics_list = compute_interface_metrics(
+        # Averaged over the models the refold produced, not read off one of them.
+        # best_paths_dict names the model-1 structure, and computing an interface
+        # from it alone reports one draw of five as though it were the design:
+        # across five AF2 models of one design the interface itself moves, 13 to
+        # 16 residues being typical. The confidence and geometry families already
+        # reduce over models; this brings the interface family into line.
+        metrics_list = compute_interface_metrics_over_models(
             pdb_paths=structure_paths,
+            n_af2_models=n_af2_models,
             compute_bioinformatics=compute_bioinformatics,
             compute_tmol=compute_tmol,
             show_progress=show_progress,

@@ -489,3 +489,74 @@ def test_a_path_that_is_not_a_model_structure_recovers_nothing(tmp_path):
 def test_a_single_model_run_recovers_just_its_own_structure(tmp_path):
     (tmp_path / "d_model1.pdb").write_text("ATOM\n")
     assert per_model_paths_from_first(str(tmp_path / "d_model1.pdb"), 1) == [str(tmp_path / "d_model1.pdb")]
+
+
+# ---------------------------------------------------------------------------
+# Interface metrics reduced over the models a refold produced
+# ---------------------------------------------------------------------------
+
+
+def test_interface_metrics_are_averaged_not_read_off_one_model():
+    """best_paths_dict names the model-1 structure, and reporting it alone
+    reports one draw of five as the design. On a real CBLN1 design the buried
+    area ran 2219 to 2414 A^2 across five models."""
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    rows = [{"interface_dSASA": v, "interface_sc": 0.5} for v in (2238.0, 2295.0, 2219.0, 2378.0, 2414.0)]
+    got = mean_interface_metrics(rows)
+    assert got["interface_dSASA"] == pytest.approx(2308.8)
+    assert got["n_interface_models"] == 5.0
+
+
+def test_the_number_of_contributing_models_is_recorded():
+    """A design that fell back to one structure must be distinguishable from one
+    that averaged five, or a mean of one reads as a mean of five."""
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    assert mean_interface_metrics([{"interface_dSASA": 1.0}])["n_interface_models"] == 1.0
+    assert mean_interface_metrics([{"interface_dSASA": 1.0}] * 5)["n_interface_models"] == 5.0
+
+
+def test_provenance_is_taken_from_the_first_model_not_averaged():
+    """The SASA engine and radii are identical across models by construction and
+    meaningless as an average."""
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    rows = [{"sasa_engine": "freesasa", "sasa_radii": "ProtOr", "interface_dSASA": v} for v in (10.0, 20.0)]
+    got = mean_interface_metrics(rows)
+    assert got["sasa_engine"] == "freesasa"
+    assert got["sasa_radii"] == "ProtOr"
+    assert got["interface_dSASA"] == 15.0
+
+
+def test_a_nan_model_does_not_poison_the_mean():
+    """One structure failing should not erase the metric for the other four --
+    the same reason reduce_rmsd_over_models ignores non-finite entries."""
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    rows = [{"interface_dSASA": 10.0}, {"interface_dSASA": float("nan")}, {"interface_dSASA": 20.0}]
+    assert mean_interface_metrics(rows)["interface_dSASA"] == 15.0
+
+
+def test_an_all_nan_metric_stays_not_measured():
+    import math
+
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    got = mean_interface_metrics([{"interface_dSASA": float("nan")}] * 3)
+    assert math.isnan(got["interface_dSASA"])
+
+
+def test_pdb_path_is_left_to_the_caller():
+    """Which model names the design is the caller's decision; averaging paths is
+    meaningless and picking one silently would hide that."""
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    got = mean_interface_metrics([{"pdb_path": "a_model1.pdb", "interface_dSASA": 1.0}])
+    assert "pdb_path" not in got
+
+
+def test_no_rows_is_empty_rather_than_zero():
+    from proteinfoundation.metrics.ensembling import mean_interface_metrics
+
+    assert mean_interface_metrics([]) == {}

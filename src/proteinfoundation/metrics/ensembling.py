@@ -281,3 +281,33 @@ def per_model_paths_from_first(first_path: str, n_models: int) -> list[str] | No
     stem = first_path[: -len("_model1.pdb")]
     paths = [f"{stem}_model{n}.pdb" for n in range(1, max(1, int(n_models)) + 1)]
     return paths if all(os.path.exists(p) for p in paths) else None
+
+
+def mean_interface_metrics(rows: list[dict]) -> dict:
+    """Average one design's interface metrics over the models that produced them.
+
+    Mean, not best-of, for the reason the confidence scores are averaged: the
+    point of running five models is that their disagreement says how confident
+    the prediction really is, and taking the best discards exactly that. The
+    spread is not small -- one CBLN1 design's buried area ran 2219 to 2414 A^2
+    across five models, and its mean sits 3.2% from the model-1 value that used
+    to be reported alone.
+
+    Non-numeric entries are taken from the first row rather than averaged: the
+    SASA engine and radii a value was computed with are provenance, identical
+    across models by construction, and meaningless as an average. ``pdb_path``
+    is left to the caller, which knows which model names the design.
+
+    ``n_interface_models`` records how many rows contributed, so a design that
+    fell back to one structure is distinguishable from one that averaged five.
+    """
+    if not rows:
+        return {}
+    out: dict = {"n_interface_models": float(len(rows))}
+    for key in rows[0]:
+        if key == "pdb_path":
+            continue
+        values = [row.get(key) for row in rows]
+        numeric = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v]
+        out[key] = sum(numeric) / len(numeric) if numeric else values[0]
+    return out
