@@ -370,6 +370,67 @@ def test_the_advisory_per_chain_columns_cannot_be_mistaken_for_gated_ones():
     assert_columns_are_advisory(columns, gated)
 
 
+def _cbln1_row():
+    """A row shaped like the CBLN1 campaign's: esmfold2 folds the apo structures
+    the fourth criterion gates on, AND provides the advisory second opinion.
+
+    Criteria read the ``*_all`` lists, and ``{model}`` expands against the columns
+    a row actually carries, so the apo column has to be present for the apo
+    criterion to resolve to anything.
+    """
+    return {
+        "self_complex_af2_i_pAE_all": [0.1],
+        "self_complex_af2_binder_pLDDT_all": [0.95],
+        "self_complex_af2_binder_scRMSD_ca_all": [1.0],
+        "self_complex_af2_scRMSD_ca_all": [1.0],
+        "self_complex_af2_binder_scRMSD_target_aligned_ca_all": [1.0],
+        "self_apo_esmfold2_binder_scRMSD_ca_all": [1.5],
+    }
+
+
+def test_a_model_can_serve_the_apo_gate_and_the_advisory_track_at_once():
+    """The regression. esmfold2 is both `apo_folding_models` and
+    `consensus_backends` on CBLN1, and the apo criterion is gated on purpose. The
+    check used to scan gated columns for the substring `_esmfold2_`; once the
+    rename moved the model into the backend slot, the deliberate, gated
+    `self_apo_esmfold2_binder_scRMSD_ca` matched, and every evaluate run under
+    that config died on its first design after loading its models."""
+    from proteinfoundation.evaluation.binder_eval_utils import gated_columns
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_METRIC_SUFFIXES,
+        advisory_column,
+        assert_columns_are_advisory,
+    )
+    from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
+
+    row = _cbln1_row()
+    gated = gated_columns(row, "self", DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    assert "self_apo_esmfold2_binder_scRMSD_ca_all" in gated, "the apo criterion is gated on purpose"
+
+    advisory = [advisory_column("self", "esmfold2", m) for m in CONSENSUS_METRIC_SUFFIXES]
+    advisory += [f"{c}_all" for c in advisory]
+    advisory.append(advisory_column("self", "esmfold2", "pdb_path"))
+    assert_columns_are_advisory(advisory, gated, set(row))
+
+
+def test_a_gate_that_really_reads_an_advisory_column_still_fails():
+    """The check has to keep refusing what it exists for, not merely stop
+    refusing the apo case."""
+    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+
+    col = advisory_column("self", "esmfold2", "i_pAE")
+    with pytest.raises(ValueError, match="pass criterion reads advisory columns"):
+        assert_columns_are_advisory([col], {col})
+
+
+def test_an_advisory_column_may_not_overwrite_one_already_built():
+    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+
+    col = advisory_column("self", "esmfold2", "i_pAE")
+    with pytest.raises(ValueError, match="collide with columns already built"):
+        assert_columns_are_advisory([col], set(), {col})
+
+
 def test_complex_plddt_is_gone_and_still_addressable():
     """It was one number under two names: ColabDesign's log["plddt"] is the
     binder-only mean, matching the per-residue split to the last digit on a real

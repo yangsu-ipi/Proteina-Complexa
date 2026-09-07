@@ -431,36 +431,49 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
 
 
 def assert_columns_are_advisory(
-    columns: list[str], gated_columns: set[str], advisory_backends: list[str] | None = None
+    columns: list[str], gated_columns: set[str], existing_columns: set[str] | None = None
 ) -> None:
     """Fail loudly if an advisory column could be read as a gated one.
 
     The whole contract of this module is that nothing it emits can change a
     pass/fail decision.
 
-    This used to check that no advisory column contained ``_complex_``, which
-    worked while that string marked the gated family. Under the slot scheme an
-    advisory column legitimately carries it -- ``{seq}_complex_esmfold2_i_pAE``
-    is a complex folded by an advisory backend -- so the lexical check would now
-    reject exactly what it exists to protect.
+    Two lexical versions of this check have now been wrong, in opposite
+    directions, and both because a column was classified by what its name
+    contains rather than by what reads it:
 
-    The invariant it stood for is checked directly instead: no column a gate
-    reads may come from a backend the advisory config named. That is stronger
-    than the string test, because it compares the two sets that actually decide
-    it -- ``consensus_backends`` against the columns criteria resolve to --
-    rather than a marker standing in for one of them.
+    * the first refused any advisory column containing ``_complex_``, which under
+      the slot scheme is exactly what an advisory complex refold is called
+      (``{seq}_complex_esmfold2_i_pAE``);
+    * the second refused any *gated* column containing ``_{backend}_`` for a
+      configured advisory backend. But a model can serve two tracks at once --
+      the CBLN1 campaign runs ``esmfold2`` as both ``consensus_backends`` and
+      ``apo_folding_models`` -- and the apo criterion is gated on purpose. Once
+      the rename moved the model into the backend slot, the gated, deliberate
+      ``{seq}_apo_esmfold2_binder_scRMSD_ca`` became indistinguishable from an
+      advisory column, and every evaluate run under that config died on its
+      first design.
+
+    So no name is inspected here at all. ``gated_columns`` is the set the pass
+    criteria actually resolve to (:func:`binder_eval_utils.gated_columns`), and
+    the invariant is that the advisory track's columns are disjoint from it. A
+    gate that genuinely reads an advisory column still fails, because that column
+    is in both sets; one that reads an apo fold from the same model does not,
+    because it is in only one.
+
+    ``existing_columns`` is a separate, weaker guard: an advisory column must not
+    silently overwrite one already built for this row, whether gated or not.
     """
-    collisions = sorted(set(columns) & gated_columns)
-    if collisions:
-        raise ValueError(f"Advisory columns collide with gated columns: {collisions}")
-    for backend in advisory_backends or []:
-        marked = sorted(c for c in gated_columns if f"_{backend}_" in c)
-        if marked:
-            raise ValueError(
-                f"Gated columns name the advisory backend '{backend}': {marked}. An advisory "
-                f"fold must not decide a pass/fail; gate on the backend from "
-                f"binder_folding_method instead."
-            )
+    read_by_a_gate = sorted(set(columns) & gated_columns)
+    if read_by_a_gate:
+        raise ValueError(
+            f"A pass criterion reads advisory columns: {read_by_a_gate}. An advisory fold must not "
+            f"decide a pass/fail; gate on the backend from binder_folding_method instead."
+        )
+    if existing_columns:
+        collisions = sorted(set(columns) & existing_columns)
+        if collisions:
+            raise ValueError(f"Advisory columns collide with columns already built: {collisions}")
 
 
 # =============================================================================

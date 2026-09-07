@@ -38,6 +38,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     apo_plddt_column,
     check_thresholds_are_computable,
     extract_binder_chain_to_pdb,
+    gated_columns,
     get_binder_chain_from_complex,
     get_metric_columns,
     per_sequence_pass,
@@ -1013,9 +1014,9 @@ def compute_binder_metrics(
                             row_dict[col_all] = [m.get(suffix, np.nan) for m in advisory]
                             new_cols.append(col_all)
                     # Where the advisory structure landed, when keep_folding_outputs
-                    # kept it. Not a metric, so emitted explicitly; deliberately not
-                    # named *_complex_* -- that prefix is reserved for gated columns
-                    # and assert_columns_are_advisory refuses it.
+                    # kept it. Not a metric, so emitted explicitly, and built through
+                    # advisory_column like the rest -- the slot scheme puts the backend
+                    # in a slot of its own, so nothing here has to avoid a substring.
                     path_col = advisory_column(seq_type, backend_name, "pdb_path")
                     row_dict[path_col] = advisory[adv_idx].get("pdb_path") if adv_idx < len(advisory) else None
                     new_cols.append(path_col)
@@ -1024,9 +1025,17 @@ def compute_binder_metrics(
                         new_cols.append(f"{path_col}_all")
                     if idx == 0:
                         # The contract of these columns is that they cannot change a
-                        # pass/fail decision. Check it against the gated names rather
-                        # than trusting the naming convention.
-                        assert_columns_are_advisory(new_cols, set(all_columns), consensus_backends)
+                        # pass/fail decision. Checked against the columns the criteria
+                        # actually resolve to -- not against every column in the row,
+                        # and not against any property of their names. A model can
+                        # serve both tracks: esmfold2 here is an advisory backend AND
+                        # the apo folding model, and the apo criterion is gated on
+                        # purpose.
+                        assert_columns_are_advisory(
+                            new_cols,
+                            gated_columns(row_dict, seq_type, success_thresholds),
+                            set(all_columns),
+                        )
                         # And that the headline they carry is the same sequence the
                         # primary headline describes. Checked on the row, so a
                         # future call site cannot reintroduce the mismatch quietly.

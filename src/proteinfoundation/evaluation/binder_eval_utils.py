@@ -561,28 +561,45 @@ def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[i
     Returns:
         List of 1/0, one per sequence, in ``*_all`` order -- or ``None``.
     """
-    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
-    from proteinfoundation.result_analysis.binder_analysis_utils import (
-        expand_model_criteria,
-        redesign_pass_vector,
-    )
+    from proteinfoundation.result_analysis.binder_analysis_utils import redesign_pass_vector
 
-    # {model}-templated criteria stand for "every apo model this run produced",
-    # so they are expanded against this row's columns before anything is built.
-    thresholds = expand_model_criteria(thresholds, seq_type, row_dict.keys())
-    from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
-
-    parsed = {name: parse_threshold_spec(spec) for name, spec in thresholds.items()}
-
+    resolved = resolve_criteria(row_dict, seq_type, thresholds)
     metric_values = {}
-    for metric_name, spec in parsed.items():
-        col = threshold_column(seq_type, metric_name, spec)
+    for metric_name, (_, col) in resolved.items():
         if col not in row_dict:
             logger.debug(f"No pass verdict for '{seq_type}': criterion '{metric_name}' needs missing column {col}")
             return None
         metric_values[metric_name] = row_dict[col]
 
-    return redesign_pass_vector(metric_values, parsed)
+    return redesign_pass_vector(metric_values, {name: spec for name, (spec, _) in resolved.items()})
+
+
+def resolve_criteria(row_dict: dict, seq_type: str, thresholds: dict) -> dict[str, tuple[dict, str]]:
+    """``{criterion name: (parsed spec, the column it reads)}`` for one sequence type.
+
+    The one place a criterion becomes a column name. Split out because two
+    callers need it and asking the question a second way is how a column got
+    classified by what its name contains rather than by what reads it: the apo
+    criterion resolves to ``{seq}_apo_esmfold2_binder_scRMSD_ca``, gated on
+    purpose, and a scan for the substring ``_esmfold2_`` cannot tell it from an
+    advisory column produced by the same model under ``consensus_backends``.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+    from proteinfoundation.result_analysis.binder_analysis_utils import expand_model_criteria, threshold_column
+
+    # {model}-templated criteria stand for "every apo model this run produced",
+    # so they are expanded against this row's columns before anything is built.
+    expanded = expand_model_criteria(thresholds, seq_type, row_dict.keys())
+    resolved = {}
+    for name, spec in expanded.items():
+        parsed = parse_threshold_spec(spec)
+        resolved[name] = (parsed, threshold_column(seq_type, name, parsed))
+    return resolved
+
+
+def gated_columns(row_dict: dict, seq_type: str, thresholds: dict) -> set[str]:
+    """Every column a pass verdict for this sequence type is read from."""
+    return {col for _, col in resolve_criteria(row_dict, seq_type, thresholds).values()}
 
 
 # =============================================================================
