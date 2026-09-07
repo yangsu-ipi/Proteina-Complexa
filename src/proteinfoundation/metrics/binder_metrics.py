@@ -50,18 +50,34 @@ def complex_mpnn_chains(gen_target_chain: list[str], binder_chain: str) -> list[
 
 
 def updated_structure_path(pdb_file_path: str | Path, is_target_ligand: bool) -> str:
-    """The structure a design's interface is measured on.
+    """The ``_updated`` view of a design: real target sequence, C-alpha only.
 
-    For a protein target this is the ``_updated`` view -- the design with the
-    real target sequence threaded in, C-alpha only. For a ligand target there is
-    no such view and the design PDB is used directly. Lifted out of
-    :func:`run_binder_eval` because the cached-refresh path has to measure the
-    interface on the same file the original run did, and two copies of this
-    ``replace("_updated.pdb", ".pdb")`` dance would drift.
+    ProteinMPNN's input, and nothing else's. A ligand target has no such view --
+    LigandMPNN is all-atom and reads the design PDB -- so the path collapses to
+    the design itself there.
     """
     name = pdb_name_from_path(pdb_file_path)
     updated = os.path.join(os.path.dirname(pdb_file_path), name + "_updated.pdb")
     return updated.replace("_updated.pdb", ".pdb") if is_target_ligand else updated
+
+
+def interface_structure_path(pdb_file_path: str | Path) -> str:
+    """The structure a design's interface is measured on: the design, all atoms.
+
+    Not the ``_updated`` view. That file is C-alpha only for a protein target, so
+    measuring there made the all-atom contact criterion a CA-CA one and computed
+    the burial half from C-alpha spheres -- while the bioinformatics track, asking
+    the same question of the same design, read the all-atom file. Two answers to
+    one question, differing by side chains that are exactly what an interface is
+    made of.
+
+    The two files agree on everything else by construction: same chains, same
+    residue numbering, same sequences (checked on CBLN1 production designs,
+    136 + 42 residues, identical in both). So the resseqs this yields still key
+    ``fix_pos`` in the numbering ProteinMPNN reads.
+    """
+    name = pdb_name_from_path(pdb_file_path)
+    return os.path.join(os.path.dirname(pdb_file_path), name + ".pdb")
 
 
 def interface_positions(
@@ -180,7 +196,7 @@ def recompute_derived(
     # and it is a property of the design rather than of any one redesigned
     # sequence -- so it is computed once per design, exactly as run_binder_eval
     # computes it once before the sequence loop.
-    interface_path = updated_structure_path(pdb_file_path, is_target_ligand)
+    interface_path = interface_structure_path(pdb_file_path)
     if not os.path.exists(interface_path):
         logger.info(f"Cannot refresh interface composition: {interface_path} is not on disk. Refolding.")
         return False
@@ -378,7 +394,7 @@ def run_binder_eval(
     # Computed once and reused. The four call sites below asked the same question of
     # the same file, and the answer now costs a SASA pass rather than a KD-tree query.
     interface_seq_indices, interface_resseqs = interface_positions(
-        updated_pdb_path, binder_chain, gen_target_chain, is_target_ligand, interface_cutoff
+        interface_structure_path(pdb_file_path), binder_chain, gen_target_chain, is_target_ligand, interface_cutoff
     )
 
     if "mpnn" in sequence_types:

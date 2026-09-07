@@ -165,14 +165,42 @@ def _binder_metrics():
 
 
 def test_the_refresh_measures_the_interface_on_the_file_the_fold_did():
-    """A refreshed count taken from the all-atom design while the original was
-    taken from the C-alpha ``_updated`` view would differ for reasons that have
-    nothing to do with the cutoff, and nothing downstream would say so."""
+    """A refreshed count taken from one file while the original was taken from
+    another would differ for reasons that have nothing to do with the cutoff,
+    and nothing downstream would say so."""
     source = _binder_metrics()
-    assert source.count("updated_structure_path(") >= 3, "one definition, used by both paths"
     refresh = source[source.index("def recompute_derived(") : source.index("def run_binder_eval(")]
-    assert "updated_structure_path(pdb_file_path, is_target_ligand)" in refresh
+    folding = source[source.index("def run_binder_eval(") :]
+    assert "interface_structure_path(pdb_file_path)" in refresh
+    assert "interface_structure_path(pdb_file_path)" in folding
     assert "interface_positions(" in refresh
+
+
+def test_the_interface_is_measured_on_the_all_atom_design_not_the_ca_view():
+    """The ``_updated`` view is C-alpha only for a protein target, so measuring
+    there made the all-atom contact criterion a CA-CA one and took the burial
+    half off C-alpha spheres -- while the bioinformatics track read the all-atom
+    design and got a different answer to the same question."""
+    source = _binder_metrics()
+    definition = source[source.index("def interface_structure_path(") : source.index("def geometry_over_models(")]
+    assert '"_updated.pdb"' not in definition
+    assert 'name + ".pdb"' in definition
+
+
+def test_changing_the_measured_structure_is_visible_as_staleness():
+    """Bumping the cutoff is not the only way the interface can move. Without a
+    version in the hash, a run at an unchanged cutoff would serve counts taken
+    off the C-alpha view and nothing would say which file they came from."""
+    from proteinfoundation.metrics.interface import INTERFACE_DERIVATION_VERSION
+
+    assert INTERFACE_DERIVATION_VERSION >= 2, "the C-alpha era is version 1"
+    source = (SRC / "src/proteinfoundation/evaluation/binder_eval.py").read_text()
+    derivation = source[source.index("derivation_fingerprint = binder_eval_fingerprint(") :][:700]
+    assert "interface_derivation=INTERFACE_DERIVATION_VERSION" in derivation
+    # And under mpnn_fixed it is structural for the same reason the cutoff is:
+    # it moves the positions ProteinMPNN holds fixed, so it moves the folds.
+    guard = source[source.index('if "mpnn_fixed" in sequence_types:') :][:320]
+    assert 'cache_fingerprint_base["interface_derivation"] = INTERFACE_DERIVATION_VERSION' in guard
 
 
 def test_a_sequence_the_cache_never_recorded_forces_a_refold():

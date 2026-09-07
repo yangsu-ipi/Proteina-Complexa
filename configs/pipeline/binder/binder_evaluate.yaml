@@ -35,7 +35,10 @@ metric:
   
   # Inverse folding settings
   num_redesign_seqs: 2
-  interface_cutoff: 5.0  # all-atom contact distance; 8.0 was CA-CA and selects ~79% of a binder
+  # All-atom contact distance, measured on the all-atom design PDB. 8.0 was a
+  # CA-CA number: applied to all atoms it selects ~79% of a binder rather than
+  # its interface. At 5.0 the interface is ~50-60% of a 40-residue binder.
+  interface_cutoff: 5.0
   # Structure fingerprints written at an earlier interface_cutoff that this run
   # will reuse instead of refolding. Empty by default: the cutoff decides which
   # residues are counted, not which structures were predicted, but saying so is

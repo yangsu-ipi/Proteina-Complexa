@@ -43,7 +43,12 @@ DEFAULT_CONTACT_CUTOFF = 5.0
 INTERFACE_N_POINTS = 960
 INTERFACE_PROBE_RADIUS = 1.4
 # Bumped when what counts as an interface changes without a caller changing.
-INTERFACE_DERIVATION_VERSION = 1
+#   1: measured on the `_updated` view, which is C-alpha only for a protein
+#      target -- so the "all-atom" criterion was CA-CA there, and the burial half
+#      was computed from C-alpha spheres.
+#   2: measured on the design PDB, all atoms. Same chains, same numbering, same
+#      sequences; the only difference is that the side chains are present.
+INTERFACE_DERIVATION_VERSION = 2
 # Above this, a contact cutoff is almost certainly a CA-CA number applied to all
 # atoms. On CBLN1 generated complexes 8.0 A selects 79% of the binder against 49%
 # at 5.0. Warned rather than refused: it is a config value, and a wide interface

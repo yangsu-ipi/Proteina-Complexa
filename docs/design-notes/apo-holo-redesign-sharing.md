@@ -339,6 +339,15 @@ says nothing about the configuration the binder pipeline uses.
 `_updated.pdb` is only ever ProteinMPNN's input. SolubleMPNN and LigandMPNN read
 the plain design PDB, which is consistent with their being all-atom models.
 
+That claim was aspirational for a while: the interface definition behind
+`fix_pos` and `aa_interface_counts` also read `_updated.pdb`, so on a protein
+target it asked an all-atom question of a C-alpha file -- a CA-CA contact test
+and a burial computed from C-alpha spheres -- while the bioinformatics track
+asked the same question of the all-atom design and got a different answer. Both
+now read the design PDB (`INTERFACE_DERIVATION_VERSION` 2). The two files agree
+on chains, residue numbering and sequences, so the resseqs still key `fix_pos`
+in the numbering ProteinMPNN reads.
+
 Two consequences for the work ahead:
 
 - **Sharing had a precondition nobody stated:** the two tracks must use the same

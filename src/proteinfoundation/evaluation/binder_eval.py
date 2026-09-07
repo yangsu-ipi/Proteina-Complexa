@@ -67,7 +67,7 @@ from proteinfoundation.metrics.consensus_folding import (
     score_binders,
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
-from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF
+from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF, INTERFACE_DERIVATION_VERSION
 from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -541,6 +541,7 @@ def compute_binder_metrics(
     # byte-identical to the one it had before this split.
     if "mpnn_fixed" in sequence_types:
         cache_fingerprint_base["interface_cutoff"] = interface_cutoff
+        cache_fingerprint_base["interface_derivation"] = INTERFACE_DERIVATION_VERSION
     # Split from the above on purpose. Everything in cache_fingerprint_base
     # decides which structures get predicted; this decides only how the numbers
     # are read off them. Keeping them apart is what lets a reduction change reuse
@@ -548,6 +549,11 @@ def compute_binder_metrics(
     derivation_fingerprint = binder_eval_fingerprint(
         geometry_reduction=GEOMETRY_REDUCTION_VERSION,
         interface_cutoff=interface_cutoff,
+        # The cutoff alone does not say which structure the interface was measured
+        # on, or under which rule. Taken as the version constant rather than the
+        # whole interface_provenance() dict so computing a fingerprint does not
+        # require protein-interface to be installed -- a ligand run never calls it.
+        interface_derivation=INTERFACE_DERIVATION_VERSION,
     )
     # Structure fingerprints a previous cutoff would have produced, which this run
     # is willing to reuse. Empty by default: reuse across a cutoff is a claim
