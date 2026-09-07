@@ -25,6 +25,7 @@ import sys
 import pandas as pd
 from loguru import logger
 
+from proteinfoundation.metrics.column_names import migrate_frame
 from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
 from proteinfoundation.result_analysis.binder_analysis_utils import (
     get_thresholds_for_result_type,
@@ -62,6 +63,9 @@ def load_pooled(
             )
             continue
         frame = pd.read_csv(path)
+        # Migrate at the boundary, so a pooled frame gathering runs from either
+        # side of the rename speaks one vocabulary downstream.
+        frame = migrate_frame(frame)
         frame["pooled_run"] = os.path.basename(directory)
         frames.append(frame)
         logger.info(f"Pooled {len(frame)} designs from {os.path.basename(directory)}")

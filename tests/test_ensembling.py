@@ -286,7 +286,7 @@ def test_the_column_a_gate_would_look_for_is_the_column_produced():
     from proteinfoundation.result_analysis.binder_analysis_utils import build_column_name
 
     for metric in ("target_pLDDT", "binder_pLDDT"):
-        produced = f"mpnn_complex_{metric}_all"
+        produced = f"mpnn_complex_af2_{metric}_all"
         assert build_column_name("mpnn", "complex", metric) == produced
 
 
@@ -366,7 +366,7 @@ def test_the_advisory_per_chain_columns_cannot_be_mistaken_for_gated_ones():
     from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
 
     columns = [advisory_column("mpnn", "esmfold2", m) for m in ("target_pLDDT", "binder_pLDDT")]
-    gated = {"mpnn_complex_target_pLDDT", "mpnn_complex_binder_pLDDT", "mpnn_complex_pLDDT"}
+    gated = {"mpnn_complex_af2_target_pLDDT", "mpnn_complex_af2_binder_pLDDT", "mpnn_complex_af2_pLDDT"}
     assert_columns_are_advisory(columns, gated)
 
 

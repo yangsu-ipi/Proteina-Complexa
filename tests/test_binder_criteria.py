@@ -82,16 +82,16 @@ def row(
     """One design's row_dict, keyed by real column names."""
     n = len(list(i_pae))
     out = {
-        f"{seq_type}_complex_i_pAE_all": list(i_pae),
-        f"{seq_type}_complex_binder_pLDDT_all": list(plddt),
-        f"{seq_type}_binder_scRMSD_ca_all": list(scrmsd),
-        f"{seq_type}_complex_scRMSD_ca_all": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
-        f"{seq_type}_binder_scRMSD_target_aligned_ca_all": (
+        f"{seq_type}_complex_af2_i_pAE_all": list(i_pae),
+        f"{seq_type}_complex_af2_binder_pLDDT_all": list(plddt),
+        f"{seq_type}_complex_af2_binder_scRMSD_ca_all": list(scrmsd),
+        f"{seq_type}_complex_af2_scRMSD_ca_all": list(complex_rmsd) if complex_rmsd is not None else [0.5] * n,
+        f"{seq_type}_complex_af2_binder_scRMSD_target_aligned_ca_all": (
             list(target_aligned) if target_aligned is not None else [0.5] * n
         ),
     }
     for model, vals in (apo or {}).items():
-        out[f"{seq_type}_apo_scRMSD_ca_{model}_all"] = vals
+        out[f"{seq_type}_apo_{model}_binder_scRMSD_ca_all"] = vals
     return out
 
 
@@ -212,14 +212,17 @@ def test_threshold_machinery_builds_the_column_apo_refolding_emits(seq_type):
     """The gate is a config entry only because these two agree exactly."""
     from proteinfoundation.evaluation.binder_eval_utils import apo_column
 
-    assert build_column_name(seq_type, "apo", "scRMSD_ca_esmfold") == apo_column(seq_type, "ca", "esmfold") + "_all"
+    assert (
+        build_column_name(seq_type, "apo", "esmfold_binder_scRMSD_ca")
+        == apo_column(seq_type, "ca", "esmfold") + "_all"
+    )
 
 
 def test_per_sequence_pass_reads_the_columns_it_claims_to():
     """Index i of the verdict must describe index i of every other _all list."""
     r = row(i_pae=[0.10, 0.90], plddt=[0.95, 0.95], scrmsd=[1.0, 1.0], apo={"esmfold": [1.0, 1.0]})
     assert per_sequence_pass(r, "mpnn", PROTEIN) == [1, 0]
-    r["mpnn_apo_scRMSD_ca_esmfold_all"] = [9.0, 1.0]
+    r["mpnn_apo_esmfold_binder_scRMSD_ca_all"] = [9.0, 1.0]
     assert per_sequence_pass(r, "mpnn", PROTEIN) == [0, 0]
 
 
@@ -293,12 +296,12 @@ def test_a_missing_apo_column_yields_no_verdict():
 
     thresholds = {
         "i_pAE": {"threshold": 7.0, "op": "<=", "scale": 31.0, "column_prefix": "complex"},
-        "scRMSD_ca_{model}": {"threshold": 2.0, "op": "<", "scale": 1.0, "column_prefix": "apo"},
+        "{model}_binder_scRMSD_ca": {"threshold": 2.0, "op": "<", "scale": 1.0, "column_prefix": "apo"},
     }
-    without_apo = {"mpnn_complex_i_pAE_all": [0.1, 0.2]}
+    without_apo = {"mpnn_complex_af2_i_pAE_all": [0.1, 0.2]}
     assert per_sequence_pass(without_apo, "mpnn", thresholds) is None
 
-    with_apo = {**without_apo, "mpnn_apo_scRMSD_ca_esmfold2_all": [0.35, 2.6]}
+    with_apo = {**without_apo, "mpnn_apo_esmfold2_binder_scRMSD_ca_all": [0.35, 2.6]}
     assert per_sequence_pass(with_apo, "mpnn", thresholds) == [1, 0], "apo gates the second sequence out"
 
 
@@ -332,9 +335,9 @@ def test_all_six_criteria_resolve_to_distinct_real_columns():
         for name, spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.items()
     }
     assert len(set(cols.values())) == len(cols), f"two criteria share a column: {cols}"
-    assert cols["binder_scRMSD_ca"] == "mpnn_binder_scRMSD_ca_all"
-    assert cols["complex_scRMSD_ca"] == "mpnn_complex_scRMSD_ca_all"
-    assert cols["binder_scRMSD_target_aligned_ca"] == "mpnn_binder_scRMSD_target_aligned_ca_all"
+    assert cols["binder_scRMSD_ca"] == "mpnn_complex_af2_binder_scRMSD_ca_all"
+    assert cols["complex_scRMSD_ca"] == "mpnn_complex_af2_scRMSD_ca_all"
+    assert cols["binder_scRMSD_target_aligned_ca"] == "mpnn_complex_af2_binder_scRMSD_target_aligned_ca_all"
 
 
 def test_metric_survives_parse_threshold_spec():
@@ -355,7 +358,7 @@ def test_a_criterion_without_a_metric_still_uses_its_key():
     from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
 
     spec = parse_threshold_spec({"threshold": 1.0, "column_prefix": "complex"})
-    assert threshold_column("self", "min_ipAE", spec) == "self_complex_min_ipAE_all"
+    assert threshold_column("self", "min_ipAE", spec) == "self_complex_af2_min_ipAE_all"
 
 
 def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
@@ -368,18 +371,20 @@ def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
     )
 
     available = [
-        "mpnn_apo_scRMSD_ca_esmfold_all",
-        "mpnn_apo_scRMSD_ca_esmfold2_all",
-        "mpnn_complex_i_pAE_all",
-        "mpnn_complex_binder_pLDDT_all",
-        "mpnn_binder_scRMSD_ca_all",
-        "mpnn_complex_scRMSD_ca_all",
-        "mpnn_binder_scRMSD_target_aligned_ca_all",
+        "mpnn_apo_esmfold_binder_scRMSD_ca_all",
+        "mpnn_apo_esmfold2_binder_scRMSD_ca_all",
+        "mpnn_complex_af2_i_pAE_all",
+        "mpnn_complex_af2_binder_pLDDT_all",
+        "mpnn_complex_af2_binder_scRMSD_ca_all",
+        "mpnn_complex_af2_scRMSD_ca_all",
+        "mpnn_complex_af2_binder_scRMSD_target_aligned_ca_all",
     ]
     out = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "mpnn", available)
     apo = {k: v for k, v in out.items() if k.startswith("apo_")}
     assert set(apo) == {"apo_scRMSD_ca_esmfold", "apo_scRMSD_ca_esmfold2"}, apo
-    assert apo["apo_scRMSD_ca_esmfold2"]["metric"] == "scRMSD_ca_esmfold2", "the expanded metric must travel too"
+    assert (
+        apo["apo_scRMSD_ca_esmfold2"]["metric"] == "esmfold2_binder_scRMSD_ca"
+    ), "the expanded metric must travel too; the model fills the backend slot, so it leads"
 
 
 def test_a_criterion_naming_a_column_the_run_lacks_is_reported(caplog):
@@ -391,7 +396,7 @@ def test_a_criterion_naming_a_column_the_run_lacks_is_reported(caplog):
 
     thresholds = {"complex_scRMSD_ca": {"threshold": 2.0, "column_prefix": "complex", "metric": "scRMSD_ca"}}
     with caplog.at_level(logging.ERROR):
-        out = expand_model_criteria(thresholds, "mpnn", ["mpnn_complex_i_pAE_all"])
+        out = expand_model_criteria(thresholds, "mpnn", ["mpnn_complex_af2_i_pAE_all"])
     assert "complex_scRMSD_ca" in out, "kept, so the gate reads as unjudged rather than shrinking silently"
 
 
@@ -405,12 +410,12 @@ def verdict_frame():
     return pd.DataFrame(
         [
             {
-                "mpnn_complex_i_pAE_all": [0.1, 0.1],
-                "mpnn_complex_binder_pLDDT_all": [0.95, 0.95],
-                "mpnn_binder_scRMSD_ca_all": [0.5, 0.5],
-                "mpnn_apo_scRMSD_ca_esmfold2_all": [0.5, 0.5],
-                "mpnn_complex_scRMSD_ca_all": [0.5, 11.0],
-                "mpnn_binder_scRMSD_target_aligned_ca_all": [0.5, 20.0],
+                "mpnn_complex_af2_i_pAE_all": [0.1, 0.1],
+                "mpnn_complex_af2_binder_pLDDT_all": [0.95, 0.95],
+                "mpnn_complex_af2_binder_scRMSD_ca_all": [0.5, 0.5],
+                "mpnn_apo_esmfold2_binder_scRMSD_ca_all": [0.5, 0.5],
+                "mpnn_complex_af2_scRMSD_ca_all": [0.5, 11.0],
+                "mpnn_complex_af2_binder_scRMSD_target_aligned_ca_all": [0.5, 20.0],
                 "mpnn_best_idx": 0,
                 # what evaluate froze in under a gate that could not see placement
                 "mpnn_pass_all": [1, 1],
@@ -446,7 +451,7 @@ def test_a_refresh_it_cannot_make_leaves_the_old_verdict_alone():
     said = []
     sink = logger.add(said.append, level="ERROR")
     try:
-        df = verdict_frame().drop(columns=["mpnn_apo_scRMSD_ca_esmfold2_all"])
+        df = verdict_frame().drop(columns=["mpnn_apo_esmfold2_binder_scRMSD_ca_all"])
         out = refresh_per_sequence_verdicts(df, ["mpnn"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
     finally:
         logger.remove(sink)
@@ -491,7 +496,7 @@ def test_the_analyze_refresh_survives_a_csv_round_trip(tmp_path):
     frame.to_csv(path, index=False)
 
     reread = pd.read_csv(path)
-    assert isinstance(reread["self_complex_i_pAE_all"].iloc[0], str), "the premise of this test"
+    assert isinstance(reread["self_complex_af2_i_pAE_all"].iloc[0], str), "the premise of this test"
 
     out = refresh_per_sequence_verdicts(reread, ["self"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
     assert list(out["self_pass_all"].iloc[0]) == [1]

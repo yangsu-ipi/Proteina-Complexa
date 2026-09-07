@@ -199,8 +199,16 @@ def _split_seq_type(name: str) -> tuple[str | None, str]:
     return None, name
 
 
-def classify(old: str) -> tuple[str, str | None]:
+def classify(old: str, complex_backend: str = "af2") -> tuple[str, str | None]:
     """``(rule, new_name)`` for one old column, where *rule* names why.
+
+    *complex_backend* fills the slot the old names never had. It defaults to
+    ``af2`` because ``{seq}_complex_*`` was AF2 by circumstance -- the columns
+    came from best_paths_dict, whatever refolder filled them, and every run
+    written before this scheme used colabdesign. A pre-rename run that used RF3
+    cannot be told apart from its column names alone, so it needs the override.
+    The producer passes its own resolved backend, which is what makes emission
+    and migration one mapping rather than two that must agree by inspection.
 
     Every column resolves to a named rule, so "unchanged" can be told apart from
     "fell through the bottom of the function". A migration checked against a real
@@ -231,9 +239,9 @@ def classify(old: str) -> tuple[str, str | None]:
     if rest == "aa_interface_counts":
         return "generated-defined interface", f"{seq}_complex_generated_binder_interface_aa_counts{tail}"
     if rest.startswith("complex_"):
-        return "af2 named explicitly", f"{seq}_complex_af2_{rest[len('complex_'):]}{tail}"
+        return "backend named explicitly", f"{seq}_complex_{complex_backend}_{rest[len('complex_'):]}{tail}"
     if rest.startswith("binder_"):
-        return "binder was a scope", f"{seq}_complex_af2_{rest}{tail}"
+        return "binder was a scope", f"{seq}_complex_{complex_backend}_{rest}{tail}"
     if rest.startswith("apo_"):
         inner = rest[len("apo_") :]
         for backend in BACKENDS:
@@ -246,20 +254,51 @@ def classify(old: str) -> tuple[str, str | None]:
     return "UNCLASSIFIED", old
 
 
-def rename(old: str) -> str | None:
+def rename(old: str, complex_backend: str = "af2") -> str | None:
     """The new name for an old column, or None if it is retired.
 
     Returns *old* unchanged for anything the scheme does not govern. Pure and
     table-free so it can be applied to a CSV header without loading a campaign.
     """
-    return classify(old)[1]
+    return classify(old, complex_backend)[1]
 
 
-def rename_map(columns) -> dict[str, str | None]:
+def rename_map(columns, complex_backend: str = "af2") -> dict[str, str | None]:
     """``{old: new}`` for the columns that change, with None for retired ones."""
     out: dict[str, str | None] = {}
     for column in columns:
-        new = rename(column)
+        new = rename(column, complex_backend)
         if new != column:
             out[column] = new
     return out
+
+
+def migrate_frame(frame, complex_backend: str | None = None):
+    """Rename a results frame's columns into the current scheme, in place.
+
+    Applied where a CSV enters, so everything downstream sees one vocabulary.
+    Idempotent, because a frame may already be current or hold a mix -- a pooled
+    frame can gather runs written on either side of the rename.
+
+    *complex_backend* defaults to the frame's own ``complex_folding_backend``
+    column when it has one, and to ``af2`` when it does not: results predating
+    that column came from ``{seq}_complex_*``, which was AF2 by circumstance.
+    Retired columns are dropped rather than renamed.
+    """
+    columns = list(getattr(frame, "columns", ()))
+    if not columns:
+        return frame
+    if complex_backend is None:
+        complex_backend = "af2"
+        if "complex_folding_backend" in columns:
+            present = {v for v in frame["complex_folding_backend"].dropna().unique()}
+            if len(present) == 1:
+                complex_backend = str(next(iter(present)))
+    mapping = rename_map(columns, complex_backend)
+    dropped = [old for old, new in mapping.items() if new is None]
+    renamed = {old: new for old, new in mapping.items() if new is not None}
+    if dropped:
+        frame = frame.drop(columns=dropped)
+    if renamed:
+        frame = frame.rename(columns=renamed)
+    return frame

@@ -323,11 +323,12 @@ def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], succes
     # One backend for the whole frame, from the provenance column. Resolved once
     # rather than per criterion so a mixed-folder frame raises here, where it can
     # say so, rather than judging half the designs by the other half's thresholds.
+    backend = complex_backend_of(df) or "af2"
     resolved = resolve_backend_overrides(normalize_threshold_dict(success_thresholds), complex_backend_of(df))
     for seq_type in seq_types:
-        expanded = expand_model_criteria(resolved, seq_type, df.columns)
+        expanded = expand_model_criteria(resolved, seq_type, df.columns, backend)
         parsed = {name: parse_threshold_spec(spec) for name, spec in expanded.items()}
-        cols = {name: threshold_column(seq_type, name, spec) for name, spec in parsed.items()}
+        cols = {name: threshold_column(seq_type, name, spec, backend) for name, spec in parsed.items()}
         missing = sorted(c for c in cols.values() if c not in df.columns)
         if missing:
             logger.error(

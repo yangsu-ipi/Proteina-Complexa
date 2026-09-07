@@ -129,7 +129,8 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
     # because it measured designs a reward had already selected.
     #
     # The {model} placeholder lives in the METRIC, because the emitted columns are
-    # per-model -- {seq}_apo_scRMSD_ca_esmfold2_all, with no unsuffixed form. It is
+    # per-model -- {seq}_apo_esmfold2_binder_scRMSD_ca_all, with no unsuffixed
+    # form. The model occupies the backend slot, so the placeholder leads. It is
     # expanded against the columns a run produced, so one criterion covers whatever
     # apo_folding_models asks for, and [esmfold, esmfold2] gates BOTH.
     "apo_scRMSD_ca": {
@@ -137,7 +138,7 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
         "op": "<",
         "scale": 1.0,
         "column_prefix": "apo",
-        "metric": "scRMSD_ca_{model}",
+        "metric": "{model}_binder_scRMSD_ca",
     },
     # Placement, not fold. Both catch designs that fold correctly and sit somewhere
     # other than the interface they were designed for -- invisible to
@@ -234,7 +235,9 @@ def normalize_threshold_dict(thresholds: dict) -> dict:
     return normalized
 
 
-def build_column_name(seq_type: str, column_prefix: str, metric_suffix: str) -> str:
+def build_column_name(
+    seq_type: str, column_prefix: str, metric_suffix: str, complex_backend: str = "af2"
+) -> str:
     """Build the full column name for a metric.
 
     Args:
@@ -243,12 +246,23 @@ def build_column_name(seq_type: str, column_prefix: str, metric_suffix: str) -> 
         metric_suffix: The metric suffix like "i_pAE", "pLDDT", "scRMSD"
 
     Returns:
-        Full column name like "self_complex_i_pAE_all"
+        Full column name like "self_complex_af2_i_pAE_all"
+
+    The column_prefix vocabulary predates the slot scheme and is kept because
+    threshold dictionaries are user-facing config. It maps onto slots: "complex"
+    is the whole refolded complex, "binder" the binder within it, and both live
+    under kind=complex with the run's own backend. "apo" is a different
+    structure and is left alone here.
     """
+    from proteinfoundation.metrics.column_names import rename
+
+    if column_prefix in ("complex", "binder"):
+        legacy = f"{seq_type}_{column_prefix}_{metric_suffix}"
+        return f"{rename(legacy, complex_backend)}_all"
     return f"{seq_type}_{column_prefix}_{metric_suffix}_all"
 
 
-def threshold_column(seq_type: str, metric_name: str, spec: dict) -> str:
+def threshold_column(seq_type: str, metric_name: str, spec: dict, complex_backend: str = "af2") -> str:
     """The column a criterion reads.
 
     A criterion's key doubles as the column suffix unless the spec says otherwise.
@@ -264,6 +278,7 @@ def threshold_column(seq_type: str, metric_name: str, spec: dict) -> str:
         seq_type,
         spec.get("column_prefix", "complex"),
         spec.get("metric") or metric_name,
+        complex_backend,
     )
 
 
@@ -348,7 +363,9 @@ def complex_backend_of(frame) -> str | None:
 MODEL_PLACEHOLDER = "{model}"
 
 
-def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) -> dict:
+def expand_model_criteria(
+    thresholds: dict, seq_type: str, available_columns, complex_backend: str = "af2"
+) -> dict:
     """Expand ``{model}``-templated criteria against the columns a run produced.
 
     A criterion like ``scRMSD_ca_{model}`` with ``column_prefix: apo`` stands for
@@ -388,7 +405,7 @@ def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) ->
             # said. Kept non-fatal and kept in the set, matching how an unmatched
             # {model} criterion is handled below: naming a missing column reads
             # downstream as "cannot judge", which is the honest outcome.
-            col = build_column_name(seq_type, parsed.get("column_prefix", "complex"), effective)
+            col = build_column_name(seq_type, parsed.get("column_prefix", "complex"), effective, complex_backend)
             if col not in columns:
                 logger.error(
                     f"Criterion '{name}' reads column '{col}', which this run did not produce, so no "
@@ -399,7 +416,7 @@ def expand_model_criteria(thresholds: dict, seq_type: str, available_columns) ->
             continue
         prefix = parsed.get("column_prefix", "complex")
         head, _, tail = effective.partition(MODEL_PLACEHOLDER)
-        lead = build_column_name(seq_type, prefix, head)[: -len("_all")]
+        lead = build_column_name(seq_type, prefix, head, complex_backend)[: -len("_all")]
         models = sorted(
             col[len(lead) : -len(tail + "_all")] if tail else col[len(lead) : -len("_all")]
             for col in columns

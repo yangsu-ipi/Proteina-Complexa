@@ -89,10 +89,10 @@ def test_gated_columns_are_left_alone():
     """The AF2 per-chain columns carry the reserved 'complex' segment. Flagging
     them here would put a batch-dependent column beside a gated one, which is
     how a verdict starts depending on its neighbours."""
-    df = pd.DataFrame({"mpnn_complex_target_pLDDT": [0.9] * 5, COL: [0.9] * 5})
+    df = pd.DataFrame({"mpnn_complex_af2_target_pLDDT": [0.9] * 5, COL: [0.9] * 5})
     assert advisory_per_chain_columns(df) == [COL]
     add_outlier_columns(df)
-    assert "mpnn_complex_target_pLDDT_low_outlier" not in df.columns
+    assert "mpnn_complex_af2_target_pLDDT_low_outlier" not in df.columns
 
 
 def test_both_per_chain_metrics_are_picked_up():
@@ -134,7 +134,7 @@ def test_the_apo_plddt_column_is_named_for_its_model():
     model has to be in the name -- as it already is for the apo RMSDs."""
     from proteinfoundation.evaluation.binder_eval_utils import apo_column, apo_plddt_column
 
-    assert apo_plddt_column("mpnn", "esmfold2") == "mpnn_apo_pLDDT_esmfold2"
+    assert apo_plddt_column("mpnn", "esmfold2") == "mpnn_apo_esmfold2_binder_pLDDT"
     assert apo_plddt_column("mpnn", "esmfold2") != apo_column("mpnn", "ca", "esmfold2")
 
 
@@ -182,4 +182,4 @@ def test_the_binder_half_of_the_af2_plddt_is_gated():
 
     spec = DEFAULT_PROTEIN_BINDER_THRESHOLDS["complex_binder_pLDDT"]
     assert (spec["threshold"], spec["op"]) == (0.9, ">=")
-    assert build_column_name("mpnn", spec["column_prefix"], spec["metric"]) == "mpnn_complex_binder_pLDDT_all"
+    assert build_column_name("mpnn", spec["column_prefix"], spec["metric"]) == "mpnn_complex_af2_binder_pLDDT_all"

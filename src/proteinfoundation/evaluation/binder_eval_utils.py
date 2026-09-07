@@ -466,7 +466,7 @@ def check_thresholds_are_computable(
 
     Two ways to trip it, both easy. Switching ``compute_apo_metrics`` off, since
     the apo criterion is in the protein-binder defaults. And switching
-    ``apo_folding_models`` -- the criterion is ``scRMSD_{mode}_{model}``, naming
+    ``apo_folding_models`` -- the criterion is ``{model}_binder_scRMSD_{mode}``, naming
     the folding model, so asking for ``[esmfold2]`` while the default threshold
     still says ``scRMSD_ca_esmfold`` produces the apo column under a name no
     criterion is looking for. That second one is the quieter of the two: apo
@@ -501,7 +501,9 @@ def check_thresholds_are_computable(
 
     from proteinfoundation.result_analysis.binder_analysis_utils import MODEL_PLACEHOLDER
 
-    produced = {f"scRMSD_{mode}_{model}" for mode in (apo_rmsd_modes or []) for model in (apo_folding_models or [])}
+    produced = {
+        f"{model}_binder_scRMSD_{mode}" for mode in (apo_rmsd_modes or []) for model in (apo_folding_models or [])
+    }
     if not produced:
         return
     # A {model}-templated criterion is satisfied by any produced model -- the model
@@ -511,7 +513,9 @@ def check_thresholds_are_computable(
     unmatched = []
     for metric, name in apo_criteria.items():
         if MODEL_PLACEHOLDER in metric:
-            mode = metric.partition(MODEL_PLACEHOLDER)[0].removeprefix("scRMSD_").rstrip("_")
+            # The model fills the backend slot, so the placeholder leads and the
+            # mode is what follows the metric name: "{model}_binder_scRMSD_ca".
+            mode = metric.partition(MODEL_PLACEHOLDER)[2].rpartition("scRMSD_")[2]
             if mode not in modes:
                 unmatched.append(name)
         elif metric not in produced:
@@ -608,13 +612,16 @@ def apo_column(seq_type: str, mode: str, model: str) -> str:
     """Column for the apo scRMSD of one sequence type, mode and folding model.
 
     Chosen so that a threshold spec with ``column_prefix: "apo"`` and metric
-    ``scRMSD_{mode}_{model}`` builds exactly this name via ``build_column_name``.
+    ``{model}_binder_scRMSD_{mode}`` builds exactly this name via
+    ``build_column_name``. The model sits in the backend slot, and the scope is
+    spelled out even though an apo structure holds only the binder: it makes the
+    apo/complex comparison a one-slot diff rather than a two-slot one.
     Turning the apo criterion into a gate is then a threshold-dictionary entry
     rather than a code change -- which is the point of naming the condition
     rather than extending a name that means something else. See
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
-    return f"{seq_type}_apo_scRMSD_{mode}_{model}"
+    return f"{seq_type}_apo_{model}_binder_scRMSD_{mode}"
 
 
 def apo_plddt_column(seq_type: str, model: str) -> str:
@@ -624,4 +631,4 @@ def apo_plddt_column(seq_type: str, model: str) -> str:
     confidence more than they disagree about geometry. No target/binder split
     here: the apo fold is the binder alone, so its pLDDT is the binder's.
     """
-    return f"{seq_type}_apo_pLDDT_{model}"
+    return f"{seq_type}_apo_{model}_binder_pLDDT"

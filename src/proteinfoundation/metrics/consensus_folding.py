@@ -82,8 +82,6 @@ def consensus_cache_path(cache_dir: str, backend: str) -> str:
     return os.path.join(cache_dir, CONSENSUS_CACHE_TEMPLATE.format(backend=backend))
 
 
-# Prefix that would make a column look gated. Reserved.
-_GATED_PREFIX = "complex"
 
 
 # =============================================================================
@@ -369,7 +367,15 @@ def available_backends() -> list[str]:
 
 
 def advisory_column(seq_type: str, backend: str, metric_suffix: str) -> str:
-    return f"{seq_type}_{backend}_{metric_suffix}"
+    """An advisory column, under the same slots every other metric uses.
+
+    The kind slot says complex because that is what an advisory backend folds.
+    These columns used to avoid ``_complex_`` on purpose, as the marker that they
+    are never gated; that separation is now structural rather than lexical --
+    a criterion's backend comes from binder_folding_method, and an advisory
+    backend arrives through consensus_backends, so no criterion can name one.
+    """
+    return f"{seq_type}_complex_{backend}_{metric_suffix}"
 
 
 def _agreeing_indices(row: dict, columns: list[str]) -> set[int] | None:
@@ -424,22 +430,37 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
         )
 
 
-def assert_columns_are_advisory(columns: list[str], gated_columns: set[str]) -> None:
+def assert_columns_are_advisory(
+    columns: list[str], gated_columns: set[str], advisory_backends: list[str] | None = None
+) -> None:
     """Fail loudly if an advisory column could be read as a gated one.
 
-    Cheap insurance against a future backend named "complex", or a threshold
-    gaining a backend prefix: the whole contract of this module is that nothing
-    it emits can change a pass/fail decision.
+    The whole contract of this module is that nothing it emits can change a
+    pass/fail decision.
+
+    This used to check that no advisory column contained ``_complex_``, which
+    worked while that string marked the gated family. Under the slot scheme an
+    advisory column legitimately carries it -- ``{seq}_complex_esmfold2_i_pAE``
+    is a complex folded by an advisory backend -- so the lexical check would now
+    reject exactly what it exists to protect.
+
+    The invariant it stood for is checked directly instead: no column a gate
+    reads may come from a backend the advisory config named. That is stronger
+    than the string test, because it compares the two sets that actually decide
+    it -- ``consensus_backends`` against the columns criteria resolve to --
+    rather than a marker standing in for one of them.
     """
     collisions = sorted(set(columns) & gated_columns)
     if collisions:
         raise ValueError(f"Advisory columns collide with gated columns: {collisions}")
-    suspicious = sorted(c for c in columns if f"_{_GATED_PREFIX}_" in c)
-    if suspicious:
-        raise ValueError(
-            f"Advisory columns use the reserved '{_GATED_PREFIX}' prefix and could be "
-            f"mistaken for gated metrics: {suspicious}"
-        )
+    for backend in advisory_backends or []:
+        marked = sorted(c for c in gated_columns if f"_{backend}_" in c)
+        if marked:
+            raise ValueError(
+                f"Gated columns name the advisory backend '{backend}': {marked}. An advisory "
+                f"fold must not decide a pass/fail; gate on the backend from "
+                f"binder_folding_method instead."
+            )
 
 
 # =============================================================================

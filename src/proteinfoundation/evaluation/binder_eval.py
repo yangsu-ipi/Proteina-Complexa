@@ -52,6 +52,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
+from proteinfoundation.metrics.column_names import backend_for_folding_method, rename
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
@@ -65,6 +66,7 @@ from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF
 from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
+from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 from proteinfoundation.rewards.base_reward import REWARD_KEY
 
 # =============================================================================
@@ -520,6 +522,10 @@ def compute_binder_metrics(
     # Initialize folding model
     folding_model = cfg_metric.get("binder_folding_method", "colabdesign")
     folding_model_specs = initialize_folding_model(folding_model, target_pdb_chain, target_task_name, is_target_ligand)
+    # The backend slot for every complex column this run emits, and the value the
+    # provenance column records. Resolved once: a column that says af2 while an
+    # rf3 model produced it is the mislabelling this scheme exists to remove.
+    complex_backend = backend_for_folding_method(folding_model)
 
     # Evaluation parameters
     sequence_types = cfg_metric.get("sequence_types", ["self"])
@@ -785,18 +791,29 @@ def compute_binder_metrics(
                 aa_stats = sequence_type_stats[seq_type]["aa_stats"][best_idx]
 
                 row_dict["L"] = aa_stats["binder_length"]
+                # Which folder produced the complex columns below. analyze and
+                # analyze_pooled re-derive verdicts from a CSV with no config in
+                # reach, and a pooled frame can hold runs that used different
+                # folders, so it travels with the rows like redesign_model does.
+                row_dict[COMPLEX_BACKEND_COLUMN] = complex_backend
+                if idx == 0:
+                    all_columns.append(COMPLEX_BACKEND_COLUMN)
 
-                # Complex metrics (best and all)
+                # Complex metrics (best and all). Named through the same mapping
+                # the migration uses, so emission and rename cannot drift into
+                # agreeing only by inspection.
                 for metric, value in best_complex.items():
-                    col = f"{seq_type}_{metric}" if metric == "complex_pdb_path" else f"{seq_type}_complex_{metric}"
+                    col = rename(f"{seq_type}_complex_{metric.removeprefix('complex_')}", complex_backend)
                     row_dict[col] = value
                     row_dict[f"{col}_all"] = [s[metric] for s in seq_stats]
                     if idx == 0:
                         all_columns.extend([col, f"{col}_all"])
 
-                # RMSD metrics (best and all)
+                # RMSD metrics (best and all). The keys already carry their scope
+                # -- complex_scRMSD_ca is the whole complex, binder_scRMSD_ca the
+                # binder within it -- so the mapping places them.
                 for metric, value in best_rmsd.items():
-                    col = f"{seq_type}_{metric}"
+                    col = rename(f"{seq_type}_{metric}", complex_backend)
                     row_dict[col] = value
                     row_dict[f"{col}_all"] = [s[metric] for s in sequence_type_stats[seq_type]["rmsd_stats"]]
                     if idx == 0:
@@ -1044,7 +1061,7 @@ def compute_binder_metrics(
                         # The contract of these columns is that they cannot change a
                         # pass/fail decision. Check it against the gated names rather
                         # than trusting the naming convention.
-                        assert_columns_are_advisory(new_cols, set(all_columns))
+                        assert_columns_are_advisory(new_cols, set(all_columns), consensus_backends)
                         # And that the headline they carry is the same sequence the
                         # primary headline describes. Checked on the row, so a
                         # future call site cannot reintroduce the mismatch quietly.
