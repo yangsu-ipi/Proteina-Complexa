@@ -111,17 +111,22 @@ metric:
   # ---------------------------------------------------------------------------
   # Pre-refolding interface metrics (on generated structures)
   # ---------------------------------------------------------------------------
-  compute_pre_refolding_metrics: false
+  # Interface geometry and composition on the generated backbone, and on the
+  # refolded complex below. On by default since these became measurements the
+  # pipeline can stand behind: one interface definition, shape complementarity
+  # in process, dSASA on pinned ProtOr radii, and secondary structure from
+  # mdtraj. Costs about half an hour on a campaign whose evaluate stage runs 21.
+  compute_pre_refolding_metrics: true
   pre_refolding:
-    bioinformatics: false  # Shape complementarity, SASA, hydrophobicity (requires sc/dssp binaries)
-    tmol: false            # TMOL force field (H-bonds, electrostatics)
+    bioinformatics: true   # Interface residues, dSASA, shape complementarity, secondary structure
+    tmol: false            # TMOL force field (H-bonds, electrostatics) -- unmeasured, left off
 
   # ---------------------------------------------------------------------------
   # Post-refolding interface metrics (on refolded structures)
   # ---------------------------------------------------------------------------
-  compute_refolded_structure_metrics: false
+  compute_refolded_structure_metrics: true
   refolded:
-    bioinformatics: false
+    bioinformatics: true
     tmol: false
 
   # ---------------------------------------------------------------------------

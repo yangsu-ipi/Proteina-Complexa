@@ -178,11 +178,12 @@ From `binder_evaluate.yaml`, `ligand_binder_evaluate.yaml`, `ame_evaluate.yaml`.
 | `metric.ranking_criteria` | dict\|null | `null` (default: minimize i_pAE for protein, min_ipAE for ligand) | `++metric.ranking_criteria.i_pAE.scale=1.0` | Custom composite-score ranking |
 | `metric.motif_ranking_criteria` | dict\|null | `null` | `++metric.motif_ranking_criteria.motif_rmsd_pred.scale=1.0` | Custom motif-binder ranking (AME) |
 | `metric.compute_esm_metrics` | bool | `true` (binder, ligand, AME) | `++metric.compute_esm_metrics=false` | Compute ESM pseudo-perplexity |
-| `metric.compute_pre_refolding_metrics` | bool | `false` (binder, ligand, AME) | `++metric.compute_pre_refolding_metrics=true` | Pre-refolding bioinformatics/TMOL |
-| `metric.pre_refolding.bioinformatics` | bool | `false` (all three) | `++metric.pre_refolding.bioinformatics=true` | SC, SASA, hydrophobicity on generated |
+| `metric.compute_pre_refolding_metrics` | bool | `true` (binder), `false` (ligand, AME) | `++metric.compute_pre_refolding_metrics=false` | Interface metrics on the generated backbone |
+| `metric.pre_refolding.bioinformatics` | bool | `true` (binder), `false` (ligand, AME) | `++metric.pre_refolding.bioinformatics=false` | Interface residues, dSASA, SC, secondary structure |
 | `metric.pre_refolding.tmol` | bool | `false` (all three) | `++metric.pre_refolding.tmol=true` | TMOL forcefield on generated |
-| `metric.compute_refolded_structure_metrics` | bool | `false` (binder, ligand, AME) | `++metric.compute_refolded_structure_metrics=true` | Same set on refolded |
-| `metric.refolded.{bioinformatics,tmol}` | bool | `false` (all three) | `++metric.refolded.tmol=true` | Same toggles, refolded structure |
+| `metric.compute_refolded_structure_metrics` | bool | `true` (binder), `false` (ligand, AME) | `++metric.compute_refolded_structure_metrics=false` | Same set on the refolded complex |
+| `metric.refolded.bioinformatics` | bool | `true` (binder), `false` (ligand, AME) | `++metric.refolded.bioinformatics=false` | Same set, refolded structure |
+| `metric.refolded.tmol` | bool | `false` (all three) | `++metric.refolded.tmol=true` | TMOL forcefield, refolded structure |
 | `metric.compute_monomer_metrics` | bool | `true` (binder, ligand), `false` (AME) | `++metric.compute_monomer_metrics=true` | Run monomer designability / codesignability |
 | `metric.monomer_folding_models` | list | `[esmfold]` | `++metric.monomer_folding_models=[esmfold,colabfold]` | Folding models for monomer metrics |
 | `metric.compute_designability` | bool | `true` | `++metric.compute_designability=false` | Designability (ProteinMPNN -> fold) |

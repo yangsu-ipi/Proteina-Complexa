@@ -94,7 +94,12 @@ metric:
   # ---------------------------------------------------------------------------
   compute_pre_refolding_metrics: false
   pre_refolding:
-    bioinformatics: false  # Shape complementarity, SASA, hydrophobicity (requires sc/dssp binaries)
+    # Off for non-protein targets: the interface definition's radius table is
+    # protein-only, so a ligand's atoms carry no radius and the burial half of
+    # the criterion cannot be computed. Needs a ligand fixture before it can be
+    # turned on honestly. (No binaries are involved any more -- sc runs in
+    # process and dssp is gone.)
+    bioinformatics: false
     tmol: false            # TMOL force field (H-bonds, electrostatics)
 
   # ---------------------------------------------------------------------------

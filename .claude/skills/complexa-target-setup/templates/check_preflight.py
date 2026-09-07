@@ -38,10 +38,9 @@ def needs_shape_complementarity(cfg: dict, metric: dict) -> bool:
     which is what evaluate.py itself defaults to -- reading it the other way
     would let a config that will call sc pass a gate that says it will not.
 
-    dssp is deliberately not part of this: the shipped configs comment the
-    bioinformatics block as "requires sc/dssp binaries", but nothing on the
-    interface-scoring path calls dssp, and gating on it would fail campaigns
-    that are fine.
+    No binary is part of this any more: shape complementarity runs in process
+    through protein-interface, and secondary structure comes from mdtraj. The
+    requirement this detects is that the extension imports.
     """
     for parent, child in (
         ("compute_pre_refolding_metrics", "pre_refolding"),
