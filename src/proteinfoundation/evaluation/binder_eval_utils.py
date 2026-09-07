@@ -63,13 +63,29 @@ DEFAULT_NUM_REDESIGN_SEQS_LIGAND = 1
 # Interface Metrics - Column Definitions
 # =============================================================================
 
+# Scope-named, so a reader can tell whose surface a number describes. These are
+# suffixes: the emission layer prefixes them with the slots that say which
+# structure and which model -- complex_generated_ or {seq}_complex_{backend}_.
 BIOINFORMATICS_METRIC_COLS = [
+    "sasa_engine",
+    "sasa_radii",
+    "interface_sc",
+    "binder_dSASA",
+    "target_dSASA",
+    "interface_dSASA",
+    "binder_buried_fraction",
     "binder_surface_hydrophobicity",
-    "binder_interface_sc",
-    "binder_interface_dSASA",
-    "binder_interface_fraction",
     "binder_interface_hydrophobicity",
     "binder_interface_nres",
+    "target_interface_nres",
+    "binder_ss_counts",
+    "binder_ss_total",
+    "binder_interface_ss_counts",
+    "binder_interface_ss_total",
+    "target_ss_counts",
+    "target_ss_total",
+    "target_interface_ss_counts",
+    "target_interface_ss_total",
 ]
 
 TMOL_METRIC_COLS = [

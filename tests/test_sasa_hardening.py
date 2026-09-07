@@ -158,14 +158,32 @@ def test_the_two_engines_disagree_which_is_why_it_must_be_recorded(tmp_path, sc_
     assert a["sasa_radii"] != b["sasa_radii"]
 
 
-def test_an_engulfed_binder_is_not_reported_as_having_no_interface(tmp_path, monkeypatch, sc_stub):
-    """binder_sasa_in_complex == 0 is the largest interface there is. Reporting
-    interface_fraction 0.0 for it was backwards, not merely missing."""
+def test_an_engulfed_binder_reports_full_burial(tmp_path, monkeypatch, sc_stub):
+    """binder_buried_fraction divides the binder's own burial by its isolated
+    surface, so a completely engulfed binder is 1.0 -- a real measurement.
+    interface_fraction, which this replaced, divided the TOTAL burial by what
+    remained exposed, so the same case had a zero denominator and reported 0.0:
+    not missing but backwards."""
     monkeypatch.setattr(
         pau, "_compute_sasa_metrics_with_freesasa",
-        lambda *a, **k: (0.3, 0.0, 1200.0, 500.0, 900.0),  # binder fully buried
+        # engulfed: nothing exposed in the complex, 1200 when isolated
+        lambda *a, **k: (0.3, 0.0, 1200.0, 500.0, 900.0),
     )
-    with pytest.raises(SasaError, match="no exposed surface"):
+    scores, _, _ = pr_alternative_score_interface(
+        complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
+    )
+    assert scores["binder_buried_fraction"] == pytest.approx(1.0)
+    assert scores["binder_dSASA"] == pytest.approx(1200.0)
+
+
+def test_a_binder_with_no_isolated_surface_raises(tmp_path, monkeypatch, sc_stub):
+    """The denominator being zero means the chain has no surface at all, which
+    is not a design outcome -- it is a broken structure."""
+    monkeypatch.setattr(
+        pau, "_compute_sasa_metrics_with_freesasa",
+        lambda *a, **k: (0.3, 0.0, 0.0, 500.0, 900.0),
+    )
+    with pytest.raises(SasaError, match="no surface when isolated"):
         pr_alternative_score_interface(
             complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
         )
@@ -180,5 +198,5 @@ def test_no_interface_residues_gives_nan_hydrophobicity_not_zero(tmp_path, monke
     scores, _, _ = pr_alternative_score_interface(
         complex_pdb(tmp_path), binder_chain="B", target_chain="A", sasa_engine="freesasa"
     )
-    assert scores["interface_nres"] == 0
-    assert math.isnan(scores["interface_hydrophobicity"])
+    assert scores["binder_interface_nres"] == 0
+    assert math.isnan(scores["binder_interface_hydrophobicity"])

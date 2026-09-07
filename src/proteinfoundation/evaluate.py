@@ -425,7 +425,7 @@ def _add_pre_refolding_metrics(
             show_progress=show_progress,
         )
         gen_columns = {
-            col: f"generated_{col}"
+            col: f"complex_generated_{col}"
             for col in gen_metrics_df.columns
             if (col not in fixed_col_names) and ("generation_" not in col)
         }

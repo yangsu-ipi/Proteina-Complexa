@@ -1117,14 +1117,10 @@ def compute_bioinformatics_metrics_single(
             sasa_engine="auto",
             interface_cutoff=interface_cutoff,
         )
-        return {
-            "binder_surface_hydrophobicity": round(scores["surface_hydrophobicity"], 2),
-            "binder_interface_sc": round(scores["interface_sc"], 2),
-            "binder_interface_dSASA": round(scores["interface_dSASA"], 2),
-            "binder_interface_fraction": round(scores["interface_fraction"], 2),
-            "binder_interface_hydrophobicity": round(scores["interface_hydrophobicity"], 2),
-            "binder_interface_nres": scores["interface_nres"],
-        }
+        # The scorer already names each value's scope, so nothing is renamed
+        # here; taking the declared set rather than the whole dict keeps a new
+        # score from silently becoming a column nobody declared.
+        return {name: scores[name] for name in BIOINFORMATICS_METRIC_COLS if name in scores}
     except Exception as e:
         logger.error(f"Bioinformatics metrics failed for {pdb_path}: {e}")
         return dict.fromkeys(BIOINFORMATICS_METRIC_COLS, np.nan)
@@ -1243,8 +1239,12 @@ def compute_interface_metrics(
         # Bioinformatics metrics (return 0 for multi-target complexes)
         if compute_bioinformatics:
             if multi_target:
-                logger.info("Multi-target complex detected. Bioinformatics metrics will be 0.")
-                bio_metrics = dict.fromkeys(BIOINFORMATICS_METRIC_COLS, 0)
+                # NaN, not 0: a zero dSASA and a zero shape complementarity read
+                # as a measured non-interface. The interface definition handles
+                # multi-chain targets now, so this guard is about the rest of the
+                # block, and what it cannot compute it must not invent.
+                logger.info("Multi-target complex detected. Bioinformatics metrics will be NaN.")
+                bio_metrics = dict.fromkeys(BIOINFORMATICS_METRIC_COLS, np.nan)
             else:
                 logger.info("Computing bioinformatics metrics...")
                 bio_metrics = compute_bioinformatics_metrics_single(pdb_path, binder_chain, target_chain)
@@ -1473,6 +1473,10 @@ def compute_interface_metrics_on_refolded_structures(
             samples_by_seq_type[seq_type] = []
         samples_by_seq_type[seq_type].append((sample_name, path))
 
+    # The slots the columns below carry. Resolved here rather than passed, so a
+    # caller cannot label these with a different model than the one that folded.
+    complex_backend = backend_for_folding_method(cfg_metric.get("binder_folding_method", "colabdesign"))
+
     # Compute and merge metrics for each sequence type
     updated_df = df.copy()
     _, flat_dict = parse_cfg_for_table(cfg)
@@ -1496,8 +1500,8 @@ def compute_interface_metrics_on_refolded_structures(
             show_progress=show_progress,
         )
 
-        # Merge with appropriate prefix
-        prefix = f"refolded_{seq_type}_"
+        # Slots, not a "refolded" prefix that never said which model refolded.
+        prefix = f"{seq_type}_complex_{complex_backend}_"
         updated_df = merge_metrics_to_df(
             df=updated_df,
             metrics_list=metrics_list,

@@ -308,6 +308,13 @@ def mean_interface_metrics(rows: list[dict]) -> dict:
         if key == "pdb_path":
             continue
         values = [row.get(key) for row in rows]
+        # Packed eight-state counts are lists, and averaging them means
+        # elementwise: taking the first model's would silently report one draw's
+        # secondary structure while every scalar beside it was a mean of five.
+        lists = [v for v in values if isinstance(v, (list, tuple)) and len(v) == len(values[0] or ())]
+        if lists and isinstance(values[0], (list, tuple)):
+            out[key] = [sum(col) / len(col) for col in zip(*lists, strict=True)]
+            continue
         numeric = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v]
         out[key] = sum(numeric) / len(numeric) if numeric else values[0]
     return out

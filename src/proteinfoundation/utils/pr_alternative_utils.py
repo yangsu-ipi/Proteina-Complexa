@@ -312,14 +312,17 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
     Compute SASA-derived metrics needed for interface scoring using Biopython.
 
     Returns a 5-tuple:
-        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_monomer,
-         target_sasa_in_complex, target_sasa_monomer)
+        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_isolated,
+         target_sasa_in_complex, target_sasa_isolated)
+
+    "isolated" is the chain carved out of the complex -- same coordinates -- not
+    a separately folded apo structure.
     """
     surface_hydrophobicity_fraction = 0.0
     binder_sasa_in_complex = 0.0
-    binder_sasa_monomer = 0.0
+    binder_sasa_isolated = 0.0
     target_sasa_in_complex = 0.0
-    target_sasa_monomer = 0.0
+    target_sasa_isolated = 0.0
 
     try:
         t0 = time.time()
@@ -353,7 +356,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
 
             sr_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_BONDI)
             sr_mono.compute(binder_only_model, level="A")
-            binder_sasa_monomer = _chain_total_sasa(binder_only_chain)
+            binder_sasa_isolated = _chain_total_sasa(binder_only_chain)
 
             # Residue-based hydrophobic surface fraction (sum residue SASA for hydrophobic residues)
             hydrophobic_res_sasa = 0.0
@@ -367,7 +370,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
                         res_sasa = sum(getattr(atom, "sasa", 0.0) for atom in residue.get_atoms())
                         hydrophobic_res_sasa += res_sasa
             surface_hydrophobicity_fraction = (
-                (hydrophobic_res_sasa / binder_sasa_monomer) if binder_sasa_monomer > 0.0 else 0.0
+                (hydrophobic_res_sasa / binder_sasa_isolated) if binder_sasa_isolated > 0.0 else 0.0
             )
         else:
             surface_hydrophobicity_fraction = 0.0
@@ -381,7 +384,7 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
             target_only_structure.add(target_only_model)
             sr_target_mono = ShrakeRupley(probe_radius=1.40, n_points=960, radii_dict=R_BONDI)
             sr_target_mono.compute(target_only_model, level="A")
-            target_sasa_monomer = _chain_total_sasa(target_only_chain)
+            target_sasa_isolated = _chain_total_sasa(target_only_chain)
 
         elapsed = time.time() - t0
         print(f"[SASA-Biopython] Completed for {basename} in {elapsed:.2f}s")
@@ -391,9 +394,9 @@ def _compute_sasa_metrics(pdb_file_path, binder_chain="B", target_chain="A"):
     return (
         surface_hydrophobicity_fraction,
         binder_sasa_in_complex,
-        binder_sasa_monomer,
+        binder_sasa_isolated,
         target_sasa_in_complex,
-        target_sasa_monomer,
+        target_sasa_isolated,
     )
 
 
@@ -402,8 +405,11 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
     Compute SASA-derived metrics using FreeSASA with fallback to Biopython on failure.
 
     Returns a 5-tuple:
-        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_monomer,
-         target_sasa_in_complex, target_sasa_monomer)
+        (surface_hydrophobicity_fraction, binder_sasa_in_complex, binder_sasa_isolated,
+         target_sasa_in_complex, target_sasa_isolated)
+
+    "isolated" is the chain carved out of the complex -- same coordinates -- not
+    a separately folded apo structure.
     """
     try:
         t0 = time.time()
@@ -478,7 +484,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     tmp_binder_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
                 )
                 result_binder_only = freesasa.calc(structure_binder_only, params)  # type: ignore[name-defined]
-                binder_sasa_monomer = float(result_binder_only.totalArea())
+                binder_sasa_isolated = float(result_binder_only.totalArea())
 
                 # FreeSASA residue selection only: hydrophobic residues / total (no fallback)
                 try:
@@ -486,9 +492,9 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     with _suppress_freesasa_warnings():
                         sel_area = freesasa.selectArea(sel_defs, structure_binder_only, result_binder_only)  # type: ignore[name-defined]
                     hydro_area = float(sel_area["hydro"])
-                    if binder_sasa_monomer <= 0.0:
-                        raise SasaError(f"binder monomer SASA is {binder_sasa_monomer} in {pdb_file_path}")
-                    surface_hydrophobicity_fraction = hydro_area / binder_sasa_monomer
+                    if binder_sasa_isolated <= 0.0:
+                        raise SasaError(f"binder SASA carved from the complex is {binder_sasa_isolated} in {pdb_file_path}")
+                    surface_hydrophobicity_fraction = hydro_area / binder_sasa_isolated
                 except Exception as exc:
                     raise SasaError(
                         f"FreeSASA hydrophobic-residue selection failed for {pdb_file_path}: {exc}"
@@ -512,7 +518,7 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
                     tmp_target_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
                 )
                 result_target_only = freesasa.calc(structure_target_only, params)  # type: ignore[name-defined]
-                target_sasa_monomer = float(result_target_only.totalArea())
+                target_sasa_isolated = float(result_target_only.totalArea())
         finally:
             if tmp_binder_path and os.path.isfile(tmp_binder_path):
                 try:
@@ -530,9 +536,9 @@ def _compute_sasa_metrics_with_freesasa(pdb_file_path, binder_chain="B", target_
         return (
             surface_hydrophobicity_fraction,
             binder_sasa_in_complex,
-            binder_sasa_monomer,
+            binder_sasa_isolated,
             target_sasa_in_complex,
-            target_sasa_monomer,
+            target_sasa_isolated,
         )
     except SasaError:
         raise
@@ -979,7 +985,7 @@ def pr_alternative_score_interface(
     # sets, mean Jaccard 0.664 over 12 complexes.
     t0_if = time.time()
     print("[Alt-Score] Finding interface residues (strict)...")
-    binder_side, _target_side = find_interface_residues(
+    binder_side, target_side = find_interface_residues(
         pdb_file,
         binder_chains=[binder_chain],
         target_chains=[c for c in str(target_chain).split(",") if c],
@@ -1014,18 +1020,18 @@ def pr_alternative_score_interface(
         (
             surface_hydrophobicity_fraction,
             binder_sasa_in_complex,
-            binder_sasa_monomer,
+            binder_sasa_isolated,
             target_sasa_in_complex,
-            target_sasa_monomer,
+            target_sasa_isolated,
         ) = _compute_sasa_metrics(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
     else:
         print("[Alt-Score] Computing SASA with FreeSASA...")
         (
             surface_hydrophobicity_fraction,
             binder_sasa_in_complex,
-            binder_sasa_monomer,
+            binder_sasa_isolated,
             target_sasa_in_complex,
-            target_sasa_monomer,
+            target_sasa_isolated,
         ) = _compute_sasa_metrics_with_freesasa(pdb_file, binder_chain=binder_chain, target_chain=target_chain)
     print(f"[Alt-Score] SASA computations finished in {time.time() - t0_sasa:.2f}s")
 
@@ -1042,23 +1048,23 @@ def pr_alternative_score_interface(
             )
         return max(buried, 0.0)
 
-    interface_binder_dSASA = _buried(binder_sasa_monomer, binder_sasa_in_complex, "binder")
-    interface_target_dSASA = _buried(target_sasa_monomer, target_sasa_in_complex, "target")
+    interface_binder_dSASA = _buried(binder_sasa_isolated, binder_sasa_in_complex, "binder")
+    interface_target_dSASA = _buried(target_sasa_isolated, target_sasa_in_complex, "target")
     interface_total_dSASA = interface_binder_dSASA + interface_target_dSASA
-    # Align with PyRosetta: use TOTAL interface dSASA divided by binder SASA IN
-    # COMPLEX. Note this is not "the fraction of the binder that is buried" --
-    # the denominator is what remains exposed, not the free monomer -- so it
-    # rises as the interface grows and is not bounded by 100.
+    # How much of the binder got buried, on its own surface. This replaces
+    # interface_fraction, which divided the TOTAL burial by the binder's
+    # remaining exposed area -- two sides in the numerator, one in the
+    # denominator, unbounded by 1, and not the quantity its name suggested.
     #
-    # A zero denominator means the binder is completely engulfed: the largest
-    # interface there is. Reporting 0.0 for it, as this did, is not merely
-    # missing but backwards.
-    if binder_sasa_in_complex <= 0.0:
+    # The denominator is the binder carved out of the complex, not an apo fold:
+    # same coordinates, so the ratio isolates burial rather than mixing in
+    # whatever the binder does when folded alone.
+    if binder_sasa_isolated <= 0.0:
         raise SasaError(
-            f"binder has no exposed surface in the complex ({binder_sasa_in_complex}) "
-            f"for {pdb_file}; interface_fraction is undefined"
+            f"binder has no surface when isolated from {pdb_file} ({binder_sasa_isolated}); "
+            f"binder_buried_fraction is undefined"
         )
-    interface_binder_fraction = interface_total_dSASA / binder_sasa_in_complex * 100.0
+    binder_buried_fraction = interface_binder_dSASA / binder_sasa_isolated
 
     # Calculate shape complementarity using SCASA
     t0_sc = time.time()
@@ -1078,28 +1084,60 @@ def pr_alternative_score_interface(
     # interface_dG = -10.0                                                # passes <= 0 (active filter) - never results in rejections based on extensive testing
     # interface_dG_SASA_ratio = 0.0                                       # informational (no active filter)
 
+    # Secondary structure over the same residues everything else here describes.
+    # One read of the file gives all four compositions: the binder and the target,
+    # each whole and restricted to the interface.
+    from proteinfoundation.metrics.structure_ss import structure_ss_by_selection
+
+    target_chains = [c for c in str(target_chain).split(",") if c]
+    ss = structure_ss_by_selection(
+        pdb_file,
+        {
+            "binder": ([binder_chain], {r.resseq for r in binder_side}),
+            "target": (target_chains, {r.resseq for r in target_side}),
+        },
+    )
+
     interface_scores = {
         # Which engine and radii produced the areas below. A dSASA carries a ~6%
         # spread across radii conventions, so the number alone is not reproducible.
         "sasa_engine": engine,
         "sasa_radii": SASA_RADII if engine == "freesasa" else "Bondi",
-        "surface_hydrophobicity": surface_hydrophobicity_fraction,
         "interface_sc": interface_sc,
+        # Three areas, each saying whose surface it is. The binder and target
+        # halves were computed and thrown away before, leaving only their sum
+        # under a name a reader would take for the binder's -- it is roughly
+        # twice that.
+        "binder_dSASA": interface_binder_dSASA,
+        "target_dSASA": interface_target_dSASA,
         "interface_dSASA": interface_total_dSASA,
-        "interface_fraction": interface_binder_fraction,
+        "binder_buried_fraction": binder_buried_fraction,
+        "binder_surface_hydrophobicity": surface_hydrophobicity_fraction,
         # No interface residues is a design that misses its target, not a
         # composition of 0% hydrophobic. NaN rather than an exception: an
         # unengaged binder is a legitimate, if poor, outcome, and a gate should
         # reject it rather than the run failing on it.
-        "interface_hydrophobicity": (
+        "binder_interface_hydrophobicity": (
             (sum(interface_AA[aa] for aa in "ACFILMPVWY") / interface_nres * 100.0)
             if interface_nres > 0
             else float("nan")
         ),
-        "interface_nres": interface_nres,
+        # Both sides counted. interface_nres named only the binder's residues.
+        "binder_interface_nres": float(len(binder_side)),
+        "target_interface_nres": float(len(target_side)),
+        "binder_ss_counts": ss["binder"]["ss_counts"],
+        "binder_ss_total": ss["binder"]["ss_total"],
+        "binder_interface_ss_counts": ss["binder"]["interface_ss_counts"],
+        "binder_interface_ss_total": ss["binder"]["interface_ss_total"],
+        "target_ss_counts": ss["target"]["ss_counts"],
+        "target_ss_total": ss["target"]["ss_total"],
+        "target_interface_ss_counts": ss["target"]["interface_ss_counts"],
+        "target_interface_ss_total": ss["target"]["interface_ss_total"],
     }
 
     # Round float values to two decimals for consistency
+    # Lists (the packed eight-state counts) pass through; rounding them would need
+    # elementwise care and they are integers already.
     interface_scores = {k: round(v, 3) if isinstance(v, float) else v for k, v in interface_scores.items()}
 
     print(f"[Alt-Score] Completed scoring for {basename} in {time.time() - t0_all:.2f}s")

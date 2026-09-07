@@ -151,3 +151,45 @@ def structure_ss(
         out["interface_ss_counts"] = counts_from_states(subset)
         out["interface_ss_total"] = float(len(subset))
     return out
+
+
+def structure_ss_by_selection(
+    pdb_path: str,
+    selections: dict[str, tuple[Collection[str], Collection[int] | None]],
+) -> dict[str, dict[str, list[float] | float]]:
+    """Eight-state counts for several chain groups, from one read of the file.
+
+    *selections* maps a label to ``(chains, interface_resseqs)``. Both sides of an
+    interface are wanted for every complex, and folding the file twice to get
+    them would double the cost of the cheapest metric in the set.
+
+    Residue numbers are matched within their own chain group, so a target
+    numbered from 1 and a binder numbered from 1 do not collide.
+    """
+    import mdtraj as md
+
+    traj = md.load(pdb_path)
+    states = md.compute_dssp(traj, simplified=False)[0]
+    residues = list(traj.topology.residues)
+    if len(states) != len(residues):
+        raise ValueError(f"dssp returned {len(states)} states for {len(residues)} residues in {pdb_path}")
+
+    out: dict[str, dict[str, list[float] | float]] = {}
+    for label, (chains, interface_resseqs) in selections.items():
+        wanted_chains = set(chains)
+        rows = [
+            (int(r.resSeq), str(state))
+            for r, state in zip(residues, states, strict=True)
+            if getattr(r.chain, "chain_id", None) in wanted_chains
+        ]
+        entry: dict[str, list[float] | float] = {
+            "ss_counts": counts_from_states([st for _, st in rows]),
+            "ss_total": float(len(rows)),
+        }
+        if interface_resseqs is not None:
+            wanted = {int(r) for r in interface_resseqs}
+            subset = [st for resseq, st in rows if resseq in wanted]
+            entry["interface_ss_counts"] = counts_from_states(subset)
+            entry["interface_ss_total"] = float(len(subset))
+        out[label] = entry
+    return out
