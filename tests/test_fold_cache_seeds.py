@@ -12,6 +12,7 @@ result.
 
 import itertools
 import json
+import os
 import pathlib
 
 import pytest
@@ -628,24 +629,73 @@ def test_a_changed_scorer_still_wins_over_derivation(tmp_path):
     assert read_consensus_cache(str(tmp_path), "esmfold2", "new", derivation="d1") == ({}, False)
 
 
-def test_derive_from_structure_is_inert_until_something_is_registered(tmp_path):
-    """The split ships switched off: no registered derived metric, no re-reading,
-    no behaviour change for a campaign that has already run."""
-    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES, derive_from_structure
+def test_the_derived_suffixes_are_the_ones_the_scorer_produces():
+    """Registering a name with nothing behind it would show up as a column that
+    is always absent -- silently, since a missing derived metric is indis-
+    tinguishable from a structure that could not be read. Checked against the
+    scorer's actual output rather than a second hand-kept list."""
+    pytest.importorskip("Bio")
+    pytest.importorskip("freesasa")
+    pytest.importorskip("protein_interface")
+    pytest.importorskip("mdtraj")
 
-    assert CONSENSUS_DERIVED_SUFFIXES == ()
-    assert derive_from_structure(str(tmp_path / "nothing.pdb"), 1) == {}
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES
+    from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
+
+    atoms = [("N", 0.0, 0.0, 0.0), ("CA", 1.46, 0.0, 0.0), ("C", 2.0, 1.42, 0.0),
+             ("O", 1.3, 2.4, 0.0), ("CB", 2.0, -0.77, -1.2)]
+    lines, serial = [], 1
+    for ci, chain in enumerate(("A", "B")):
+        for res in range(3):
+            for name, x, y, z in atoms:
+                lines.append(
+                    f"ATOM  {serial:5d}  {name:<3s} ALA {chain}{1 + res:4d}    "
+                    f"{x + res * 3.6:8.3f}{y + ci * 4.0:8.3f}{z:8.3f}  1.00 50.00"
+                    f"          {name[0]:>2s}  "
+                )
+                serial += 1
+    import tempfile
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "complex.pdb"
+    path.write_text("\n".join(lines) + "\nTER\nEND\n")
+
+    sc_stub = path.parent / "sc"
+    sc_stub.write_text('#!/bin/sh\necho \'{"sc": 0.7}\'\n')
+    sc_stub.chmod(0o755)
+    os.environ["SC_EXEC"] = str(sc_stub)
+
+    scores, _, _ = pr_alternative_score_interface(str(path), binder_chain="B", target_chain="A")
+    missing = sorted(set(CONSENSUS_DERIVED_SUFFIXES) - set(scores))
+    assert not missing, f"registered with no producer: {missing}"
 
 
-def test_a_registered_metric_without_an_implementation_is_an_error(tmp_path):
-    """Registering a name and forgetting the code would otherwise show up as
-    columns that are quietly always absent."""
-    from proteinfoundation.metrics import consensus_folding as cf
+def test_shape_complementarity_is_deliberately_not_derived():
+    """The most expensive of the set, and nothing compares it across backends
+    yet. Left out on purpose, so its absence is not read as an oversight."""
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES
 
-    original = cf.CONSENSUS_DERIVED_SUFFIXES
-    try:
-        cf.CONSENSUS_DERIVED_SUFFIXES = ("ss_helix",)
-        with pytest.raises(NotImplementedError, match="ss_helix"):
-            cf.derive_from_structure("whatever.pdb", 1)
-    finally:
-        cf.CONSENSUS_DERIVED_SUFFIXES = original
+    assert "interface_sc" not in CONSENSUS_DERIVED_SUFFIXES
+
+
+def test_the_packed_counts_average_elementwise_over_seeds():
+    """Three seeds, three structures. Taking the first seed's counts would report
+    one draw's secondary structure beside pLDDTs that are means of three."""
+    from proteinfoundation.metrics.consensus_folding import mean_over_seeds
+
+    by_seed = {
+        1: {"pLDDT": 0.6, "binder_ss_counts": [10.0, 0, 0, 0, 0, 0, 0, 0]},
+        2: {"pLDDT": 0.8, "binder_ss_counts": [0, 0, 0, 10.0, 0, 0, 0, 0]},
+    }
+    got = mean_over_seeds(by_seed)
+    assert got["pLDDT"] == pytest.approx(0.7)
+    assert got["binder_ss_counts"] == [5.0, 0, 0, 5.0, 0, 0, 0, 0]
+    assert got["n_seeds"] == 2.0
+
+
+def test_the_engine_and_radii_are_taken_from_a_seed_not_averaged():
+    from proteinfoundation.metrics.consensus_folding import mean_over_seeds
+
+    by_seed = {1: {"sasa_engine": "freesasa"}, 2: {"sasa_engine": "freesasa"}}
+    assert mean_over_seeds(by_seed)["sasa_engine"] == "freesasa"
+
+

@@ -543,7 +543,32 @@ CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binde
 # them, so changing which are computed -- or how -- must re-read the PDBs already
 # on disk. Empty until a caller registers one; the mechanism exists so that
 # registering is cheap.
-CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = ()
+# Read off the kept structure, in the same names and by the same code the
+# mandatory side uses, so an ESMFold2 interface can be compared with an AF2 one
+# rather than being a second definition of buried area that happens to share a
+# word. Shape complementarity is deliberately absent: it is the most expensive
+# of the set and nothing compares it across backends yet -- adding it is one
+# string here.
+CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = (
+    "sasa_engine",
+    "sasa_radii",
+    "binder_dSASA",
+    "target_dSASA",
+    "interface_dSASA",
+    "binder_buried_fraction",
+    "binder_surface_hydrophobicity",
+    "binder_interface_hydrophobicity",
+    "binder_interface_nres",
+    "target_interface_nres",
+    "binder_ss_counts",
+    "binder_ss_total",
+    "binder_interface_ss_counts",
+    "binder_interface_ss_total",
+    "target_ss_counts",
+    "target_ss_total",
+    "target_interface_ss_counts",
+    "target_interface_ss_total",
+)
 # Bumped when the derivation of any registered metric changes without its name
 # changing, which the name alone cannot express.
 CONSENSUS_DERIVATION_VERSION = 1
@@ -574,10 +599,17 @@ def derive_from_structure(pdb_path: str, n_target_chains: int) -> dict[str, floa
     """
     if not CONSENSUS_DERIVED_SUFFIXES:
         return {}
-    raise NotImplementedError(
-        f"{sorted(CONSENSUS_DERIVED_SUFFIXES)} are registered as derived metrics "
-        f"but derive_from_structure has no implementation for them"
+    from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
+
+    # The chain ids this module wrote. Derived rather than sniffed so the mapping
+    # stays with the writer: advisory_chain_ids puts the binder last.
+    chains = advisory_chain_ids(n_target_chains)
+    scores, _, _ = pr_alternative_score_interface(
+        pdb_path,
+        binder_chain=chains[-1],
+        target_chain=",".join(chains[:-1]),
     )
+    return {name: scores[name] for name in CONSENSUS_DERIVED_SUFFIXES if name in scores}
 
 
 def read_consensus_cache(
@@ -692,9 +724,10 @@ def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, flo
 
     Seeds are exchangeable draws from a sampler -- seed k of one input has no
     correspondence to seed k of another -- so the only meaningful reduction is to
-    pool them. Non-numeric entries (``pdb_path``) are taken from the first seed
-    rather than averaged; the structures differ per seed, and one of them has to
-    be the one a reader is pointed at.
+    pool them. Non-numeric entries (``pdb_path``, the SASA engine and radii) are
+    taken from the first seed rather than averaged; the structures differ per
+    seed, and one of them has to be the one a reader is pointed at, while the
+    engine and radii are identical across seeds by construction.
     """
     if not by_seed:
         return {}
@@ -702,6 +735,13 @@ def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, flo
     out: dict[str, float | str] = {}
     for key in ordered[0]:
         values = [m[key] for m in ordered if key in m]
+        # Packed eight-state counts average elementwise. Taking the first seed's
+        # would report one draw's secondary structure beside pLDDTs that are
+        # means of three, and nothing in the row would say so.
+        lists = [v for v in values if isinstance(v, (list, tuple))]
+        if lists and len({len(v) for v in lists}) == 1:
+            out[key] = [sum(col) / len(col) for col in zip(*lists, strict=True)]
+            continue
         numeric = [float(v) for v in values if isinstance(v, (int, float)) and v == v]
         out[key] = sum(numeric) / len(numeric) if numeric else values[0]
     out["n_seeds"] = float(len(ordered))
@@ -817,7 +857,14 @@ def score_binders(
                     failed += 1
                     logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")
                     continue
-                usable = {k: float(v) for k, v in derived.items() if v == v}
+                # Lists (the packed eight-state counts) and the engine/radii
+                # strings pass through; float() on either would raise inside the
+                # loop that exists to avoid refolding.
+                usable = {
+                    k: v
+                    for k, v in derived.items()
+                    if isinstance(v, (list, tuple, str)) or (isinstance(v, (int, float)) and v == v)
+                }
                 if usable:
                     metrics.update(usable)
                     rederived.setdefault(seq, {})[seed] = metrics

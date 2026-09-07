@@ -54,6 +54,7 @@ from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, 
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.column_names import backend_for_folding_method, rename
 from proteinfoundation.metrics.consensus_folding import (
+    CONSENSUS_DERIVED_SUFFIXES,
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
     assert_columns_are_advisory,
@@ -1039,7 +1040,7 @@ def compute_binder_metrics(
                     # the exact pairing failure sequences_for_type exists to stop.
                     adv_idx = 0 if consensus_best_only else seq_best_idx
                     new_cols = []
-                    for suffix in CONSENSUS_METRIC_SUFFIXES:
+                    for suffix in (*CONSENSUS_METRIC_SUFFIXES, *CONSENSUS_DERIVED_SUFFIXES):
                         col = advisory_column(seq_type, backend_name, suffix)
                         row_dict[col] = advisory[adv_idx].get(suffix, np.nan) if adv_idx < len(advisory) else np.nan
                         new_cols.append(col)
