@@ -267,6 +267,84 @@ def threshold_column(seq_type: str, metric_name: str, spec: dict) -> str:
     )
 
 
+# The provenance column naming the folding model that produced the complex
+# refolds a run gated on. Recorded per row rather than read from config: analyze
+# and analyze_pooled re-derive verdicts from a CSV alone, and a pooled frame can
+# hold runs that used different folders.
+COMPLEX_BACKEND_COLUMN = "complex_folding_backend"
+
+
+class ThresholdSpecError(ValueError):
+    """A threshold dictionary cannot be applied to the run it was given."""
+
+
+def resolve_backend_overrides(thresholds: dict, backend: str | None) -> dict:
+    """Apply each criterion's ``by_backend`` overrides for one folding backend.
+
+    A criterion states a base rule and, optionally, per-backend replacements::
+
+        "complex_i_pAE": {
+            "kind": "complex", "metric": "i_pAE", "op": "<=",
+            "scale": 31.0, "threshold": 7.0,
+            "by_backend": {"rf3": {"threshold": 12.0, "scale": 1.0}},
+        }
+
+    Nested rather than written as sibling entries because the key names the
+    *quantity*: two entries differing only in backend would need two keys, and
+    the natural thing to write is the same key twice, which Python resolves
+    silently in favour of the last -- the failure this file already carries a
+    scar from, where `binder` and `complex` scRMSD_ca collided on one key.
+
+    Overrides are partial specs merged over the base, not bare numbers, because
+    ``scale`` is part of what does not transfer: AF2's i_pAE reaches gated units
+    multiplied by 31, and another folder need not.
+
+    A criterion with no applicable rule raises. Dropping it would shrink the gate
+    silently, and a design passing five criteria is indistinguishable from one
+    passing the six it was meant to face.
+    """
+    out: dict = {}
+    for name, spec in thresholds.items():
+        if not isinstance(spec, dict) or "by_backend" not in spec:
+            out[name] = spec
+            continue
+        base = {k: v for k, v in spec.items() if k != "by_backend"}
+        by_backend = spec.get("by_backend") or {}
+        override = by_backend.get(backend) if backend is not None else None
+        if override is not None:
+            out[name] = {**base, **dict(override)}
+            continue
+        if "threshold" not in base:
+            raise ThresholdSpecError(
+                f"Criterion '{name}' has no base threshold and no override for backend {backend!r} "
+                f"(has {sorted(by_backend)}). Add a base threshold, or a rule for this backend -- "
+                f"dropping the criterion would shrink the gate without saying so."
+            )
+        out[name] = base
+    return out
+
+
+def complex_backend_of(frame) -> str | None:
+    """The one complex folding backend a frame's rows share, or None.
+
+    None when the column is absent -- results written before it existed -- which
+    leaves every criterion on its base rule. Raises when rows disagree: a pooled
+    frame mixing folders cannot be gated by one resolved set, and silently using
+    either would judge half the designs by the other's thresholds.
+    """
+    if COMPLEX_BACKEND_COLUMN not in getattr(frame, "columns", ()):
+        return None
+    values = {v for v in frame[COMPLEX_BACKEND_COLUMN].dropna().unique()}
+    if not values:
+        return None
+    if len(values) > 1:
+        raise ThresholdSpecError(
+            f"Rows report more than one complex folding backend ({sorted(values)}); "
+            f"resolve thresholds per backend rather than for the frame as a whole."
+        )
+    return str(next(iter(values)))
+
+
 MODEL_PLACEHOLDER = "{model}"
 
 

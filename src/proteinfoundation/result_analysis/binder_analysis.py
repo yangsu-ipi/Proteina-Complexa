@@ -31,11 +31,13 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     DEFAULT_PROTEIN_BINDER_THRESHOLDS,
     check_redesign_passes_all_thresholds,
     check_sample_has_passing_redesign,
+    complex_backend_of,
     count_passing_redesigns,
     expand_model_criteria,
     get_thresholds_for_result_type,
     normalize_threshold_dict,
     redesign_pass_vector,
+    resolve_backend_overrides,
     threshold_column,
 )
 
@@ -318,8 +320,12 @@ def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], succes
     could make with one this stage cannot would lose information rather than
     refresh it.
     """
+    # One backend for the whole frame, from the provenance column. Resolved once
+    # rather than per criterion so a mixed-folder frame raises here, where it can
+    # say so, rather than judging half the designs by the other half's thresholds.
+    resolved = resolve_backend_overrides(normalize_threshold_dict(success_thresholds), complex_backend_of(df))
     for seq_type in seq_types:
-        expanded = expand_model_criteria(normalize_threshold_dict(success_thresholds), seq_type, df.columns)
+        expanded = expand_model_criteria(resolved, seq_type, df.columns)
         parsed = {name: parse_threshold_spec(spec) for name, spec in expanded.items()}
         cols = {name: threshold_column(seq_type, name, spec) for name, spec in parsed.items()}
         missing = sorted(c for c in cols.values() if c not in df.columns)
