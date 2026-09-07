@@ -40,7 +40,7 @@ KINDS: tuple[str, ...] = ("complex", "apo")
 # What produced the structure. `generated` is a backend, not a prefix -- the
 # generated structure is a complex too, so it takes the same slots and differs
 # only in this one, which is what makes generated-vs-refolded a one-slot diff.
-BACKENDS: tuple[str, ...] = ("af2", "esmfold2", "esmfold", "rf3", "generated")
+BACKENDS: tuple[str, ...] = ("af2", "esmfold2", "esmfold", "rf3", "protenix", "boltz2", "generated")
 
 # Which part of the structure. Compound values are deliberate: `interface` alone
 # means both sides, which is right for an additive quantity like dSASA and wrong
@@ -72,6 +72,40 @@ COLUMN_SCHEME_VERSION = 1
 
 class ColumnNameError(ValueError):
     """A column name was asked for that the scheme cannot express."""
+
+
+# metric.binder_folding_method names a model and often a version --
+# "rf3_latest", "protenix_v0.4.0". The backend slot takes the family: a column
+# name that changed when weights were upgraded would make every campaign
+# incomparable with the last, and the resolved config already records exactly
+# which version ran. "colabdesign" is the odd one out -- it is the harness, and
+# what it runs is AF2.
+_FOLDING_METHOD_FAMILIES: tuple[tuple[str, str], ...] = (
+    ("colabdesign", "af2"),
+    ("af2", "af2"),
+    ("rf3", "rf3"),
+    ("protenix", "protenix"),
+    ("boltz2", "boltz2"),
+    ("esmfold2", "esmfold2"),
+    ("esmfold", "esmfold"),
+)
+
+
+def backend_for_folding_method(folding_method: str) -> str:
+    """The backend slot for a configured folding method.
+
+    Refuses an unrecognised one rather than passing it through: a column named
+    after a raw config string would claim provenance the scheme cannot check,
+    and the failure would be a new column silently appearing beside the old.
+    """
+    name = str(folding_method or "").strip().lower()
+    for prefix, family in _FOLDING_METHOD_FAMILIES:
+        if name == prefix or name.startswith(prefix + "_"):
+            return family
+    raise ColumnNameError(
+        f"no backend slot for folding method {folding_method!r}; add it to "
+        f"_FOLDING_METHOD_FAMILIES so its columns say what produced them"
+    )
 
 
 def metric_column(

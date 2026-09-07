@@ -239,3 +239,51 @@ def test_every_backend_the_scheme_knows_can_appear_in_a_name():
         if backend != "generated":
             kwargs["seq_type"] = "self"
         assert backend in metric_column("ss_counts", **kwargs)
+
+
+# --------------------------------------------------------------------------
+# Backend slot from the configured folding method
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,backend",
+    [
+        ("colabdesign", "af2"),
+        ("rf3_latest", "rf3"),
+        ("protenix_v0.4.0", "protenix"),
+        ("boltz2_v1", "boltz2"),
+        ("esmfold2", "esmfold2"),
+        ("AF2", "af2"),
+    ],
+)
+def test_the_backend_slot_is_the_model_family(method, backend):
+    """A version in the slot would rename every column when weights are
+    upgraded, making each campaign incomparable with the last. The resolved
+    config already records which version ran."""
+    from proteinfoundation.metrics.column_names import backend_for_folding_method
+
+    assert backend_for_folding_method(method) == backend
+
+
+def test_colabdesign_is_named_for_what_it_runs():
+    """It is the harness; AF2 is the model. Naming the column after the harness
+    is how refolded_ came to mean AF2 without saying so."""
+    from proteinfoundation.metrics.column_names import backend_for_folding_method
+
+    assert backend_for_folding_method("colabdesign") == "af2"
+
+
+def test_an_unknown_folding_method_raises(monkeypatch):
+    """A column named from a raw config string would claim provenance nothing
+    checks, and would appear silently beside the old one."""
+    from proteinfoundation.metrics.column_names import backend_for_folding_method
+
+    with pytest.raises(ColumnNameError, match="no backend slot"):
+        backend_for_folding_method("some_new_folder_v3")
+
+
+def test_every_backend_family_is_a_known_slot_value():
+    from proteinfoundation.metrics.column_names import _FOLDING_METHOD_FAMILIES
+
+    assert {family for _, family in _FOLDING_METHOD_FAMILIES} <= set(BACKENDS)
