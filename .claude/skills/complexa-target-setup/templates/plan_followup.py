@@ -161,6 +161,47 @@ def next_index(campaign_dir: Path) -> int:
     return max(indices, default=0) + 1
 
 
+def resume_index(campaign_dir: Path, want_designs: int) -> int:
+    """The index of the follow-up already planned for this many designs.
+
+    A re-run that starts after generation has to reuse the follow-up that exists
+    rather than allocate a new one: a fresh index names an inference directory
+    nothing ever wrote, and consumes a seed no run will ever use -- and neither
+    failure says so until the evaluate stage cannot find its inputs.
+
+    Matched on ``want_designs`` because that is the one number the caller
+    supplies and the one recorded verbatim; everything else in the record is
+    derived from it. Ambiguity is refused rather than resolved by picking the
+    newest: two follow-ups asking for the same count are two different runs, and
+    guessing which one was meant would re-evaluate the wrong designs.
+    """
+    matches, known = [], []
+    for path in sorted((campaign_dir / "metadata").glob("followup_*.json")):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        index, wanted = record.get("index"), record.get("want_designs")
+        if index is None or wanted is None:
+            continue
+        known.append(f"#{index} wanted {wanted}")
+        if int(wanted) == want_designs:
+            matches.append(int(index))
+    if not matches:
+        raise SystemExit(
+            f"Cannot resume a follow-up for {want_designs} designs: no record under "
+            f"{campaign_dir / 'metadata'} asks for that many. Recorded follow-ups: "
+            f"{', '.join(known) or 'none'}. Drop the stage argument to plan a new follow-up, "
+            f"or pass --index to name one explicitly."
+        )
+    if len(matches) > 1:
+        raise SystemExit(
+            f"Cannot resume a follow-up for {want_designs} designs: follow-ups "
+            f"{matches} all asked for that many. Pass --index to say which."
+        )
+    return matches[0]
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--campaign-dir", type=Path, required=True)
@@ -173,6 +214,11 @@ def main() -> int:
     p.add_argument("--config-name", required=True)
     p.add_argument("--task-name", required=True)
     p.add_argument("--index", type=int, default=None, help="override; defaults to the next unused")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse the existing follow-up asking for --want-designs instead of allocating a new index",
+    )
     p.add_argument("--check", action="store_true", help="verify the derivation reproduces the reference")
     args = p.parse_args()
 
@@ -192,7 +238,12 @@ def main() -> int:
         print(f"CHECK OK: reproduces {args.reference_kind} at {observed['reference_seeds']} seeds")
         return 0
 
-    index = args.index if args.index is not None else next_index(args.campaign_dir)
+    if args.index is not None:
+        index = args.index
+    elif args.resume:
+        index = resume_index(args.campaign_dir, args.want_designs)
+    else:
+        index = next_index(args.campaign_dir)
     planned = plan(args.want_designs, args.shards, args.base_seed, index, observed)
     planned["run_name"] = f"{args.run_prefix}_followup{index}"
 

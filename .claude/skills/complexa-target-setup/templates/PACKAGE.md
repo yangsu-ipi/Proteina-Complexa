@@ -12,6 +12,8 @@ benefit.
   data/                   <- target PDB, MSA, provenance
   scripts/
     run_campaign.sh       TEMPLATE, verbatim
+    submit_campaign.sh    TEMPLATE, verbatim
+    plan_followup.py      TEMPLATE, verbatim
     trim_shards.py        TEMPLATE, verbatim
     check_preflight.py    TEMPLATE, verbatim
     verify_run_outputs.py TEMPLATE, verbatim
@@ -20,8 +22,10 @@ benefit.
     capture_metadata.py           authored: run provenance
     prepare_<target>.py           authored: target-specific PDB prep
   slurm/
-    <name>_smoke.sbatch   TEMPLATE (campaign.sbatch), header + last line edited
-    <name>_500.sbatch     TEMPLATE, likewise
+    campaign.sbatch       TEMPLATE (campaign.sbatch.generic), verbatim -- what
+                          submit_campaign.sh chains; the stage comes as an argument
+    <name>_smoke.sbatch   TEMPLATE (campaign.sbatch), header + last line edited;
+                          only for running one stage by hand, without the chain
   community_models -> $COMPLEXA_REPO/community_models   (symlink, made by run_campaign.sh)
   inference/              <- generation output; created by the run
   evaluation_results/     <- evaluation output; created by the run
@@ -74,7 +78,8 @@ and is not checked.
 
 `generate` → `trim_shards.py` → `filter` → `evaluate` → `analyze` → `verify_run_outputs.py`.
 Generation and evaluation run one process per shard, each pinned to its own GPU. Filter and
-analyze are single-process and operate on the whole campaign.
+analyze are single-process and operate on the whole campaign. `run_campaign.sh` runs the one
+stage it is given; `submit_campaign.sh` is what chains them.
 
 ## Running a campaign
 
@@ -86,6 +91,27 @@ Each submits generate, filter, evaluate, analyze and the pooled report as
 separate jobs joined by `afterok`. Separate rather than one long job because a
 failure then costs the stage that failed and not the hours before it, and
 because generate and evaluate want GPUs for hours while the rest want none.
+
+### Re-running part of a chain
+
+A stage name re-runs from there to the end:
+
+    scripts/submit_campaign.sh production evaluate     # evaluate, analyze, pooled
+    scripts/submit_campaign.sh followup 900 evaluate   # the follow-up that wanted 900
+    scripts/submit_campaign.sh production pooled       # the campaign total alone
+
+From a stage rather than a list of them. A re-run exists because something
+changed, and everything downstream of a changed stage reads what it produced --
+re-running evaluate and not analyze leaves a results CSV disagreeing with the
+per-job CSVs it was built from, with nothing saying so.
+
+**A follow-up re-run reuses its index; it does not become a new follow-up.** The
+chain that includes `generate` plans a new one, as before. A chain starting later
+resolves the existing follow-up by the design count it was planned for, and
+refuses rather than guesses when no record matches or several do. This is what
+the earlier hand-written `sbatch ... FOLLOWUP_INDEX=1` workaround was for: an
+unpinned re-plan takes the next index, so the chain evaluates an inference
+directory nothing ever wrote and burns a seed on a run that never happens.
 
 A follow-up takes only the number of additional designs wanted. Seeds, raw,
 keep, expect and its own RNG seed are derived from what the production run

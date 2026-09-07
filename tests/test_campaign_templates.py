@@ -460,8 +460,7 @@ def test_only_the_folding_stages_ask_for_gpus():
     text = SUBMIT.read_text()
     stages = text[text.index("STAGES=(") : text.index("\n", text.index("STAGES=("))]
     assert "generate:gpu" in stages and "evaluate:gpu" in stages
-    assert "filter:cpu" in stages and "analyze:cpu" in stages
-    assert 'submit "${TAG}-pooled" cpu' in text
+    assert "filter:cpu" in stages and "analyze:cpu" in stages and "pooled:cpu" in stages
 
 
 def test_the_followup_index_is_pinned_across_the_chain():
@@ -477,17 +476,26 @@ def test_the_followup_index_is_pinned_across_the_chain():
 
 def test_a_followup_is_planned_before_anything_is_queued():
     """So a chain that sits in the queue for a day is already auditable, and so
-    the index exists before the jobs that share it."""
+    the index exists before the jobs that share it. After the stages are chosen,
+    not before: which stages run decides whether this is a new follow-up or a
+    re-run of one that exists."""
     text = SUBMIT.read_text()
-    assert text.index("plan_followup.py") < text.index("STAGES=(")
+    assert text.index("STAGES=(") < text.index("plan_followup.py")
+    assert text.index("plan_followup.py") < text.index('for entry in "${SELECTED[@]}"')
 
 
 def test_the_pooled_report_runs_last_and_not_for_smoke():
     """It reads every run's results, so before analyze it would report a number
-    that predates the run just submitted. Smoke is not part of the pool."""
+    that predates the run just submitted. Smoke is not part of the pool.
+
+    Ordering is now a property of the stage list rather than of an append after
+    the loop, which is what lets a re-run start at any stage and still finish
+    with the total."""
     text = SUBMIT.read_text()
-    assert text.index("STAGES=(") < text.index('"${TAG}-pooled"')
-    assert '"$KIND" != smoke' in text
+    stages = text[text.index("STAGES=(") : text.index("\n", text.index("STAGES=("))]
+    assert stages.rstrip(")").endswith("pooled:cpu"), "last in the chain"
+    smoke = text[text.index("  smoke) STAGES=(") :][:120]
+    assert "pooled" not in smoke
 
 
 def test_the_submitter_can_be_previewed_without_submitting():
@@ -542,6 +550,154 @@ def test_the_stage_is_still_optional_with_overrides_present():
     """`followup 900 -- ++x=1` must not read `--` as the stage name."""
     runner = RUNNER.read_text()
     assert '"${1}" != --*' in runner, "a leading -- is not mistaken for a stage"
+
+
+# ---------------------------------------------------------------------------
+# Re-running a chain from a stage. Driven with DRY_RUN rather than read, because
+# the failure this guards against -- a follow-up re-run silently becoming a new
+# follow-up -- is a property of what gets submitted, not of what the script says.
+# ---------------------------------------------------------------------------
+
+
+def campaign_package(tmp_path, *, followups=()):
+    """The smallest package submit_campaign.sh will act on."""
+    pkg = tmp_path / "camp"
+    (pkg / "slurm").mkdir(parents=True)
+    (pkg / "scripts").mkdir(parents=True)
+    (pkg / "metadata").mkdir(parents=True)
+    (pkg / "slurm" / "campaign.sbatch").write_text("#!/usr/bin/env bash\n")
+    for template in ("plan_followup.py", "submit_campaign.sh"):
+        # Copied in rather than run from the templates directory: the submitter
+        # locates campaign.env relative to itself, which is what makes a package
+        # self-contained.
+        (pkg / "scripts" / template).write_text((TEMPLATES / template).read_text())
+    (pkg / "campaign.env").write_text(
+        "TASK_NAME=T\nCONFIG_NAME=pipeline\nRUN_PREFIX=pfx\n"
+        f'CAMPAIGN_DIR="${{CAMPAIGN_DIR:-{pkg}}}"\n'
+        "SHARDS=2\nPRODUCTION_SEEDS=64\nPRODUCTION_RNG_SEED=5\n"
+    )
+    # What a follow-up is sized from: production's actual yield, and the runs it
+    # must not duplicate.
+    (pkg / "metadata" / "run_outputs_production.json").write_text(
+        json.dumps({"raw_generation_rows": 512, "live_after_global_dedup": 340})
+    )
+    (pkg / "metadata" / "shard_trim_production.json").write_text(
+        json.dumps({"shards": {"0": {"generated_rows": 256, "retained": 250}, "1": {"generated_rows": 256, "retained": 250}}})
+    )
+    inf = pkg / "inference" / "pipeline_T_pfx_production"
+    inf.mkdir(parents=True)
+    (inf / "top_samples_pipeline.csv").write_text("x\n")
+    for index, wanted in followups:
+        (pkg / "metadata" / f"followup_{index}.json").write_text(
+            json.dumps({"index": index, "want_designs": wanted, "run_name": f"pfx_followup{index}"})
+        )
+        d = pkg / "inference" / f"pipeline_T_pfx_followup{index}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "top_samples_pipeline.csv").write_text("x\n")
+    return pkg
+
+
+def submit(pkg, *args):
+    proc = subprocess.run(
+        ["bash", str(pkg / "scripts" / "submit_campaign.sh"), *map(str, args)],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "DRY_RUN": "1", "CAMPAIGN_DIR": str(pkg), "HOME": str(pkg)},
+    )
+    # DRY_RUN prints the planned sbatch lines to stderr; each ends with the
+    # arguments run_campaign.sh would receive.
+    planned = [line for line in proc.stderr.splitlines() if line.startswith("sbatch ")]
+    stages = [line.rsplit("campaign.sbatch ", 1)[1].split() for line in planned]
+    return proc, stages
+
+
+def test_the_default_is_still_the_whole_chain(tmp_path):
+    proc, stages = submit(campaign_package(tmp_path), "production")
+    assert proc.returncode == 0, proc.stderr
+    assert [s[-1] for s in stages] == ["generate", "filter", "evaluate", "analyze", "pooled"]
+
+
+def test_a_stage_argument_reruns_from_there_to_the_end(tmp_path):
+    """Not that stage alone. A stage whose inputs were just rewritten and whose
+    outputs were not is a results CSV that disagrees with the per-job CSVs it was
+    built from, with nothing saying so."""
+    proc, stages = submit(campaign_package(tmp_path), "production", "evaluate")
+    assert proc.returncode == 0, proc.stderr
+    assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
+
+
+def test_the_pooled_report_is_reachable_on_its_own(tmp_path):
+    """Re-deriving the campaign total costs a comparison, not a re-evaluation."""
+    proc, stages = submit(campaign_package(tmp_path), "production", "pooled")
+    assert proc.returncode == 0, proc.stderr
+    assert stages == [["pooled"]], "no run kind and no stage word -- it is campaign-wide"
+
+
+def test_smoke_has_no_pooled_report(tmp_path):
+    """Those designs are a throwaway check, not part of the deliverable."""
+    pkg = campaign_package(tmp_path)
+    proc, stages = submit(pkg, "smoke")
+    assert proc.returncode == 0, proc.stderr
+    assert "pooled" not in [s[-1] for s in stages]
+    proc, _ = submit(pkg, "smoke", "pooled")
+    assert proc.returncode == 2
+    assert "unknown stage 'pooled'" in proc.stderr
+
+
+def test_an_unknown_stage_names_the_ones_that_exist(tmp_path):
+    proc, _ = submit(campaign_package(tmp_path), "production", "refold")
+    assert proc.returncode == 2
+    assert "generate filter evaluate analyze pooled" in proc.stderr
+
+
+def test_a_followup_rerun_reuses_its_index_rather_than_becoming_a_new_run(tmp_path):
+    """The bug the manual sbatch workaround existed to avoid. An unpinned re-plan
+    allocates the next index, so `followup 900 evaluate` would evaluate an
+    inference directory nothing ever wrote -- and burn a seed on a run that never
+    happens."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
+    proc, stages = submit(pkg, "followup", "900", "evaluate")
+    assert proc.returncode == 0, proc.stderr
+    assert "follow-up #1:" in proc.stdout
+    assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
+    assert not (pkg / "metadata" / "followup_3.json").exists(), "no new follow-up was planned"
+    assert "FOLLOWUP_INDEX=1" in proc.stderr, "and the index reaches the job environment"
+
+
+def test_a_followup_with_no_stage_still_plans_a_new_one(tmp_path):
+    """Re-running from a stage is the exception; asking for more designs is the
+    normal case and must keep allocating."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
+    proc, stages = submit(pkg, "followup", "700")
+    assert proc.returncode == 0, proc.stderr
+    assert "follow-up #3:" in proc.stdout
+    assert (pkg / "metadata" / "followup_3.json").exists()
+    assert [s[-1] for s in stages] == ["generate", "filter", "evaluate", "analyze", "pooled"]
+
+
+def test_resuming_a_count_no_followup_asked_for_is_refused(tmp_path):
+    """Rather than resolved by picking the newest: guessing which follow-up was
+    meant re-evaluates the wrong designs."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900)])
+    proc, _ = submit(pkg, "followup", "1234", "evaluate")
+    assert proc.returncode != 0
+    assert "no record" in proc.stderr and "#1 wanted 900" in proc.stderr
+
+
+def test_a_generate_rerun_is_a_new_followup_not_a_resumed_one(tmp_path):
+    """`followup 900 generate` regenerates, which is a new run by definition --
+    reusing the index would write into a directory another run already owns."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900)])
+    proc, _ = submit(pkg, "followup", "900", "generate")
+    assert proc.returncode == 0, proc.stderr
+    assert "follow-up #2:" in proc.stdout
+
+
+def test_overrides_still_reach_a_partial_chain(tmp_path):
+    proc, stages = submit(campaign_package(tmp_path), "production", "evaluate", "--", "++metric.x=1")
+    assert proc.returncode == 0, proc.stderr
+    assert stages[0] == ["production", "evaluate", "++metric.x=1"]
+    assert stages[-1] == ["pooled"], "except the pooled report, which folds nothing"
 
 
 def test_what_a_run_actually_used_stays_recoverable():
