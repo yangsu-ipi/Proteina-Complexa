@@ -2,7 +2,7 @@
 # preflight.sh — Probe local system for Proteina-Complexa readiness; emit JSON.
 #
 # Probes GPU (name/VRAM/count/driver/CUDA), disk free in $CKPT_PATH, the six
-# canonical Complexa ckpts, the tool binaries (foldseek/mmseqs/dssp/hbplus/rf3),
+# canonical Complexa ckpts, the tool binaries (foldseek/mmseqs/hbplus/rf3),
 # .env loadability + required-var presence, community model paths
 # (AF2_DIR/ESM_DIR/RF3_CKPT_PATH/ESMFOLD), and git SHA. Checkpoints and tools
 # alike are stamped with size and a short sha256, so a report identifies which
@@ -47,7 +47,7 @@ if [[ -f "$ENV_FILE" ]]; then
         source "'"$ENV_FILE"'" 2>/dev/null || true
         set +a
         for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH LOCAL_CHECKPOINT_PATH \
-                 COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC DSSP_EXEC HBPLUS_EXEC \
+                 COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC HBPLUS_EXEC \
                  RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH \
                  CACHE_DIR HF_HOME; do
             printf "%s\t%s\n" "$k" "${!k-}"
@@ -56,8 +56,8 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 # Fall through to live env for any unset keys
 for k in LOCAL_CODE_PATH LOCAL_DATA_PATH CKPT_PATH LOCAL_CHECKPOINT_PATH \
-         COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC DSSP_EXEC HBPLUS_EXEC \
-         SC_EXEC RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH \
+         COMPLEXA_RUNTIME FOLDSEEK_EXEC MMSEQS_EXEC HBPLUS_EXEC \
+         RF3_EXEC_PATH AF2_DIR ESM_DIR RF3_CKPT_PATH \
          CACHE_DIR HF_HOME; do
     [[ -z "${V[$k]:-}" ]] && V["$k"]="${!k-}"
 done
@@ -164,7 +164,7 @@ CKPT_JSON="{$(IFS=,; echo "${CKPT_ITEMS[*]}")}"
 # ---- Tools ----
 TOOL_ITEMS=()
 for entry in "foldseek=${V[FOLDSEEK_EXEC]:-}" "mmseqs=${V[MMSEQS_EXEC]:-}" \
-             "dssp=${V[DSSP_EXEC]:-}"         "hbplus=${V[HBPLUS_EXEC]:-}" \
+             "hbplus=${V[HBPLUS_EXEC]:-}" \
              "rf3=${V[RF3_EXEC_PATH]:-}"; do
     k="${entry%%=*}"; p="${entry#*=}"; ex=false
     [[ -n "$p" && ( -x "$p" || -f "$p" ) ]] && ex=true

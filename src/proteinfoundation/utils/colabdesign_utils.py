@@ -52,8 +52,8 @@ from proteinfoundation.metrics.ensembling import (
 def get_af2_advanced_settings(num_af2_models: int = 1):
     """Return default advanced settings for AF2 evaluation.
 
-    Reads ``AF2_DIR`` and ``DSSP_EXEC`` from the environment (set via
-    ``.env``), falling back to ``$DATA_PATH/tools/...`` paths.
+    Reads ``AF2_DIR`` from the environment (set via ``.env``), falling back to
+    ``$DATA_PATH/tools/AF2``.
     """
     data_path = os.environ.get("DATA_PATH")
     advanced_settings = {
@@ -65,7 +65,6 @@ def get_af2_advanced_settings(num_af2_models: int = 1):
         "num_recycles_validation": 3,
         "num_af2_models": max(1, int(num_af2_models)),
         "af_params_dir": os.getenv("AF2_DIR", f"{data_path}/tools/AF2" if data_path else None),
-        "dssp_path": os.getenv("DSSP_EXEC", f"{data_path}/tools/dssp" if data_path else None),
     }
     return advanced_settings
 

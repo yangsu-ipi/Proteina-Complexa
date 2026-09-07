@@ -119,8 +119,8 @@ complexa init docker --force     # Overwrite an existing env.sh
 no `--runtime` flag.
 
 Phase 2 never touches `.env`. It writes a separate `env.sh` that sources `.env`,
-repoints the six tool vars (`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`,
-`MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH`) at the chosen runtime's `UV_*` /
+repoints the four tool vars (`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`,
+`MMSEQS_EXEC`, `TMOL_PATH`) at the chosen runtime's `UV_*` /
 `DOCKER_*` values, and exports `COMPLEXA_INIT="<runtime>"`. For `docker` it also
 overrides `LOCAL_CODE_PATH`, `COMMUNITY_MODELS_PATH`, `LOCAL_CACHE_DIR`,
 `CKPT_PATH`, and `DATA_PATH` with the container paths. Your Step 3 edits survive

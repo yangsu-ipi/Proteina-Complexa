@@ -147,7 +147,7 @@ member instead.
 
 ### Re-exported by `env.sh`
 
-- **Every runtime:** `FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`, `MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH` — each set to `${<RUNTIME>_<VAR>:-$<VAR>}`, i.e. the `UV_*` or `DOCKER_*` member.
+- **Every runtime:** `FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `MMSEQS_EXEC`, `TMOL_PATH` — each set to `${<RUNTIME>_<VAR>:-$<VAR>}`, i.e. the `UV_*` or `DOCKER_*` member.
 - **Docker only, additionally:** `LOCAL_CODE_PATH` (from `DOCKER_REPO_PATH`), `COMMUNITY_MODELS_PATH`, `LOCAL_CACHE_DIR`, `CKPT_PATH` (from `DOCKER_CHECKPOINT_PATH`), `DATA_PATH` (from `DOCKER_DATA_PATH`).
 - Nothing else is touched. In particular `CACHE_DIR` is never defined (see `LOCAL_CACHE_DIR` above).
 
@@ -155,10 +155,11 @@ member instead.
 
 - Plain aliases in `.env_example` (`:105`, `:108`): `DATA_PATH=${LOCAL_DATA_PATH}`, `CKPT_PATH=${LOCAL_CHECKPOINT_PATH}`. On the docker runtime `env.sh` re-points both at the `DOCKER_*` values. Edit `LOCAL_*` / `DOCKER_*` instead of these.
 
-### `FOLDSEEK_EXEC` / `RF3_EXEC_PATH` / `SC_EXEC` / `MMSEQS_EXEC` / `DSSP_EXEC` / `TMOL_PATH`
+### `FOLDSEEK_EXEC` / `RF3_EXEC_PATH` / `MMSEQS_EXEC` / `TMOL_PATH`
 
 - Active tool binaries; `env.sh` resolves them to `${UV_*}` or `${DOCKER_*}` per runtime. Edit the prefix vars if you have a non-standard install (e.g. system-wide `foldseek` at `/usr/local/bin/foldseek` instead of `.venv/bin/foldseek`).
-- Used by: `complexa evaluate` (foldseek for diversity; mmseqs for sequence clustering; sc for interface metrics; dssp for secondary structure; tmol for force-field metrics).
+- Used by: `complexa evaluate` (foldseek for diversity; mmseqs for sequence clustering; tmol for force-field metrics).
+- There is no `SC_EXEC` or `DSSP_EXEC`. Shape complementarity runs in process through `protein-interface`, which vendors the same sc-rs the binary was; secondary structure comes from mdtraj (`metrics/structure_ss.py`). Both were removed once nothing read them.
 - **Failure mode if path is wrong**: the tool is silently skipped (treated as a warning in `complexa validate evaluate`), and the corresponding metric column is missing from the result CSV.
 
 ### `AF2_DIR` / `ESM_DIR` / `RF3_DIR` / `RF3_CKPT_PATH`

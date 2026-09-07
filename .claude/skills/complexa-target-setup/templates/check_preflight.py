@@ -71,9 +71,9 @@ def main() -> int:
     if metric.get("binder_folding_method")=="colabdesign" and not cm.get("AF2_DIR",{}).get("exists"): failures.append("missing AF2_DIR")
     # A tool is required because the config routes to it, not because it happens
     # to be absent. preflight.sh reports facts and is deliberately config-blind;
-    # deciding what this run actually needs is this script's job. Campaigns have
-    # shipped with SC_EXEC pointing at nothing while preflight recorded
-    # exists:false and no one read it.
+    # deciding what this run actually needs is this script's job. Every CBLN1 run
+    # recorded tools.sc exists:false and nothing read it -- which was harmless
+    # then and is moot now that shape complementarity runs in process.
     needed = {"foldseek": "diversity clustering", "mmseqs": "sequence clustering"}
     for tool, why in needed.items():
         entry = tools.get(tool) or {}

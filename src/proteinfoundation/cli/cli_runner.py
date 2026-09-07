@@ -1631,7 +1631,6 @@ _TOOL_VARS = [
     "FOLDSEEK_EXEC",
     "RF3_EXEC_PATH",
     "MMSEQS_EXEC",
-    "DSSP_EXEC",
     "TMOL_PATH",
 ]
 

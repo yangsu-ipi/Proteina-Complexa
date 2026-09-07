@@ -147,7 +147,6 @@ def load_env_config() -> dict[str, str]:
         "RF3_EXEC_PATH",
         "FOLDSEEK_EXEC",
         "MMSEQS_EXEC",
-        "DSSP_EXEC",
     ]
 
     return {key: os.environ.get(key, "") for key in env_vars}
