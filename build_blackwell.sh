@@ -80,12 +80,24 @@ fi
 "$PY" - <<'PYEOF'
 import importlib, sys
 bad = []
-for m in ["proteinfoundation","atomworks","tmol","graphein","biotite","torch","numpy","scipy","numba"]:
+for m in ["proteinfoundation","atomworks","tmol","graphein","biotite","torch","numpy","scipy","numba",
+          # protein_interface is an abi3 Rust extension installed from a manylinux wheel by [5].
+          # A wheel that resolves but will not load is otherwise only discovered when an
+          # evaluation asks what an interface is, hours into a campaign.
+          "protein_interface"]:
     try: importlib.import_module(m)
     except Exception as e: bad.append(f"{m}: {type(e).__name__}: {e}")
 import numpy, scipy, numba
 if tuple(map(int, scipy.__version__.split(".")[:2])) < (1, 13):
     bad.append(f"scipy {scipy.__version__} predates numpy-2 support (needs >=1.13)")
+# The extension is pinned because its atomic radii are compiled in and unreadable from
+# metadata; a silent version drift would move every shape complementarity value.
+try:
+    from importlib.metadata import version
+    if version("protein-interface") != "0.1.3":
+        bad.append(f"protein-interface {version('protein-interface')} is not the pinned 0.1.3")
+except Exception as e:
+    bad.append(f"protein-interface version unreadable: {e}")
 print(f"  numpy {numpy.__version__}  scipy {scipy.__version__}  numba {numba.__version__}")
 if bad:
     print("FAILED:", *bad, sep="\n  "); sys.exit(1)
