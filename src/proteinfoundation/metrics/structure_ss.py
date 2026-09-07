@@ -193,3 +193,28 @@ def structure_ss_by_selection(
             entry["interface_ss_total"] = float(len(subset))
         out[label] = entry
     return out
+
+
+SS_COUNTS_SUFFIX = "_ss_counts"
+
+
+def derive_ss_fractions(frame):
+    """Add helix/sheet/loop fractions for every packed ``*_ss_counts`` column.
+
+    Derived in analysis rather than written by evaluate, for the reason verdicts
+    are: a fraction is a comparison against a collapse rule, and it changes
+    whenever the rule does while every count it reads stays identical. Freezing
+    it at evaluate would mean a rule change silently disagreeing with the counts
+    beside it -- and a refold to repair what a re-read can.
+
+    A malformed cell yields NaN rather than zeros, which would read as a
+    structure with no secondary structure at all.
+    """
+    import math
+
+    for column in [c for c in getattr(frame, "columns", ()) if c.endswith(SS_COUNTS_SUFFIX)]:
+        stem = column[: -len(SS_COUNTS_SUFFIX)]
+        collapsed = [collapse_counts(v) for v in frame[column]]
+        for state in SS_COARSE_STATES:
+            frame[f"{stem}_ss_{state}"] = [c.get(state, math.nan) for c in collapsed]
+    return frame

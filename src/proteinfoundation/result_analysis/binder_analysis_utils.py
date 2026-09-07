@@ -46,6 +46,17 @@ METRIC_CASE_MAPPING = {
     "complex_iptm": "complex_i_pTM",
     "complex_i_ptm": "complex_i_pTM",
     # min_ipAE variations
+    # The interface and secondary-structure metrics. Registered so a threshold on
+    # any of them is a config entry rather than a code change, and none is active
+    # by default: their distributions have not been measured on a campaign yet,
+    # and a guessed bar silently moves the orderable count.
+    "binder_dsasa": "binder_dSASA",
+    "target_dsasa": "target_dSASA",
+    "interface_dsasa": "interface_dSASA",
+    "binder_buried_frac": "binder_buried_fraction",
+    "interface_shape_complementarity": "interface_sc",
+    "binder_iface_nres": "binder_interface_nres",
+    "target_iface_nres": "target_interface_nres",
     "min_ipae": "min_ipAE",
     "min_i_pae": "min_ipAE",
     "complex_min_ipae": "complex_min_ipAE",
@@ -291,6 +302,36 @@ COMPLEX_BACKEND_COLUMN = "complex_folding_backend"
 
 class ThresholdSpecError(ValueError):
     """A threshold dictionary cannot be applied to the run it was given."""
+
+
+# Packed eight-state counts. A threshold cannot be compared against a list, and
+# the three-state fractions analyze derives from them are what a gate reads.
+PACKED_COUNT_SUFFIX = "_ss_counts"
+
+
+def reject_thresholds_on_packed_columns(thresholds: dict, seq_type: str, complex_backend: str = "af2") -> None:
+    """Refuse a criterion that would compare a threshold against a list.
+
+    The eight-state counts are the record; the helix/sheet/loop fractions
+    derived from them in analyze are the numbers. Without this, a threshold on
+    ``..._ss_counts`` reaches the comparison as ``[34.0, 0.0, ...] < 0.5`` --
+    a TypeError deep in the verdict loop at best, and a criterion that never
+    matches at worst.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    offenders = sorted(
+        name
+        for name, spec in thresholds.items()
+        if threshold_column(seq_type, name, parse_threshold_spec(spec), complex_backend).endswith(
+            PACKED_COUNT_SUFFIX + "_all"
+        )
+    )
+    if offenders:
+        raise ThresholdSpecError(
+            f"Criteria {offenders} read packed eight-state counts, which cannot be compared against a "
+            f"threshold. Gate on the derived fractions instead -- ..._ss_helix, _ss_sheet, _ss_loop."
+        )
 
 
 def resolve_backend_overrides(thresholds: dict, backend: str | None) -> dict:

@@ -133,3 +133,72 @@ def test_states_are_read_from_the_complex_not_the_isolated_chain(tmp_path):
     src = inspect.getsource(structure_ss.chain_states)
     assert "md.load(pdb_path)" in src and "compute_dssp" in src
     assert "chain_id" in src, "the chain is selected after folding, not before"
+
+
+# ---------------------------------------------------------------------------
+# Collapsing to three states in analysis
+# ---------------------------------------------------------------------------
+
+
+def test_fractions_are_derived_in_analysis_not_written_by_evaluate():
+    """A fraction is a comparison against a collapse rule, so it changes whenever
+    the rule does while every count it reads stays identical -- the same reason
+    verdicts are re-derived rather than frozen."""
+    pd = pytest.importorskip("pandas")
+
+    from proteinfoundation.metrics.structure_ss import counts_from_states, derive_ss_fractions
+
+    packed = counts_from_states(["H"] * 34 + ["T"] * 6 + ["S"] * 2 + ["-"] * 5)
+    frame = pd.DataFrame({"self_complex_af2_binder_ss_counts": [packed]})
+    out = derive_ss_fractions(frame)
+    assert out["self_complex_af2_binder_ss_helix"][0] == pytest.approx(34 / 47)
+    assert out["self_complex_af2_binder_ss_sheet"][0] == pytest.approx(0.0)
+    assert out["self_complex_af2_binder_ss_loop"][0] == pytest.approx(13 / 47)
+
+
+def test_every_packed_column_gets_its_own_three(tmp_path):
+    pd = pytest.importorskip("pandas")
+
+    from proteinfoundation.metrics.structure_ss import counts_from_states, derive_ss_fractions
+
+    packed = counts_from_states(["H"] * 4)
+    frame = pd.DataFrame(
+        {
+            "self_complex_af2_binder_ss_counts": [packed],
+            "self_complex_af2_target_interface_ss_counts": [packed],
+            "self_apo_esmfold2_binder_ss_counts": [packed],
+        }
+    )
+    out = derive_ss_fractions(frame)
+    for stem in (
+        "self_complex_af2_binder",
+        "self_complex_af2_target_interface",
+        "self_apo_esmfold2_binder",
+    ):
+        for state in ("helix", "sheet", "loop"):
+            assert f"{stem}_ss_{state}" in out.columns
+
+
+def test_a_malformed_or_empty_count_gives_nan_not_zero():
+    """Zeros would read as a structure with no secondary structure at all, and an
+    empty interface as an all-loop one."""
+    import math
+
+    pd = pytest.importorskip("pandas")
+
+    from proteinfoundation.metrics.structure_ss import counts_from_states, derive_ss_fractions
+
+    frame = pd.DataFrame({"x_ss_counts": ["garbage", counts_from_states([])]})
+    out = derive_ss_fractions(frame)
+    assert all(math.isnan(v) for v in out["x_ss_helix"])
+
+
+def test_counts_survive_the_csv_round_trip_into_fractions():
+    pd = pytest.importorskip("pandas")
+
+    from proteinfoundation.metrics.structure_ss import counts_from_states, derive_ss_fractions
+
+    packed = counts_from_states(["H"] * 3 + ["E"] * 1)
+    as_text = pd.DataFrame({"x_ss_counts": [str(packed)]})
+    as_list = pd.DataFrame({"x_ss_counts": [packed]})
+    assert derive_ss_fractions(as_text)["x_ss_helix"][0] == derive_ss_fractions(as_list)["x_ss_helix"][0]

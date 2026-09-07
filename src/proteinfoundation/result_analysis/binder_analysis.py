@@ -37,6 +37,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     get_thresholds_for_result_type,
     normalize_threshold_dict,
     redesign_pass_vector,
+    reject_thresholds_on_packed_columns,
     resolve_backend_overrides,
     threshold_column,
 )
@@ -326,6 +327,9 @@ def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], succes
     backend = complex_backend_of(df) or "af2"
     resolved = resolve_backend_overrides(normalize_threshold_dict(success_thresholds), complex_backend_of(df))
     for seq_type in seq_types:
+        # Before anything reads a value: a threshold on the packed counts would
+        # reach the comparison as a list, which fails deep in the verdict loop.
+        reject_thresholds_on_packed_columns(resolved, seq_type, backend)
         expanded = expand_model_criteria(resolved, seq_type, df.columns, backend)
         parsed = {name: parse_threshold_spec(spec) for name, spec in expanded.items()}
         cols = {name: threshold_column(seq_type, name, spec, backend) for name, spec in parsed.items()}
