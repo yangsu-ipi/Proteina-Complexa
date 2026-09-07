@@ -45,7 +45,6 @@ def maybe_tqdm(iterable: Iterable, desc: str, show_progress: bool = False) -> It
 # Required environment variables for different metric types
 REQUIRED_ENV_VARS = {
     "bioinformatics": {
-        "SC_EXEC": "Path to shape complementarity (sc) binary",
     },
     "tmol": {
         "TMOL_PATH": "Path to TMOL package installation",

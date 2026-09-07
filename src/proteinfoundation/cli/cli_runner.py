@@ -1630,7 +1630,6 @@ VALID_RUNTIMES = ("uv", "docker")
 _TOOL_VARS = [
     "FOLDSEEK_EXEC",
     "RF3_EXEC_PATH",
-    "SC_EXEC",
     "MMSEQS_EXEC",
     "DSSP_EXEC",
     "TMOL_PATH",

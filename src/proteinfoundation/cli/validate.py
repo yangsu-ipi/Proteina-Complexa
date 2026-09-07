@@ -146,7 +146,6 @@ def load_env_config() -> dict[str, str]:
         "RF3_CKPT_PATH",
         "RF3_EXEC_PATH",
         "FOLDSEEK_EXEC",
-        "SC_EXEC",
         "MMSEQS_EXEC",
         "DSSP_EXEC",
     ]
@@ -753,7 +752,6 @@ def validate_evaluate(config_path: Path) -> ValidationReport:
     # Check for external tools used in evaluation
     tools = [
         ("FOLDSEEK_EXEC", "Foldseek"),
-        ("SC_EXEC", "Shape complementarity (sc)"),
     ]
 
     for env_key, tool_name in tools:

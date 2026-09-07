@@ -580,13 +580,13 @@ def preflight_report(tmp_path, tools, metric=None, **overrides):
 PRESENT = {"foldseek": {"exists": True}, "mmseqs": {"exists": True}}
 
 
-def test_sc_is_not_required_by_a_campaign_that_does_not_ask_for_it(tmp_path):
-    """The CBLN1 campaign's own shape: bioinformatics off everywhere. Its
-    SC_EXEC pointed at a file that did not exist, and that was harmless."""
+def test_an_absent_sc_binary_is_no_longer_anyones_business(tmp_path):
+    """Shape complementarity runs in process now. A stale sc entry in a preflight
+    report -- every CBLN1 run recorded exists:false -- must not fail anything."""
     report, cfg = preflight_report(
         tmp_path,
         {**PRESENT, "sc": {"path": "/nope/sc", "exists": False}},
-        metric={"compute_pre_refolding_metrics": False, "compute_refolded_structure_metrics": False},
+        metric={"compute_refolded_structure_metrics": True, "refolded": {"bioinformatics": True}},
     )
     r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 100)
     assert "missing sc" not in r.stdout, r.stdout
@@ -602,51 +602,47 @@ def test_sc_is_not_required_by_a_campaign_that_does_not_ask_for_it(tmp_path):
         {"compute_refolded_structure_metrics": True},
     ],
 )
-def test_sc_is_required_when_the_config_asks_for_bioinformatics(tmp_path, metric):
+def test_bioinformatics_requires_the_engine_to_import(tmp_path, metric):
+    """The requirement moved from a file on a path to an importable extension."""
     report, cfg = preflight_report(tmp_path, {**PRESENT, "sc": {"path": "/nope/sc", "exists": False}}, metric=metric)
     r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 100)
-    assert "missing sc" in r.stdout, r.stdout
-    assert "/nope/sc" in r.stdout, "the failure should name the path that was configured"
+    assert "missing sc" not in r.stdout, "no binary is involved any more"
+    # protein_interface is a declared dependency, so it imports here and the gate passes.
+    assert "protein_interface will not import" not in r.stdout, r.stdout
 
 
-def test_an_explicitly_disabled_sub_flag_does_not_require_sc(tmp_path):
+def test_an_explicitly_disabled_sub_flag_does_not_require_the_engine(tmp_path):
     report, cfg = preflight_report(
         tmp_path,
         {**PRESENT, "sc": {"exists": False}},
         metric={"compute_refolded_structure_metrics": True, "refolded": {"bioinformatics": False}},
     )
-    assert "missing sc" not in run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+    out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+    assert "protein_interface will not import" not in out
 
 
-def test_a_generation_config_that_rewards_on_sc_requires_it(tmp_path):
-    """The reward path reaches sc too, and does not go through metric flags."""
-    report = tmp_path / "preflight.json"
-    report.write_text(
-        json.dumps(
-            {
-                "gpu": {"available": True, "vram_gb": 80},
-                "checkpoints": {"complexa.ckpt": {"exists": True}, "complexa_ae.ckpt": {"exists": True}},
-                "community_models": {"AF2_DIR": {"exists": True}},
-                "tools": {**PRESENT, "sc": {"exists": False}},
-                "disk": {"cwd_free_gb": 9999},
-                "env": {},
+def test_a_generation_config_that_rewards_on_sc_is_still_detected(tmp_path):
+    """The reward path reaches shape complementarity without going through the
+    metric flags. There is no binary to require any more, but the detection is
+    what decides whether the engine import is checked at all."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("chk", TEMPLATES / "check_preflight.py")
+    chk = importlib.util.module_from_spec(spec)
+    sys.modules["chk"] = chk
+    spec.loader.exec_module(chk)
+
+    reward_cfg = {
+        "metric": {},
+        "reward_models": {
+            "bioinformatics": {
+                "_target_": "proteinfoundation.rewards.bioinformatics_reward.BioinformaticsRewardModel"
             }
-        )
-    )
-    cfg = tmp_path / "resolved.yaml"
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "metric": {},
-                "reward_models": {
-                    "bioinformatics": {
-                        "_target_": "proteinfoundation.rewards.bioinformatics_reward.BioinformaticsRewardModel"
-                    }
-                },
-            }
-        )
-    )
-    assert "missing sc" in run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
+        },
+    }
+    assert chk.needs_shape_complementarity(reward_cfg, reward_cfg["metric"])
+    assert not chk.needs_shape_complementarity({"metric": {}}, {})
 
 
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):

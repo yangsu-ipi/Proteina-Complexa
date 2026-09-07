@@ -1076,7 +1076,6 @@ def compute_bioinformatics_metrics_single(
     pdb_path: str,
     binder_chain: str,
     target_chain: str,
-    sc_bin: str | None = None,
     interface_cutoff: float = DEFAULT_CONTACT_CUTOFF,
 ) -> dict[str, Any]:
     """
@@ -1086,8 +1085,6 @@ def compute_bioinformatics_metrics_single(
         pdb_path: Path to PDB file
         binder_chain: Chain ID of the binder
         target_chain: Chain ID(s) of the target (comma-separated if multiple)
-        sc_bin: Path to shape complementarity binary. None resolves to $SC_EXEC,
-            else the sc-rs shipped with the repo.
 
     Returns:
         Dictionary of metric names to values. Returns NaN if dependencies unavailable.
@@ -1101,7 +1098,6 @@ def compute_bioinformatics_metrics_single(
             binder_chain=binder_chain,
             target_chain=target_chain,
             sasa_engine="auto",
-            sc_bin=sc_bin,
             interface_cutoff=interface_cutoff,
         )
         return {
@@ -1156,7 +1152,6 @@ def compute_interface_metrics(
     pdb_paths: list[str],
     compute_bioinformatics: bool = False,
     compute_tmol: bool = False,
-    sc_bin: str | None = None,
     show_progress: bool = False,
 ) -> list[dict[str, Any]]:
     """
@@ -1172,7 +1167,6 @@ def compute_interface_metrics(
         pdb_paths: List of PDB file paths
         compute_bioinformatics: Whether to compute bioinformatics metrics (SC, SASA, hydrophobicity)
         compute_tmol: Whether to compute TMOL force field metrics
-        sc_bin: Path to shape complementarity binary (for bioinformatics)
         show_progress: Whether to show progress bar
 
     Returns:
@@ -1236,7 +1230,7 @@ def compute_interface_metrics(
                 bio_metrics = dict.fromkeys(BIOINFORMATICS_METRIC_COLS, 0)
             else:
                 logger.info("Computing bioinformatics metrics...")
-                bio_metrics = compute_bioinformatics_metrics_single(pdb_path, binder_chain, target_chain, sc_bin)
+                bio_metrics = compute_bioinformatics_metrics_single(pdb_path, binder_chain, target_chain)
             metrics.update(bio_metrics)
 
         # TMOL metrics
@@ -1255,7 +1249,6 @@ def compute_interface_metrics_df(
     pdb_paths: list[str],
     compute_bioinformatics: bool = False,
     compute_tmol: bool = False,
-    sc_bin: str | None = None,
     show_progress: bool = False,
 ) -> pd.DataFrame:
     """
@@ -1269,7 +1262,6 @@ def compute_interface_metrics_df(
         pdb_paths: List of PDB file paths
         compute_bioinformatics: Whether to compute bioinformatics metrics
         compute_tmol: Whether to compute TMOL metrics
-        sc_bin: Path to shape complementarity binary
         show_progress: Whether to show progress bar
 
     Returns:
@@ -1282,7 +1274,6 @@ def compute_interface_metrics_df(
         pdb_paths=pdb_paths,
         compute_bioinformatics=compute_bioinformatics,
         compute_tmol=compute_tmol,
-        sc_bin=sc_bin,
         show_progress=show_progress,
     )
 

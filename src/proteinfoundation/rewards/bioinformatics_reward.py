@@ -22,10 +22,7 @@ from proteinfoundation.rewards.base_reward import BaseRewardModel, standardize_r
 # PR Alternative (bioinformatics interface scoring) - may have missing dependencies
 PR_ALTERNATIVE_AVAILABLE = False
 try:
-    from proteinfoundation.utils.pr_alternative_utils import (
-        pr_alternative_score_interface,
-        resolve_sc_bin,
-    )
+    from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
 
     PR_ALTERNATIVE_AVAILABLE = True
 except (ImportError, Exception) as e:
@@ -64,7 +61,6 @@ class BioinformaticsRewardModel(BaseRewardModel):
         self.reward_weights = reward_weights
         self.reward_thresholds = reward_thresholds or {}
         self.reward_threshold_modes = reward_threshold_modes or {}
-        self.sc_bin = resolve_sc_bin() if PR_ALTERNATIVE_AVAILABLE else None
         self.structure_source = structure_source
 
         # Validate threshold modes
@@ -113,7 +109,6 @@ class BioinformaticsRewardModel(BaseRewardModel):
             binder_chain=binder_chain,
             target_chain=target_chain,
             sasa_engine="auto",
-            sc_bin=self.sc_bin,
         )
 
         # Round scores

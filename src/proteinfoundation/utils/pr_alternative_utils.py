@@ -259,121 +259,52 @@ def _chain_total_sasa(chain_entity):
     return sum(getattr(atom, "sasa", 0.0) for atom in chain_entity.get_atoms())
 
 
-# The sc-rs binary shipped with the repo, resolved from this module rather than
-# the working directory. The two callers used to carry different defaults --
-# "./env/docker/internal/sc" in the reward path, "/usr/local/bin/sc" in
-# evaluation -- so which binary ran, and whether one ran at all, depended on the
-# entry point and the cwd. $SC_EXEC still overrides, for a build that ships it
-# elsewhere.
-DEFAULT_SC_EXEC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "result_analysis", "sc")
-
-
-def resolve_sc_bin(sc_bin: str | None = None) -> str:
-    """Which sc-rs to run: an explicit path, else $SC_EXEC, else the repo's own."""
-    return sc_bin or os.environ.get("SC_EXEC") or DEFAULT_SC_EXEC
-
-
 class ShapeComplementarityError(RuntimeError):
-    """sc-rs could not produce a shape complementarity value.
+    """Shape complementarity could not be computed.
 
-    Raised rather than returned as a placeholder. A fabricated SC is
-    indistinguishable from a measured one once it reaches a results column, and
-    the 0.70 this used to invent reads as a well-packed interface -- so a
-    missing binary produced a column of plausible passes, announced only on
-    stdout. Callers that want to survive a failed interface scoring pass catch
-    this and record NaN, which says "not measured" where 0.70 said "good".
+    Raised rather than returned as a placeholder. The 0.70 this used to invent
+    reads as a well-packed interface, so a broken binary wrote a column of
+    plausible passes across an entire campaign with nothing distinguishing it
+    from measurement.
     """
 
 
-def _calculate_shape_complementarity(
-    pdb_file_path, binder_chain="B", target_chain="A", distance=4.0, sc_bin: str = None
-):
-    """
-    Calculate shape complementarity using the sc-rs CLI.
-    Looks first for a local binary placed next to this module (e.g., 'functions/sc' or 'functions/sc-rs').
+def _calculate_shape_complementarity(pdb_file_path, binder_chain="B", target_chain="A", distance=4.0):
+    """Lawrence-Colman shape complementarity, in process.
 
-    Parameters
-    ----------
-    pdb_file_path : str
-        Path to the PDB file containing the complex
-    binder_chain : str
-        Chain ID of the binder (default: "B")
-    target_chain : str
-        Chain ID of the target (default: "A")
-    distance : float
-        Unused here; retained for API compatibility
+    This used to shell out to an sc-rs binary found through SC_EXEC. It is the
+    same sc-rs -- the vendored copy in protein-interface, batched and optimised
+    -- so this is the same algorithm on the same CCP4-sc radii, without a
+    subprocess, a path to resolve, or a placeholder to refuse. The radii are not
+    a free choice here: Lawrence-Colman's published thresholds are calibrated on
+    them, which is why dSASA keeps its own ProtOr table rather than sharing.
 
-    Returns
-    -------
-    float
-        Shape complementarity in [0, 1]
+    *distance* is accepted and unused; retained so callers need not change.
 
     Raises
     ------
     ShapeComplementarityError
-        If sc-rs cannot be run, fails, times out, or returns
-        no usable value. Every failure path raises: there is no value this can
-        return that means "not measured".
+        If SC cannot be computed. Every failure path raises: there is no value
+        this can return that means "not measured".
     """
+    import protein_interface as pi
+
     start_time = time.time()
     basename = os.path.basename(pdb_file_path)
-    sc_bin = resolve_sc_bin(sc_bin)
-    print(f"[SC-RS] Initiating shape complementarity for {basename} (target={target_chain}, binder={binder_chain})")
-
-    # sc-rs CLI: sc <pdb> <chainA> <chainB> --json; SC is symmetric, pass target first for clarity
-    cmd = [sc_bin, pdb_file_path, str(target_chain), str(binder_chain), "--json"]
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
+    targets = [c for c in str(target_chain).split(",") if c]
+    if not targets or not binder_chain:
+        raise ShapeComplementarityError(
+            f"need both binder and target chains for {basename}, got {binder_chain!r} and {target_chain!r}"
         )
-    except subprocess.TimeoutExpired as exc:
-        raise ShapeComplementarityError(f"sc-rs timed out after 120s for {basename}") from exc
-    except subprocess.CalledProcessError as exc:
-        raise ShapeComplementarityError(
-            f"sc-rs exited {exc.returncode} for {basename}: {getattr(exc, 'stderr', '')}"
-        ) from exc
-    except OSError as exc:
-        raise ShapeComplementarityError(
-            f"could not run sc-rs at {sc_bin!r} for {basename}: {exc}; "
-            f"set SC_EXEC to a working sc-rs binary"
-        ) from exc
-
-    stdout = (proc.stdout or "").strip()
-    if not stdout:
-        raise ShapeComplementarityError(f"sc-rs produced no output for {basename}")
-
-    # Parse JSON strictly, else try to extract from mixed output
     try:
-        payload = json.loads(stdout)
-    except ValueError:
-        payload = None
-        s_idx = stdout.rfind("{")
-        e_idx = stdout.rfind("}")
-        if s_idx != -1 and e_idx > s_idx:
-            try:
-                payload = json.loads(stdout[s_idx : e_idx + 1])
-            except ValueError:
-                payload = None
-    if not isinstance(payload, dict):
-        raise ShapeComplementarityError(f"sc-rs output for {basename} was not JSON: {stdout[:200]}")
+        result = pi.from_pdb(pdb_file_path, chains_a=targets, chains_b=[str(binder_chain)])
+    except Exception as exc:
+        raise ShapeComplementarityError(f"shape complementarity failed for {basename}: {exc}") from exc
 
-    sc_key = "sc" if "sc" in payload else ("sc_value" if "sc_value" in payload else None)
-    if sc_key is None:
-        raise ShapeComplementarityError(f"sc-rs output for {basename} has no SC field: {sorted(payload)}")
-    try:
-        sc_val = float(payload[sc_key])
-    except (TypeError, ValueError) as exc:
-        raise ShapeComplementarityError(
-            f"sc-rs returned a non-numeric SC for {basename}: {payload[sc_key]!r}"
-        ) from exc
+    sc_val = float(result.sc)
     if not 0.0 <= sc_val <= 1.0:
-        raise ShapeComplementarityError(f"sc-rs returned SC={sc_val} outside [0, 1] for {basename}")
-
-    print(f"[SC-RS] Completed for {basename}: SC={sc_val:.2f} in {time.time() - start_time:.2f}s")
+        raise ShapeComplementarityError(f"shape complementarity {sc_val} outside [0, 1] for {basename}")
+    print(f"[SC] Completed for {basename}: SC={sc_val:.2f} in {time.time() - start_time:.2f}s")
     return sc_val
 
 
@@ -1011,7 +942,6 @@ def pr_alternative_score_interface(
     binder_chain="B",
     target_chain="A",
     sasa_engine="auto",
-    sc_bin: str = None,
     interface_cutoff: float = DEFAULT_CONTACT_CUTOFF,
 ):
     """
@@ -1134,7 +1064,7 @@ def pr_alternative_score_interface(
     # Calculate shape complementarity using SCASA
     t0_sc = time.time()
     print("[Alt-Score] Computing shape complementarity (SC)...")
-    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain=target_chain, sc_bin=sc_bin)
+    interface_sc = _calculate_shape_complementarity(pdb_file, binder_chain, target_chain=target_chain)
     print(f"[Alt-Score] SC computation finished in {time.time() - t0_sc:.2f}s")
 
     # Fixed placeholder values for metrics that are not currently computed without PyRosetta

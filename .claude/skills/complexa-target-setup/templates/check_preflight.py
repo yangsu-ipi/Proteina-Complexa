@@ -20,9 +20,14 @@ A campaign that uses plain ESMFold and colabdesign passes no extra repos and get
 no ESMFold2 import check, which the original could not express.
 """
 from __future__ import annotations
-import argparse, json, os
+
+import argparse
+import json
+import os
 from pathlib import Path
+
 import yaml
+
 
 def needs_shape_complementarity(cfg: dict, metric: dict) -> bool:
     """Whether anything in this config routes to the sc-rs binary.
@@ -70,12 +75,19 @@ def main() -> int:
     # shipped with SC_EXEC pointing at nothing while preflight recorded
     # exists:false and no one read it.
     needed = {"foldseek": "diversity clustering", "mmseqs": "sequence clustering"}
-    if needs_shape_complementarity(cfg, metric):
-        needed["sc"] = "shape complementarity (bioinformatics interface metrics)"
     for tool, why in needed.items():
         entry = tools.get(tool) or {}
         if not entry.get("exists"):
             failures.append(f"missing {tool}, needed for {why}: {entry.get('path') or 'no path configured'}")
+    # Shape complementarity used to need an sc binary on a path; it now runs in
+    # process through protein-interface, so what a config routing to it requires
+    # is an importable extension rather than a file that exists. A manylinux
+    # wheel that resolves but will not load fails here rather than hours in.
+    if needs_shape_complementarity(cfg, metric):
+        try:
+            import protein_interface  # noqa: F401
+        except Exception as exc:
+            failures.append(f"config asks for shape complementarity but protein_interface will not import: {exc}")
     community=Path(os.environ.get("COMMUNITY_MODELS_PATH", os.path.join(os.environ.get("COMPLEXA_REPO",""),"community_models")))
     ckpt=Path(os.environ.get("SOLUBLE_MPNN_CKPT", community/"LigandMPNN/model_params/solublempnn_v_48_020.pt"))
     if not ckpt.is_file(): failures.append(f"missing soluble ProteinMPNN checkpoint: {ckpt}")

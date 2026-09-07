@@ -1,158 +1,125 @@
-"""The shape complementarity fallback.
+"""Shape complementarity, in process.
 
-_calculate_shape_complementarity used to return a hardcoded 0.70 whenever sc-rs
-was missing, timed out, or produced something unparseable, announcing it only on
-stdout. 0.70 is a good SC -- a well-packed interface -- so a broken binary wrote
-a column of plausible passes across a whole campaign. These pin that every
-failure path raises instead.
+This used to shell out to an sc-rs binary located through SC_EXEC, and returned
+a hardcoded 0.70 whenever that binary was missing, failing, timing out or
+producing something unparseable. 0.70 reads as a well-packed interface, so a
+binary that never ran wrote a column of plausible passes across a whole
+campaign.
+
+It is now the same sc-rs -- the copy vendored in protein-interface -- called in
+process. Same algorithm, same CCP4-sc radii, no path to resolve and no value
+that can be returned when nothing was measured.
 """
-
-import json
-import os
-import stat
 
 import pytest
 
-Bio = pytest.importorskip("Bio", reason="pr_alternative_utils imports Bio.PDB")
+pytest.importorskip("Bio", reason="pr_alternative_utils imports Bio.PDB")
+pytest.importorskip("protein_interface", reason="the shape complementarity engine")
 
+from proteinfoundation.utils import pr_alternative_utils as pau
 from proteinfoundation.utils.pr_alternative_utils import (
-    DEFAULT_SC_EXEC,
     ShapeComplementarityError,
     _calculate_shape_complementarity,
-    resolve_sc_bin,
 )
 
-
-def fake_sc(tmp_path, body: str, name: str = "sc"):
-    """A stand-in sc-rs binary, so the failure modes are exercised for real
-    rather than through a mock of subprocess."""
-    script = tmp_path / name
-    script.write_text(f"#!/bin/sh\n{body}\n")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return str(script)
+ATOMS = [("N", 0.0, 0.0, 0.0), ("CA", 1.46, 0.0, 0.0), ("C", 2.0, 1.42, 0.0),
+         ("O", 1.3, 2.4, 0.0), ("CB", 2.0, -0.77, -1.2)]
 
 
 @pytest.fixture
 def pdb(tmp_path):
+    lines, serial = [], 1
+    for ci, chain in enumerate(("A", "B")):
+        for res in range(3):
+            for atom, x, y, z in ATOMS:
+                lines.append(
+                    f"ATOM  {serial:5d}  {atom:<3s} ALA {chain}{1 + res:4d}    "
+                    f"{x + res * 3.6:8.3f}{y + ci * 4.0:8.3f}{z:8.3f}  1.00 50.00"
+                    f"          {atom[0]:>2s}  "
+                )
+                serial += 1
     path = tmp_path / "complex.pdb"
-    path.write_text("ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00  0.00\n")
+    path.write_text("\n".join(lines) + "\nTER\nEND\n")
     return str(path)
 
 
-def test_a_measured_value_is_returned(tmp_path, pdb):
-    """The success path still works, and is what the raises are protecting."""
-    sc_bin = fake_sc(tmp_path, 'echo \'{"sc": 0.612}\'')
-    assert _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin) == pytest.approx(0.612)
+def test_a_measured_value_comes_back(pdb):
+    got = _calculate_shape_complementarity(pdb, "B", "A")
+    assert 0.0 <= got <= 1.0
+    assert got != 0.70, "the placeholder this replaced"
 
 
-def test_a_value_embedded_in_chatter_is_still_read(tmp_path, pdb):
-    """sc-rs prints progress before its JSON; the lenient parse is deliberate."""
-    sc_bin = fake_sc(tmp_path, 'echo "loading..."; echo \'{"sc_value": 0.5}\'')
-    assert _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin) == pytest.approx(0.5)
+def test_there_is_no_binary_to_locate():
+    """SC_EXEC, resolve_sc_bin and DEFAULT_SC_EXEC existed only to find a
+    subprocess. Their absence is the point of the change."""
+    for gone in ("resolve_sc_bin", "DEFAULT_SC_EXEC"):
+        assert not hasattr(pau, gone), f"{gone} should have gone with the subprocess"
+    import inspect
+
+    assert "sc_bin" not in inspect.signature(pau.pr_alternative_score_interface).parameters
 
 
-def test_the_default_binary_is_the_one_in_the_repo(monkeypatch):
-    """Both callers used to carry their own default -- "./env/docker/internal/sc"
-    and "/usr/local/bin/sc" -- so which binary ran depended on the entry point,
-    and one of them was relative to the working directory."""
-    monkeypatch.delenv("SC_EXEC", raising=False)
-    assert resolve_sc_bin() == DEFAULT_SC_EXEC
-    assert os.path.isabs(DEFAULT_SC_EXEC)
-    assert os.path.exists(DEFAULT_SC_EXEC), "the repo ships sc at result_analysis/sc"
+def test_a_missing_structure_raises(tmp_path):
+    with pytest.raises(ShapeComplementarityError, match="failed"):
+        _calculate_shape_complementarity(str(tmp_path / "nope.pdb"), "B", "A")
 
 
-def test_the_default_does_not_depend_on_the_working_directory(tmp_path, monkeypatch):
-    monkeypatch.delenv("SC_EXEC", raising=False)
-    monkeypatch.chdir(tmp_path)
-    assert resolve_sc_bin() == DEFAULT_SC_EXEC
+def test_a_missing_chain_raises(pdb):
+    with pytest.raises(ShapeComplementarityError, match="failed"):
+        _calculate_shape_complementarity(pdb, "Z", "A")
 
 
-def test_sc_exec_overrides_the_default(monkeypatch):
-    monkeypatch.setenv("SC_EXEC", "/opt/sc-rs/sc")
-    assert resolve_sc_bin() == "/opt/sc-rs/sc"
+@pytest.mark.parametrize("binder,target", [("B", ""), ("", "A")])
+def test_a_missing_side_raises(pdb, binder, target):
+    with pytest.raises(ShapeComplementarityError, match="need both binder and target"):
+        _calculate_shape_complementarity(pdb, binder, target)
 
 
-def test_an_explicit_path_overrides_sc_exec(monkeypatch):
-    monkeypatch.setenv("SC_EXEC", "/opt/sc-rs/sc")
-    assert resolve_sc_bin("/tmp/mine/sc") == "/tmp/mine/sc"
+def test_a_multi_chain_target_is_split(pdb, monkeypatch):
+    """target_chain arrives comma-joined from binder_eval."""
+    seen = {}
+
+    class _R:
+        sc = 0.5
+
+    def fake(path, chains_a, chains_b, **kw):
+        seen["a"], seen["b"] = chains_a, chains_b
+        return _R()
+
+    import protein_interface as pi
+
+    monkeypatch.setattr(pi, "from_pdb", fake)
+    _calculate_shape_complementarity(pdb, "B", "A,C")
+    assert seen["a"] == ["A", "C"] and seen["b"] == ["B"]
 
 
-def test_the_resolved_default_is_used_when_none_is_passed(tmp_path, pdb, monkeypatch):
-    """sc_bin=None must reach the resolver, not the subprocess."""
-    sc_bin = fake_sc(tmp_path, 'echo \'{"sc": 0.42}\'')
-    monkeypatch.setenv("SC_EXEC", sc_bin)
-    assert _calculate_shape_complementarity(pdb, "B", "A", sc_bin=None) == pytest.approx(0.42)
+def test_an_out_of_range_value_raises(pdb, monkeypatch):
+    """SC is a fraction. Out of range means the engine reported something that is
+    not one, which must not reach a column."""
+    import protein_interface as pi
 
+    class _R:
+        sc = 2.0
 
-def test_a_missing_binary_raises(tmp_path, pdb):
-    with pytest.raises(ShapeComplementarityError, match="could not run"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=str(tmp_path / "not_here"))
-
-
-def test_a_failing_binary_raises(tmp_path, pdb):
-    sc_bin = fake_sc(tmp_path, 'echo "boom" >&2; exit 3')
-    with pytest.raises(ShapeComplementarityError, match="exited 3"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
-
-
-def test_empty_output_raises(tmp_path, pdb):
-    sc_bin = fake_sc(tmp_path, "exit 0")
-    with pytest.raises(ShapeComplementarityError, match="no output"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
-
-
-def test_unparseable_output_raises(tmp_path, pdb):
-    sc_bin = fake_sc(tmp_path, 'echo "segmentation fault"')
-    with pytest.raises(ShapeComplementarityError, match="not JSON"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
-
-
-def test_json_without_an_sc_field_raises(tmp_path, pdb):
-    sc_bin = fake_sc(tmp_path, 'echo \'{"area": 812.0}\'')
-    with pytest.raises(ShapeComplementarityError, match="no SC field"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
-
-
-def test_a_non_numeric_sc_raises(tmp_path, pdb):
-    sc_bin = fake_sc(tmp_path, 'echo \'{"sc": "n/a"}\'')
-    with pytest.raises(ShapeComplementarityError, match="non-numeric"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
-
-
-@pytest.mark.parametrize("value", [-0.1, 1.5])
-def test_an_out_of_range_sc_raises(tmp_path, pdb, value):
-    """SC is a fraction. Out of range means sc-rs reported something that is not
-    one, which previously fell through to the placeholder."""
-    sc_bin = fake_sc(tmp_path, f"echo '{json.dumps({'sc': value})}'")
+    monkeypatch.setattr(pi, "from_pdb", lambda *a, **k: _R())
     with pytest.raises(ShapeComplementarityError, match=r"outside \[0, 1\]"):
-        _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
+        _calculate_shape_complementarity(pdb, "B", "A")
 
 
-def test_no_failure_path_returns_the_old_placeholder(tmp_path, pdb):
-    """The point of the change, stated as one assertion: nothing that goes wrong
-    yields a number, least of all a good-looking one."""
-    broken = [
-        "exit 0",                       # empty
-        'echo "boom" >&2; exit 3',      # failure
-        'echo "not json"',              # unparseable
-        'echo \'{"area": 1.0}\'',       # wrong field
-        'echo \'{"sc": 2.0}\'',         # out of range
+def test_no_failure_path_returns_a_number(pdb, tmp_path, monkeypatch):
+    """The point of the change, as one assertion: nothing that goes wrong yields
+    a value, least of all a good-looking one."""
+    import protein_interface as pi
+
+    cases = [
+        lambda: _calculate_shape_complementarity(str(tmp_path / "gone.pdb"), "B", "A"),
+        lambda: _calculate_shape_complementarity(pdb, "Z", "A"),
+        lambda: _calculate_shape_complementarity(pdb, "B", ""),
     ]
-    for i, body in enumerate(broken):
-        sc_bin = fake_sc(tmp_path, body, name=f"sc_{i}")
+    for case in cases:
         with pytest.raises(ShapeComplementarityError):
-            _calculate_shape_complementarity(pdb, "B", "A", sc_bin=sc_bin)
+            case()
 
-
-def test_the_evaluation_caller_records_nan_rather_than_a_number(tmp_path, pdb, monkeypatch):
-    """Evaluation should survive a missing sc-rs, but the column must say
-    'not measured' -- which is what NaN says and 0.70 did not."""
-    np = pytest.importorskip("numpy")
-    binder_eval = pytest.importorskip(
-        "proteinfoundation.evaluation.binder_eval",
-        reason="the evaluation stack is not importable here",
-    )
-    got = binder_eval.compute_bioinformatics_metrics_single(
-        pdb, binder_chain="B", target_chain="A", sc_bin=str(tmp_path / "not_here")
-    )
-    assert all(np.isnan(v) for v in got.values()), got
+    monkeypatch.setattr(pi, "from_pdb", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(ShapeComplementarityError):
+        _calculate_shape_complementarity(pdb, "B", "A")
