@@ -49,6 +49,54 @@ def complex_mpnn_chains(gen_target_chain: list[str], binder_chain: str) -> list[
     return gen_target_chain + [binder_chain]
 
 
+def updated_structure_path(pdb_file_path: str | Path, is_target_ligand: bool) -> str:
+    """The structure a design's interface is measured on.
+
+    For a protein target this is the ``_updated`` view -- the design with the
+    real target sequence threaded in, C-alpha only. For a ligand target there is
+    no such view and the design PDB is used directly. Lifted out of
+    :func:`run_binder_eval` because the cached-refresh path has to measure the
+    interface on the same file the original run did, and two copies of this
+    ``replace("_updated.pdb", ".pdb")`` dance would drift.
+    """
+    name = pdb_name_from_path(pdb_file_path)
+    updated = os.path.join(os.path.dirname(pdb_file_path), name + "_updated.pdb")
+    return updated.replace("_updated.pdb", ".pdb") if is_target_ligand else updated
+
+
+def interface_positions(
+    structure_path: str,
+    binder_chain: str,
+    gen_target_chain: list[str],
+    is_target_ligand: bool,
+    interface_cutoff: float,
+) -> tuple[list[int], list[int]]:
+    """Binder interface positions on one structure: sequence indices and resseqs.
+
+    The single definition behind both things the cutoff decides -- which
+    positions ``mpnn_fixed`` holds fixed, and which residues are counted into
+    ``aa_interface_counts``. Module level so the refresh path asks the question
+    exactly the way the folding path did.
+
+    Ligand targets keep the all-atom path: protein-interface's radius table is
+    protein-only, so every ligand atom comes back without a radius and the burial
+    half of the strict criterion would be silently zero for exactly the atoms
+    that matter.
+    """
+    if is_target_ligand:
+        idx = get_interface_residues_atomistic(structure_path, binder_chain, interface_cutoff)
+        # The atomistic path returns sequence positions only; fix_pos has always
+        # assumed resseq == position + 1 for it, and that is unchanged here.
+        return idx, [i + 1 for i in idx]
+    binder_side, _ = find_interface_residues(
+        structure_path,
+        binder_chains=[binder_chain],
+        target_chains=list(gen_target_chain),
+        contact_cutoff=interface_cutoff,
+    )
+    return sequence_indices(binder_side), sorted(resseqs(binder_side))
+
+
 def geometry_over_models(gen_prot, model_paths, label, is_target_ligand, binder_chain) -> dict:
     """Geometry for one sequence, reduced over the models that predicted it.
 
@@ -81,30 +129,38 @@ def geometry_over_models(gen_prot, model_paths, label, is_target_ligand, binder_
     return reduce_rmsd_over_models(per_model)
 
 
-def recompute_geometry(
+def recompute_derived(
     sequence_type_stats: dict,
     pdb_file_path: str,
     binder_chain: str,
+    gen_target_chain: list[str],
     is_target_ligand: bool,
     n_af2_models: int,
+    interface_cutoff: float,
 ) -> bool:
-    """Redo the RMSDs of a cached result from the structures already on disk.
+    """Redo everything a cached result *derives*, from what is already on disk.
 
-    For when only the *derivation* changed -- how per-model numbers collapse into
-    one -- and not the request that produced the structures. Refolding to learn
-    that a max is not a mean costs hours to recompute an arithmetic choice, which
-    is the same argument that moved verdicts out of evaluate and pLDDT recovery
-    out of a refold.
+    For when the derivation changed and the request that produced the structures
+    did not: how per-model numbers collapse into one, and which residues the
+    interface cutoff selects. Refolding to learn that a max is not a mean, or
+    that a cutoff moved by 3 A, costs hours to recompute arithmetic and a
+    distance query -- the same argument that moved verdicts out of evaluate and
+    pLDDT recovery out of a refold.
+
+    Both halves are done here rather than in two passes because the caller's
+    decision is binary. A row whose RMSDs answer to this run while its interface
+    composition answers to the previous cutoff is the mixed state this exists to
+    prevent, so a half that cannot be refreshed fails the whole refresh.
 
     Mutates ``sequence_type_stats`` in place and reports whether it could. False
-    means some structure is gone, and the caller must refold rather than keep a
-    row where some sequences answer to the new rule and some to the old.
+    means something needed is gone or unrecorded, and the caller must refold.
     """
     entries = []
     for seq_type, stats in sequence_type_stats.items():
         complex_stats = stats.get("complex_stats") or []
         rmsd_stats = stats.get("rmsd_stats") or []
-        if len(complex_stats) != len(rmsd_stats):
+        aa_stats = stats.get("aa_stats") or []
+        if len(complex_stats) != len(rmsd_stats) or len(complex_stats) != len(aa_stats):
             logger.warning(f"Cached stats for '{seq_type}' are ragged; refolding instead of refreshing")
             return False
         for i, complex_stat in enumerate(complex_stats):
@@ -120,12 +176,58 @@ def recompute_geometry(
     if not entries:
         return False
 
+    # The interface is measured on the same file the folding path measured it on,
+    # and it is a property of the design rather than of any one redesigned
+    # sequence -- so it is computed once per design, exactly as run_binder_eval
+    # computes it once before the sequence loop.
+    interface_path = updated_structure_path(pdb_file_path, is_target_ligand)
+    if not os.path.exists(interface_path):
+        logger.info(f"Cannot refresh interface composition: {interface_path} is not on disk. Refolding.")
+        return False
+    interface_seq_indices, _ = interface_positions(
+        interface_path, binder_chain, gen_target_chain, is_target_ligand, interface_cutoff
+    )
+
+    refreshed_counts = {}
+    for seq_type, stats in sequence_type_stats.items():
+        for i, aa_stat in enumerate(stats["aa_stats"]):
+            sequence = aa_stat.get("sequence")
+            if sequence is None:
+                # Caches written before aa_stats recorded its sequence cannot say
+                # which sequence produced these counts, and recovering it by
+                # indexing sequences_dict in parallel is the silent-mispairing
+                # bug that field exists to remove.
+                logger.info(
+                    f"Cached aa_stats for '{seq_type}' sequence {i + 1} records no sequence, so its "
+                    f"interface composition cannot be recomputed. Refolding."
+                )
+                return False
+            if any(j >= len(sequence) for j in interface_seq_indices):
+                # The interface indices and the sequence disagree about the
+                # binder's length. Dropping the out-of-range ones would emit a
+                # composition that looks measured, so refold instead.
+                logger.warning(
+                    f"Interface positions for '{seq_type}' sequence {i + 1} fall outside a "
+                    f"{len(sequence)}-residue binder; refolding rather than counting a subset."
+                )
+                return False
+            refreshed_counts[(seq_type, i)] = (
+                dict(Counter("".join(sequence[j] for j in interface_seq_indices))) if interface_seq_indices else {}
+            )
+
     gen_prot = load_any(pdb_file_path)[0]
     for seq_type, i, paths, label in entries:
         sequence_type_stats[seq_type]["rmsd_stats"][i] = geometry_over_models(
             gen_prot, paths, label, is_target_ligand, binder_chain
         )
-    logger.info(f"Refreshed geometry for {len(entries)} sequence(s) from structures already on disk")
+    # Applied only once every sequence could be recomputed, so a refusal above
+    # leaves the cache exactly as it was found rather than half-rewritten.
+    for (seq_type, i), counts in refreshed_counts.items():
+        sequence_type_stats[seq_type]["aa_stats"][i]["interface_counts"] = counts
+    logger.info(
+        f"Refreshed geometry and interface composition for {len(entries)} sequence(s) "
+        f"from structures already on disk"
+    )
     return True
 
 
@@ -223,7 +325,7 @@ def run_binder_eval(
         raise ValueError(f"Invalid sequence types: {invalid_types}. Valid types are: {valid_types}")
 
     name = pdb_name_from_path(pdb_file_path)
-    updated_pdb_path = os.path.join(os.path.dirname(pdb_file_path), name + "_updated.pdb")
+    updated_pdb_path = updated_structure_path(pdb_file_path, is_target_ligand)
     # Determine chain IDs
     # sort target_pdb_chain alphabetically to be sure that the first chain is the starting chain
     target_pdb_chain = sorted(target_pdb_chain)
@@ -249,8 +351,6 @@ def run_binder_eval(
             gen_pdb_target_chain=gen_target_chain,
             output_path=updated_pdb_path,
         )
-    else:
-        updated_pdb_path = updated_pdb_path.replace("_updated.pdb", ".pdb")
 
     logger.info(f"Binder chain ID: {binder_chain}")
     logger.info(f"Target chain IDs: {target_pdb_chain}, Is ligand: {is_target_ligand}")
@@ -277,26 +377,9 @@ def run_binder_eval(
         num_redesign_seqs = 8 if not is_target_ligand else 1
     # Computed once and reused. The four call sites below asked the same question of
     # the same file, and the answer now costs a SASA pass rather than a KD-tree query.
-    #
-    # Ligand targets keep the all-atom path: protein-interface's radius table is
-    # protein-only, so every ligand atom comes back without a radius -- measured on
-    # generic ligand names, halogens and metals -- and the burial half of the strict
-    # criterion would be silently zero for exactly the atoms that matter.
-    def _interface_seq_indices_and_resseqs() -> tuple[list[int], list[int]]:
-        if is_target_ligand:
-            idx = get_interface_residues_atomistic(updated_pdb_path, binder_chain, interface_cutoff)
-            # The atomistic path returns sequence positions only; fix_pos below has always
-            # assumed resseq == position + 1 for it, and that is unchanged here.
-            return idx, [i + 1 for i in idx]
-        binder_side, _ = find_interface_residues(
-            updated_pdb_path,
-            binder_chains=[binder_chain],
-            target_chains=list(gen_target_chain),
-            contact_cutoff=interface_cutoff,
-        )
-        return sequence_indices(binder_side), sorted(resseqs(binder_side))
-
-    interface_seq_indices, interface_resseqs = _interface_seq_indices_and_resseqs()
+    interface_seq_indices, interface_resseqs = interface_positions(
+        updated_pdb_path, binder_chain, gen_target_chain, is_target_ligand, interface_cutoff
+    )
 
     if "mpnn" in sequence_types:
         logger.info(f"Running inverse folding: {inverse_folding_model}")

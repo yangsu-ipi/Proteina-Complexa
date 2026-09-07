@@ -7,7 +7,6 @@ This module provides functions for evaluating protein binder designs:
 - Force field metrics (hydrogen bonds, electrostatics)
 """
 
-import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -20,6 +19,11 @@ from loguru import logger
 from omegaconf import DictConfig
 from openfold.np.residue_constants import restypes as OF_RESTYPES
 
+from proteinfoundation.evaluation.binder_eval_cache import (
+    binder_eval_fingerprint,
+    read_binder_eval_cache,
+    write_binder_eval_cache,
+)
 from proteinfoundation.evaluation.binder_eval_utils import (
     BIOINFORMATICS_METRIC_COLS,
     DEFAULT_INTERFACE_CUTOFF_LIGAND,
@@ -150,104 +154,6 @@ def initialize_folding_model(
 # =============================================================================
 # Binder Metrics
 # =============================================================================
-
-
-BINDER_EVAL_CACHE_FILENAME = "binder_eval_cache.json"
-
-
-def _binder_cache_path(sample_root_path: str) -> str:
-    return os.path.join(sample_root_path, BINDER_EVAL_CACHE_FILENAME)
-
-
-def binder_eval_fingerprint(**inputs: Any) -> str:
-    """Digest of every input that determines a refolding result.
-
-    A cached result is only reusable if it was produced by the same request.
-    Switching ``binder_folding_method`` from ``colabdesign`` to an ``rf3`` model
-    is the case that matters most: the numbers are not comparable, and without a
-    fingerprint the cache would silently serve AF2 results for an RF3 run.
-    """
-    canonical = json.dumps(inputs, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def write_binder_eval_cache(
-    sample_root_path: str,
-    fingerprint: str,
-    sequence_type_stats: dict,
-    sequences_dict: dict,
-    derivation_fingerprint: str | None = None,
-) -> None:
-    """Persist everything the row-building code needs from ``run_binder_eval``.
-
-    Written alongside — not instead of — ``sequence_type_stats.json``, whose
-    schema stays as it was so existing consumers are unaffected.
-    """
-    try:
-        # Serialise first so a non-encodable payload leaves no half-written file
-        # behind for the next run to trip over.
-        blob = json.dumps(
-            {
-                "fingerprint": fingerprint,
-                "derivation_fingerprint": derivation_fingerprint,
-                "sequence_type_stats": sequence_type_stats,
-                "sequences_dict": sequences_dict,
-            }
-        )
-        with open(_binder_cache_path(sample_root_path), "w") as handle:
-            handle.write(blob)
-    except (OSError, TypeError, ValueError) as exc:
-        # A cache is an optimisation; failing to write one must not fail evaluation.
-        logger.warning(f"Could not write binder eval cache for {sample_root_path}: {exc}")
-
-
-def read_binder_eval_cache(
-    sample_root_path: str,
-    fingerprint: str,
-    sequence_types: list[str],
-    derivation_fingerprint: str | None = None,
-) -> tuple[dict, dict, bool] | None:
-    """Cached refolding results for this design, or None to recompute.
-
-    Returns ``(stats, sequences, geometry_stale)``. None unless the cache exists,
-    parses, was produced by the same *structure* request, and covers every
-    requested sequence type — a cache built for ``["self"]`` must not be reused
-    for a run asking for ``["self", "mpnn"]``.
-
-    ``geometry_stale`` says the structures are the ones this run wants but the
-    numbers read off them are not: the reduction changed. The caller can then
-    recompute geometry rather than refold. A cache written before the split
-    carries no derivation fingerprint and is treated as stale, which is correct
-    -- it cannot say which rule produced its numbers.
-    """
-    cache_path = _binder_cache_path(sample_root_path)
-    if not os.path.exists(cache_path):
-        return None
-    try:
-        with open(cache_path) as handle:
-            cached = json.load(handle)
-        stats = cached["sequence_type_stats"]
-        sequences = cached["sequences_dict"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        logger.warning(f"Ignoring unusable binder eval cache {cache_path}: {exc}")
-        return None
-    if cached.get("fingerprint") != fingerprint:
-        logger.info(
-            f"Binder eval cache at {cache_path} was produced by a different request "
-            f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
-        )
-        return None
-    missing = [t for t in sequence_types if t not in stats or t not in sequences]
-    if missing:
-        logger.info(f"Binder eval cache at {cache_path} lacks sequence types {missing}; recomputing")
-        return None
-    geometry_stale = cached.get("derivation_fingerprint") != derivation_fingerprint
-    if geometry_stale:
-        logger.info(
-            f"Binder eval cache at {cache_path} holds the structures this run wants but numbers "
-            f"from a different reduction; recomputing geometry rather than refolding"
-        )
-    return stats, sequences, geometry_stale
 
 
 def sequences_for_type(
@@ -603,7 +509,6 @@ def compute_binder_metrics(
     cache_fingerprint_base = {
         "folding_model": folding_model,
         "inverse_folding_model": inverse_folding_model,
-        "interface_cutoff": interface_cutoff,
         "num_redesign_seqs": num_redesign_seqs,
         "sequence_types": sorted(sequence_types),
         "is_target_ligand": bool(is_target_ligand),
@@ -624,15 +529,40 @@ def compute_binder_metrics(
         # the silent-stale-cache case this fingerprint exists to prevent.
         "n_af2_models": n_af2_models,
     }
+    # interface_cutoff reaches the structures through exactly one route: the
+    # interface residues are the positions mpnn_fixed holds fixed, so under that
+    # sequence type the cutoff decides which sequences get folded. For every
+    # other sequence type it decides only which residues are counted into
+    # aa_interface_counts, which is read off structures the cutoff never
+    # influenced. Held unconditionally in the structure fingerprint it made a
+    # cutoff change cost a full refold of a campaign -- measured at ~42 GPU-hours
+    # on CBLN1 -- to recompute a distance query. Present here only when it is
+    # actually structural, which also leaves the hash of an mpnn_fixed run
+    # byte-identical to the one it had before this split.
+    if "mpnn_fixed" in sequence_types:
+        cache_fingerprint_base["interface_cutoff"] = interface_cutoff
     # Split from the above on purpose. Everything in cache_fingerprint_base
     # decides which structures get predicted; this decides only how the numbers
     # are read off them. Keeping them apart is what lets a reduction change reuse
-    # the structures instead of refolding to recompute an arithmetic choice --
-    # and it means the structure hash is byte-identical to the single fingerprint
-    # that preceded the split, so caches already on disk are recognised.
+    # the structures instead of refolding to recompute an arithmetic choice.
     derivation_fingerprint = binder_eval_fingerprint(
         geometry_reduction=GEOMETRY_REDUCTION_VERSION,
+        interface_cutoff=interface_cutoff,
     )
+    # Structure fingerprints a previous cutoff would have produced, which this run
+    # is willing to reuse. Empty by default: reuse across a cutoff is a claim
+    # about what the cutoff touched, and the run has to make it rather than
+    # inherit it. A matching cache is accepted as structure-valid, refreshed
+    # against the current cutoff, and rewritten under the current fingerprint --
+    # so the migration happens once, on first use, per design.
+    reusable_interface_cutoffs = [float(c) for c in (cfg_metric.get("reusable_interface_cutoffs", []) or [])]
+    if reusable_interface_cutoffs and "mpnn_fixed" in sequence_types:
+        raise ValueError(
+            "metric.reusable_interface_cutoffs cannot be used with the 'mpnn_fixed' sequence type: "
+            "there the cutoff picks the positions ProteinMPNN holds fixed, so caches written at "
+            f"{reusable_interface_cutoffs} hold different sequences and different structures, not the "
+            "same structures read differently. Refold instead."
+        )
     n_reused = 0
 
     # Advisory second-opinion refolding. Off unless metric.consensus_backends is
@@ -711,20 +641,47 @@ def compute_binder_metrics(
                 gen_target_chain=gen_target_chain,
                 fixed_residues_override=fixed_residues_override,
             )
+            # Built per design because the two per-design keys below are part of
+            # the hash, so a legacy fingerprint cannot be computed once for the run.
+            legacy_fingerprints = [
+                binder_eval_fingerprint(
+                    **cache_fingerprint_base,
+                    interface_cutoff=cutoff,
+                    binder_chain=binder_chain,
+                    gen_target_chain=gen_target_chain,
+                    fixed_residues_override=fixed_residues_override,
+                )
+                for cutoff in reusable_interface_cutoffs
+            ]
             cached = (
-                read_binder_eval_cache(sample_root_path, fingerprint, sequence_types, derivation_fingerprint)
+                read_binder_eval_cache(
+                    sample_root_path,
+                    fingerprint,
+                    sequence_types,
+                    derivation_fingerprint,
+                    legacy_fingerprints,
+                )
                 if reuse_cached_folding
                 else None
             )
             if cached is not None:
-                sequence_type_stats, sequences_dict, geometry_stale = cached
-                if geometry_stale:
-                    from proteinfoundation.metrics.binder_metrics import recompute_geometry
+                sequence_type_stats, sequences_dict, derivation_stale = cached
+                if derivation_stale:
+                    from proteinfoundation.metrics.binder_metrics import recompute_derived
 
                     # The structures this run wants are already on disk; only the
-                    # rule for collapsing them changed. Refolding to learn that a
-                    # max is not a mean would spend hours recomputing arithmetic.
-                    if recompute_geometry(sequence_type_stats, pdb_path, binder_chain, is_target_ligand, n_af2_models):
+                    # rules for reading numbers off them changed. Refolding to
+                    # learn that a max is not a mean, or that a cutoff moved,
+                    # would spend hours recomputing arithmetic.
+                    if recompute_derived(
+                        sequence_type_stats,
+                        pdb_path,
+                        binder_chain,
+                        gen_target_chain,
+                        is_target_ligand,
+                        n_af2_models,
+                        interface_cutoff,
+                    ):
                         write_binder_eval_cache(
                             sample_root_path,
                             fingerprint,
@@ -733,9 +690,10 @@ def compute_binder_metrics(
                             derivation_fingerprint,
                         )
                     else:
-                        # A structure is missing. A row where some sequences answer
-                        # to the new rule and some to the old is worse than a
-                        # refold, so drop the cache rather than patch part of it.
+                        # Something needed is missing or unrecorded. A row where
+                        # some sequences answer to the new rules and some to the
+                        # old is worse than a refold, so drop the cache rather
+                        # than patch part of it.
                         cached = None
             if cached is not None:
                 n_reused += 1

@@ -406,9 +406,7 @@ def test_the_reduction_rule_is_derivation_not_structure():
     """Which structures get predicted, and how numbers are read off them, are two
     questions. Keeping the reduction out of the structure hash is what lets a
     reduction change reuse the structures instead of refolding to recompute an
-    arithmetic choice -- and it keeps the structure hash identical to the single
-    fingerprint that preceded the split, so caches already on disk are still
-    recognised."""
+    arithmetic choice."""
     source = _read("src/proteinfoundation/evaluation/binder_eval.py")
     base = source[source.index("cache_fingerprint_base = {") : source.index("derivation_fingerprint =")]
     assert "GEOMETRY_REDUCTION_VERSION" not in base, "not part of structure identity"
@@ -416,25 +414,17 @@ def test_the_reduction_rule_is_derivation_not_structure():
     assert "geometry_reduction=GEOMETRY_REDUCTION_VERSION" in derivation
 
 
-def test_a_stale_reduction_recomputes_geometry_instead_of_refolding():
+def test_a_stale_derivation_recomputes_instead_of_refolding():
     """The whole point of the split. A cache whose structures match but whose
     numbers came from another rule must be refreshed, not thrown away."""
     source = _read("src/proteinfoundation/evaluation/binder_eval.py")
-    assert "if geometry_stale:" in source
-    # Anchored on the import, because "if geometry_stale:" also appears in the
+    assert "if derivation_stale:" in source
+    # Anchored on the import, because "if derivation_stale:" also appears in the
     # reader that computes it -- and matching there would test the wrong branch.
-    stale_block = source[source.index("import recompute_geometry") :][:1400]
-    assert "recompute_geometry(" in stale_block
+    stale_block = source[source.index("import recompute_derived") :][:1600]
+    assert "recompute_derived(" in stale_block
     assert "cached = None" in stale_block, "missing structures fall back to a refold"
     assert "write_binder_eval_cache(" in stale_block, "the refreshed numbers are persisted"
-
-
-def test_a_cache_predating_the_split_is_treated_as_stale():
-    """It carries no derivation fingerprint, so it cannot say which rule produced
-    its numbers -- and guessing 'the current one' would serve means as maxima."""
-    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
-    read_fn = source[source.index("def read_binder_eval_cache(") : source.index("def sequences_for_type(")]
-    assert 'cached.get("derivation_fingerprint") != derivation_fingerprint' in read_fn
 
 
 def test_every_gated_placement_criterion_is_in_the_placement_set():

@@ -36,6 +36,14 @@ metric:
   # Inverse folding settings
   num_redesign_seqs: 2
   interface_cutoff: 5.0  # all-atom contact distance; 8.0 was CA-CA and selects ~79% of a binder
+  # Structure fingerprints written at an earlier interface_cutoff that this run
+  # will reuse instead of refolding. Empty by default: the cutoff decides which
+  # residues are counted, not which structures were predicted, but saying so is
+  # the run's call and not a default. Rejected outright under the mpnn_fixed
+  # sequence type, where the cutoff picks the positions ProteinMPNN holds fixed
+  # and so does decide the structures. Numbers are always re-derived at the
+  # current cutoff; only the folds are reused.
+  reusable_interface_cutoffs: []
   inverse_folding_model: soluble_mpnn  # protein_mpnn, ligand_mpnn, soluble_mpnn
 
   # Apo refolding: fold each sequence WITHOUT the target and measure scRMSD

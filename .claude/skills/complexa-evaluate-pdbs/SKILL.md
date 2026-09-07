@@ -24,7 +24,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 
 ## What this skill enables
 
-- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:121-141` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
+- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:105-151` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
 - **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and the **fourth** protein-binder success criterion: `apo scRMSD_ca < 2.0`. A design must now fold as designed both with and without its target.
@@ -153,7 +153,7 @@ Ask in one batched `AskUserQuestion`:
 
 1. **`pdb_dir`** — absolute path to the directory of PDBs to evaluate.
 2. **Design type** — protein binder / ligand binder / AME (motif + ligand).
-3. **Folding backend** — `colabdesign` (AF2, protein binders) or `rf3_latest` (ligand / AME). Offer exactly these two; every other value raises `ValueError` in `binder_eval.py:121-141`.
+3. **Folding backend** — `colabdesign` (AF2, protein binders) or `rf3_latest` (ligand / AME). Offer exactly these two; every other value raises `ValueError` in `binder_eval.py:105-151`.
 4. **Target / task name** — must match a key in `configs/targets/targets_dict.yaml`, `configs/targets/ligand_targets_dict.yaml`, or `configs/design_tasks/ame_dict_v2.yaml`. Required for binder + AME evaluation (needed to identify the target reference and, for AME, the motif contigs).
 5. **AME-only**: confirm ligand residue name is already renamed to `L:0` in every PDB (see Troubleshooting). If not, do that rename first.
 
@@ -270,7 +270,7 @@ Two caveats:
 |------------------------------------------------|-----------------------------------------------------------------------|
 | `++sample_storage_path=<dir>`                  | The directory of PDBs to evaluate (required).                         |
 | `++dataset.task_name=<name>`                   | Target / AME task name (binders, AME). Resolves target PDB + contigs. |
-| `++metric.binder_folding_method=<backend>`     | `colabdesign`, or any name containing `rf3` (e.g. `rf3_latest`). Nothing else is accepted (`binder_eval.py:121-141`). |
+| `++metric.binder_folding_method=<backend>`     | `colabdesign`, or any name containing `rf3` (e.g. `rf3_latest`). Nothing else is accepted (`binder_eval.py:105-151`). |
 | `++metric.inverse_folding_model=<model>`       | `protein_mpnn` / `soluble_mpnn` / `ligand_mpnn`.                      |
 | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which sequence flavors to refold.                                   |
 | `++metric.num_redesign_seqs=N`                 | ProteinMPNN/LigandMPNN redesign count.                                |
