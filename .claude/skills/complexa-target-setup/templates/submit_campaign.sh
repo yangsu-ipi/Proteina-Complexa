@@ -17,6 +17,19 @@
 # produced. Re-running evaluate and not analyze leaves a results CSV that
 # disagrees with the per-job CSVs it was built from, and nothing says so.
 #
+# `from..to` stops early, for the one case where stopping is right: several runs
+# re-evaluated together share ONE pooled report, and chaining a pooled to each of
+# them queues a campaign total per run, every one of which reads whatever has
+# finished so far. The last to run happens to be correct; the others write a
+# mid-flight number to pooled_analysis.json under the same name.
+#
+#   for r in production "followup 900" "followup 1110"; do
+#     submit_campaign.sh $r evaluate..analyze
+#   done
+#   submit_campaign.sh production pooled          # once, after all of them
+#
+# `..analyze` starts from the beginning; `evaluate..` runs to the end.
+#
 # Stages run as separate jobs joined by afterok rather than as one long job, for
 # two reasons. A failure then costs the stage that failed and not the hours
 # before it -- generation's output survives an evaluation that dies. And the
@@ -25,7 +38,7 @@
 # hold them idle.
 set -euo pipefail
 
-KIND="${1:?usage: submit_campaign.sh smoke|production [FROM_STAGE] | followup N_DESIGNS [FROM_STAGE] [-- HYDRA_OVERRIDE...]}"
+KIND="${1:?usage: submit_campaign.sh smoke|production [STAGE|FROM..TO] | followup N_DESIGNS [STAGE|FROM..TO] [-- HYDRA_OVERRIDE...]}"
 shift
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
@@ -51,7 +64,19 @@ fi
 # Parsed before the follow-up is planned, because which stages run decides
 # whether this is a new follow-up or a re-run of one that exists.
 FROM_STAGE="all"
-if [[ $# -gt 0 && "${1}" != --* ]]; then FROM_STAGE="$1"; shift; fi
+TO_STAGE=""
+if [[ $# -gt 0 && "${1}" != --* ]]; then
+  if [[ "$1" == *".."* ]]; then
+    FROM_STAGE="${1%%..*}"; TO_STAGE="${1##*..}"
+    # `..analyze` means from the beginning, `evaluate..` to the end. Both halves
+    # optional so the range form degrades to the plain one rather than erroring
+    # on a stage name that is merely absent.
+    [[ -n "$FROM_STAGE" ]] || FROM_STAGE="all"
+  else
+    FROM_STAGE="$1"
+  fi
+  shift
+fi
 
 # Everything left is passed to Hydra by every stage, so a run that differs from
 # the campaign's config differs the same way at each step -- a redesign count set
@@ -86,7 +111,29 @@ else
     exit 2
   fi
 fi
+
+# Truncated after the from-stage selection, so an end before the start is caught
+# as the contradiction it is rather than silently yielding nothing.
+if [[ -n "$TO_STAGE" ]]; then
+  END=-1
+  for i in "${!SELECTED[@]}"; do
+    if [[ "${SELECTED[$i]%%:*}" == "$TO_STAGE" ]]; then END=$i; break; fi
+  done
+  if ((END < 0)); then
+    if [[ " ${STAGES[*]%%:*} " == *" $TO_STAGE "* ]]; then
+      echo "stage range '${FROM_STAGE}..${TO_STAGE}' ends before it starts: ${TO_STAGE} runs before ${FROM_STAGE}." >&2
+    else
+      echo "unknown end stage '$TO_STAGE' for kind '$KIND'." >&2
+    fi
+    echo "This campaign runs, in order: ${STAGES[*]%%:*} -- or 'all' for the whole chain." >&2
+    exit 2
+  fi
+  SELECTED=("${SELECTED[@]:0:$((END + 1))}")
+fi
 FIRST_STAGE="${SELECTED[0]%%:*}"
+# Not ${SELECTED[-1]}: negative subscripts need bash 4.3 and macOS ships 3.2,
+# so the template would parse everywhere and run only on the cluster.
+LAST_STAGE="${SELECTED[${#SELECTED[@]}-1]%%:*}"
 
 if [[ "$KIND" == followup ]]; then
   # A chain that includes generate is a new follow-up; one that starts later is a
@@ -142,7 +189,18 @@ submit() {  # name kind_of_node dependency args...
   fi
 }
 
-[[ "$FROM_STAGE" == all ]] || echo "re-running from ${FIRST_STAGE}: ${SELECTED[*]%%:*}"
+[[ "$FROM_STAGE" == all && -z "$TO_STAGE" ]] || echo "re-running: ${SELECTED[*]%%:*}"
+# Said once, here, rather than left to be noticed when the total looks stale. The
+# pooled report is the campaign's headline number and this chain does not produce
+# it -- which is the point of stopping early, but only if it is followed up.
+if [[ "$LAST_STAGE" != pooled && "$KIND" != smoke ]]; then
+  # Named as `production pooled` whatever this chain's kind is: the report is
+  # campaign-wide and takes no run, so the kind is immaterial -- and `followup`
+  # is not a runnable spelling here, since it would demand a design count for a
+  # stage that has no run of its own.
+  echo "  note: no pooled report is queued. The report is campaign-wide, so once every chain"
+  echo "        you are re-running has finished, run: submit_campaign.sh production pooled"
+fi
 
 dep=""
 for entry in "${SELECTED[@]}"; do

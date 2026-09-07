@@ -632,6 +632,67 @@ def test_a_stage_argument_reruns_from_there_to_the_end(tmp_path):
     assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
 
 
+def test_a_range_stops_at_the_end_stage(tmp_path):
+    """Several runs re-evaluated together share one pooled report. Chaining a
+    pooled to each queues a campaign total per run, and every one but the last
+    reads a half-re-evaluated campaign and writes it under the same name."""
+    proc, stages = submit(campaign_package(tmp_path), "production", "evaluate..analyze")
+    assert proc.returncode == 0, proc.stderr
+    assert [s[-1] for s in stages] == ["evaluate", "analyze"]
+
+
+def test_an_open_ended_range_degrades_to_the_plain_forms(tmp_path):
+    pkg = campaign_package(tmp_path)
+    _, to_end = submit(pkg, "production", "evaluate..")
+    _, from_start = submit(pkg, "production", "..analyze")
+    assert [s[-1] for s in to_end] == ["evaluate", "analyze", "pooled"]
+    assert [s[-1] for s in from_start] == ["generate", "filter", "evaluate", "analyze"]
+
+
+def test_omitting_the_pooled_report_says_so(tmp_path):
+    """The campaign total is the headline number and this chain does not produce
+    it. Stopping early is only right if it is followed up."""
+    proc, _ = submit(campaign_package(tmp_path), "production", "evaluate..analyze")
+    assert "no pooled report is queued" in proc.stdout
+    assert "submit_campaign.sh production pooled" in proc.stdout
+
+
+def test_the_suggested_pooled_command_is_one_that_runs(tmp_path):
+    """It said `followup pooled` for a follow-up chain, which is not a runnable
+    spelling: followup demands a design count, and the pooled report has no run
+    of its own. A note naming a command that errors is worse than no note."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900)])
+    proc, _ = submit(pkg, "followup", "900", "evaluate..analyze")
+    assert "no pooled report is queued" in proc.stdout
+    assert "followup pooled" not in proc.stdout
+    suggested = "production pooled"
+    assert suggested in proc.stdout
+    # And it does run.
+    rerun, stages = submit(pkg, *suggested.split())
+    assert rerun.returncode == 0, rerun.stderr
+    assert stages == [["pooled"]]
+
+
+def test_a_whole_chain_does_not_warn_about_the_pooled_report(tmp_path):
+    proc, _ = submit(campaign_package(tmp_path), "production")
+    assert "no pooled report" not in proc.stdout
+
+
+def test_a_range_that_ends_before_it_starts_says_which_way_round(tmp_path):
+    """'analyze..evaluate' is a real mistake with an empty result, and 'no stages
+    selected' would not tell you which half was wrong."""
+    proc, _ = submit(campaign_package(tmp_path), "production", "analyze..evaluate")
+    assert proc.returncode == 2
+    assert "ends before it starts" in proc.stderr
+    assert "evaluate runs before analyze" in proc.stderr
+
+
+def test_an_unknown_end_stage_is_distinguished_from_a_backwards_one(tmp_path):
+    proc, _ = submit(campaign_package(tmp_path), "production", "evaluate..refold")
+    assert proc.returncode == 2
+    assert "unknown end stage 'refold'" in proc.stderr
+
+
 def test_the_pooled_report_is_reachable_on_its_own(tmp_path):
     """Re-deriving the campaign total costs a comparison, not a re-evaluation."""
     proc, stages = submit(campaign_package(tmp_path), "production", "pooled")
@@ -825,8 +886,30 @@ def test_a_generation_config_that_rewards_on_sc_is_still_detected(tmp_path):
             }
         },
     }
-    assert chk.needs_shape_complementarity(reward_cfg, reward_cfg["metric"])
-    assert not chk.needs_shape_complementarity({"metric": {}}, {})
+    assert chk.needs_protein_interface(reward_cfg, reward_cfg["metric"])
+    assert not chk.needs_protein_interface({"metric": {}}, {})
+
+
+def test_a_protein_binder_run_needs_the_engine_whatever_the_metric_flags_say():
+    """The gate used to ask only whether the bioinformatics COLUMNS were on. But
+    the interface definition runs on every protein-target design regardless --
+    it is what aa_interface_counts counts and what mpnn_fixed holds fixed -- so a
+    run with those columns off still dies at the first design without it."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("chk2", TEMPLATES / "check_preflight.py")
+    chk = importlib.util.module_from_spec(spec)
+    sys.modules["chk2"] = chk
+    spec.loader.exec_module(chk)
+
+    bare = {"compute_binder_metrics": True, "compute_pre_refolding_metrics": False}
+    assert chk.needs_protein_interface({"result_type": "protein_binder", "metric": bare}, bare)
+    # A ligand target takes the atomistic path and never reaches the extension.
+    assert not chk.needs_protein_interface({"result_type": "ligand_binder", "metric": bare}, bare)
+    # And a campaign that runs no binder track at all is not asked for it.
+    monomer = {"compute_binder_metrics": False}
+    assert not chk.needs_protein_interface({"result_type": "monomer", "metric": monomer}, monomer)
 
 
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):

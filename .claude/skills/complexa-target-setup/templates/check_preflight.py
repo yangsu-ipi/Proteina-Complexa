@@ -29,19 +29,37 @@ from pathlib import Path
 import yaml
 
 
-def needs_shape_complementarity(cfg: dict, metric: dict) -> bool:
-    """Whether anything in this config routes to the sc-rs binary.
+def needs_protein_interface(cfg: dict, metric: dict) -> bool:
+    """Whether anything in this config routes to the protein-interface extension.
 
-    Evaluation reaches it through the bioinformatics interface metrics, on the
-    generated structures, the refolded ones, or both; generation reaches it
+    Three routes, and the first is the one this gate used to miss. Every binder
+    evaluation of a *protein* target asks for the interface residues of every
+    design -- they are what ``aa_interface_counts`` counts and what ``mpnn_fixed``
+    holds fixed -- so the extension is reached whether or not the bioinformatics
+    columns are switched on. A ligand target takes the atomistic path instead and
+    never touches it. The cached-refresh path reaches it the same way.
+
+    The other two are the ones it did catch: the bioinformatics interface metrics
+    on the generated structures, the refolded ones, or both; and generation
     through BioinformaticsRewardModel. A sub-flag that is absent counts as on,
-    which is what evaluate.py itself defaults to -- reading it the other way
-    would let a config that will call sc pass a gate that says it will not.
+    which is what evaluate.py itself defaults to -- reading it the other way would
+    let a config that will call it pass a gate that says it will not.
 
-    No binary is part of this any more: shape complementarity runs in process
+    ``result_type`` is how a ligand target announces itself; absent, this assumes
+    protein, because over-requiring a declared dependency costs nothing and
+    under-requiring it costs a GPU job that dies hours in.
+
+    No binary is part of any of this: shape complementarity runs in process
     through protein-interface, and secondary structure comes from mdtraj. The
-    requirement this detects is that the extension imports.
+    requirement is that the extension imports.
     """
+    # Matched to the gate that decides whether the binder track runs at all
+    # (`evaluate.py:110`, default False), not to the inner call site inside that
+    # track (`binder_eval.py:638`, default True). Reading the inner one would
+    # demand the extension from a monomer-only campaign that never mentions
+    # binders.
+    if metric.get("compute_binder_metrics", False) and "ligand" not in str(cfg.get("result_type", "")):
+        return True
     for parent, child in (
         ("compute_pre_refolding_metrics", "pre_refolding"),
         ("compute_refolded_structure_metrics", "refolded"),
@@ -81,12 +99,20 @@ def main() -> int:
     # Shape complementarity used to need an sc binary on a path; it now runs in
     # process through protein-interface, so what a config routing to it requires
     # is an importable extension rather than a file that exists. A manylinux
-    # wheel that resolves but will not load fails here rather than hours in.
-    if needs_shape_complementarity(cfg, metric):
+    # wheel that resolves but will not load fails here rather than hours in --
+    # and it would, because the extension is imported inside the functions that
+    # use it rather than at module scope, so nothing earlier trips over it.
+    if needs_protein_interface(cfg, metric):
         try:
+            from importlib.metadata import version
+
             import protein_interface  # noqa: F401
+
+            # Reported, not pinned. build_blackwell.sh owns the pin; a second
+            # copy of it here is a second thing to forget to update.
+            print(f"  protein-interface {version('protein-interface')} imports")
         except Exception as exc:
-            failures.append(f"config asks for shape complementarity but protein_interface will not import: {exc}")
+            failures.append(f"config routes to the interface definition but protein_interface will not import: {exc}")
     community=Path(os.environ.get("COMMUNITY_MODELS_PATH", os.path.join(os.environ.get("COMPLEXA_REPO",""),"community_models")))
     ckpt=Path(os.environ.get("SOLUBLE_MPNN_CKPT", community/"LigandMPNN/model_params/solublempnn_v_48_020.pt"))
     if not ckpt.is_file(): failures.append(f"missing soluble ProteinMPNN checkpoint: {ckpt}")

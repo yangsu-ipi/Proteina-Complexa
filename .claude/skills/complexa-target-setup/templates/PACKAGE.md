@@ -105,6 +105,22 @@ changed, and everything downstream of a changed stage reads what it produced --
 re-running evaluate and not analyze leaves a results CSV disagreeing with the
 per-job CSVs it was built from, with nothing saying so.
 
+`from..to` stops early, for the one case where stopping is right: several runs
+re-evaluated together share **one** pooled report, and chaining a pooled to each
+of them queues a campaign total per run, every one of which reads whatever has
+finished so far. The last to run happens to be correct; the others write a
+mid-flight number to `pooled_analysis.json` under the same name.
+
+    for r in production "followup 900" "followup 1110"; do
+        scripts/submit_campaign.sh $r evaluate..analyze
+    done
+    scripts/submit_campaign.sh production pooled     # once, after all of them
+
+`..analyze` starts from the beginning and `evaluate..` runs to the end, so the
+range form degrades to the plain one. A chain that omits the pooled report says
+so on submission — the campaign total is the headline number, and stopping early
+is only right if it is followed up.
+
 **A follow-up re-run reuses its index; it does not become a new follow-up.** The
 chain that includes `generate` plans a new one, as before. A chain starting later
 resolves the existing follow-up by the design count it was planned for, and
