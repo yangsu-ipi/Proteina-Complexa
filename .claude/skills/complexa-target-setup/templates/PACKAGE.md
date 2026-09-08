@@ -175,14 +175,26 @@ It writes nothing, reserves no run number and submits nothing. The conversion is
 advice: baking it into the submit path made the estimate binding, and left no way
 to run a size the arithmetic had not chosen.
 
-**Orderable is the noisier target, and the command says so.** Designs per seed is
-close to stable; sequences per seed that pass all six criteria is not. On CBLN1 it
-fell every run — 2.56, 2.19, 1.78 — as later runs deduplicated against earlier
-ones and the easy modes went first. So the planning number is the *most recent*
-run's rate, not the pooled mean, and the series is printed alongside it: an
-average of a falling series plans for a run that already happened. Sizing this way
-needs `metadata/pooled_analysis.json`, since orderable counts come from applying
-the success thresholds; without it, size by designs or seeds.
+**Orderable is the noisier target, and it is sized on the low end of an
+interval.** Designs per seed is close to stable (5.31 / 5.53 / 5.56 on CBLN1) and
+pools safely as a point estimate. Orderable per design is not: 0.482 / 0.396 /
+0.319, a spread of 3.1 standard errors end to end. Sizing on its mean is what
+over-promised the campaign's first two follow-ups by about 40% — predicted ~434
+and ~535 orderable, delivered 372 and 373.
+
+**The interval is clustered, and this matters more than it sounds.** Beam search
+expands one `nres` draw into several candidates, so designs sharing a root are not
+independent draws — and binder length, which dominates whether a design passes
+(0.14 / 0.37 / 0.58 orderable-per-design by length band), is drawn per root.
+Treating the designs as independent understates the variance 4–7×. After the
+first CBLN1 run the naive interval was [0.391, 0.574] and *excluded* the 0.319
+the third run delivered; clustered by beam root it was [0.292, 0.673] and covered
+both later runs. So `estimate_run.sh` clusters, sizes on the lower bound, and
+prints how much wider that made the interval.
+
+It needs the analyze stage to have run, since orderable counts come from the
+per-sequence verdicts in `RAW_*_combined.csv`; without those, size by designs or
+seeds.
 
 Only the campaign's first run has to be sized by hand, because it is the only one
 with nothing to calibrate on. Every later run derives raw, keep and expect from

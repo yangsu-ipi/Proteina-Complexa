@@ -555,28 +555,43 @@ def test_an_orderable_target_converts_to_a_seed_count(tmp_path):
     proc = estimate(pkg, "--orderable", 500)
     assert proc.returncode == 0, proc.stderr
     assert "orderable" in proc.stdout
-    assert "orderable per seed, from the most recent run" in proc.stdout
+    assert "orderable per design (95% CI" in proc.stdout
 
 
-def test_the_orderable_rate_is_shown_as_a_series_not_an_average(tmp_path):
-    """It has a direction. On CBLN1 it fell 2.56 -> 2.19 -> 1.78 across three
-    runs, so the pooled mean of 2.05 over-promises the next one by ~15%. Planning
-    on the most recent rate and printing the series lets a reader see that;
-    printing one averaged number would look authoritative and be optimistic."""
+def test_the_orderable_rate_carries_a_clustered_interval(tmp_path):
+    """Beam search expands one nres draw into several candidates, so designs
+    sharing a root are not independent -- and binder length, which dominates
+    whether a design passes, is drawn per root. Treating designs as independent
+    understated the variance 4-7 fold on CBLN1: the naive interval after the
+    first run was [0.391, 0.574] and excluded the 0.319 the third run delivered,
+    while the clustered [0.292, 0.673] covered both later runs."""
     pkg = campaign_package(tmp_path, pooled=True)
     out = estimate(pkg, "--orderable", 500).stdout
+    assert "orderable per design (95% CI" in out
+    assert "clusters)" in out
     assert "per run so far:" in out
-    assert out.count(" 2.") + out.count(" 1.") >= 2, "more than one rate is shown"
-    assert "would over-promise" in out
+    assert "wider than treating designs as independent draws" in out
 
 
-def test_sizing_by_orderable_needs_the_pooled_report(tmp_path):
+def test_an_orderable_target_is_sized_on_the_low_end(tmp_path):
+    """Sizing on the mean is what over-promised the first two follow-ups by ~40%.
+    The low end over-delivers instead, which is the failure direction to prefer --
+    and the line says what the mean would have given, so the choice is visible."""
+    pkg = campaign_package(tmp_path, pooled=True)
+    out = estimate(pkg, "--orderable", 500).stdout
+    assert "sized on" in out and "the low end" in out
+    assert "at the mean it would be" in out
+    assert "at least" in out, "the projection is a floor, not a point estimate"
+
+
+def test_sizing_by_orderable_needs_the_analysis(tmp_path):
     """Orderable counts come from applying the success thresholds, which is
-    analysis. A campaign that has not run one can still size by designs."""
+    analysis, and the interval needs them per design. A campaign that has not run
+    the analyze stage can still size by designs or by seeds."""
     pkg = campaign_package(tmp_path)
     proc = estimate(pkg, "--orderable", 500)
     assert proc.returncode != 0
-    assert "pooled_analysis.json" in proc.stderr or "pooled report" in proc.stderr
+    assert "RAW_" in proc.stderr and "analyze stage" in proc.stderr
     assert estimate(pkg, 900).returncode == 0, "and the other forms still work"
 
 
@@ -588,11 +603,13 @@ def test_a_run_is_sized_by_exactly_one_target(tmp_path):
     pf = importlib.util.module_from_spec(spec)
     sys.modules["pf"] = pf
     spec.loader.exec_module(pf)
-    obs = {"designs_per_seed": 5.0, "expansion_per_seed": 8.0, "trim_ratio": 0.97, "orderable_per_seed": 2.0}
+    obs = {"designs_per_seed": 5.0, "expansion_per_seed": 8.0, "trim_ratio": 0.97,
+           "orderable_per_design": 0.4, "orderable_per_design_lower": 0.4}
     with pytest.raises(SystemExit, match="exactly one"):
         pf.plan(2, 5, 2, obs, want_designs=700, want_orderable=500)
     with pytest.raises(SystemExit, match="exactly one"):
         pf.plan(2, 5, 2, obs)
+    # 500 orderable / (0.4 per design x 5.0 designs per seed) = 250 seeds
     assert pf.plan(2, 5, 2, obs, want_orderable=500)["seeds"] == 250
 
 
@@ -731,18 +748,20 @@ def campaign_package(tmp_path, *, followups=(), pooled=False):
     inf.mkdir(parents=True)
     (inf / "top_samples_pipeline.csv").write_text("x\n")
     if pooled:
-        # Orderable counts live in the pooled report, because they come from
-        # applying the success thresholds rather than from generation.
-        (pkg / "metadata" / "pooled_analysis.json").write_text(
-            json.dumps(
-                {
-                    "per_run": {
-                        "pipeline_T_pfx_production": {"designs": 340, "orderable_sequences": 164},
-                        "pipeline_T_pfx_followup1": {"designs": 940, "orderable_sequences": 372},
-                    }
-                }
-            )
-        )
+        # Per-design verdicts, because the interval is clustered by beam root and
+        # so needs each design rather than a per-run total. Names carry the
+        # `_n_{nres}_` and `beam_orig{k}` tags the clustering reads, and the
+        # outcome is made to vary by root so a clustered interval is wider than
+        # a naive one -- which is the property under test.
+        run_dir = pkg / "evaluation_results" / "pipeline_T_pfx_production"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        lines = ["pdb_path,self_pass_all,mpnn_pass_all"]
+        for root in range(12):
+            for i in range(8):
+                name = f"job_0_n_{180 + root}_id_{i}_beam_orig{root % 3}_bm1"
+                verdict = "1" if root % 2 else "0"
+                lines.append(f"/x/{name}/{name}.pdb,\"[{verdict}]\",\"[{verdict}, 0]\"")
+        (run_dir / "RAW_protein_binder_results_pipeline_combined.csv").write_text("\n".join(lines) + "\n")
     for index, wanted in followups:
         # Full records, because a run that already exists is now replayed rather
         # than re-derived: its size is history, and re-deriving would move it as

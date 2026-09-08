@@ -37,16 +37,20 @@ PLAN="$(python3 "$HERE/scripts/plan_followup.py" \
   --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME")"
 eval "$PLAN"
 
-echo "run #${RUN_NUMBER} would be ${FOLLOWUP_SEEDS} seeds -> about ${RUN_PROJECTED_DESIGNS} designs${RUN_PROJECTED_ORDERABLE:+, of which ~${RUN_PROJECTED_ORDERABLE} orderable}"
+echo "run #${RUN_NUMBER} would be ${FOLLOWUP_SEEDS} seeds -> about ${RUN_PROJECTED_DESIGNS} designs${RUN_PROJECTED_ORDERABLE:+, of which at least ~${RUN_PROJECTED_ORDERABLE} orderable}"
 echo "  ${FOLLOWUP_RAW} raw, trimmed to ${FOLLOWUP_EXPECT} before global dedup"
 echo "  at ${RUN_DESIGNS_PER_SEED} designs per seed, measured over: ${RUN_CALIBRATED_ON}"
-if [[ -n "${RUN_ORDERABLE_PER_SEED:-}" ]]; then
-  # The orderable rate has a direction, so the series is shown rather than an
-  # average: on CBLN1 it fell 2.56 -> 2.19 -> 1.78 across three runs, and planning
-  # on the mean of a declining series plans for a run that already happened.
-  echo "  at ${RUN_ORDERABLE_PER_SEED} orderable per seed, from the most recent run (${RUN_ORDERABLE_BASIS})"
+if [[ -n "${RUN_ORDERABLE_PER_DESIGN:-}" ]]; then
+  # Sized on the low end, and the interval is clustered. Beam search expands one
+  # nres draw into several candidates, so designs sharing a root are not
+  # independent -- and binder length, which dominates whether a design passes, is
+  # drawn per root. Treating designs as independent understated the variance
+  # 4-7 fold on CBLN1, and the naive interval after the first run excluded what
+  # the third run actually delivered.
+  echo "  at ${RUN_ORDERABLE_PER_DESIGN} orderable per design (95% CI ${RUN_ORDERABLE_PER_DESIGN_LOWER}-${RUN_ORDERABLE_PER_DESIGN_UPPER}, ${RUN_ORDERABLE_CLUSTERS} clusters)"
   echo "    per run so far: ${RUN_ORDERABLE_SERIES}"
-  echo "    a falling series means the pooled average would over-promise; read the trend"
+  echo "    sized on ${RUN_ORDERABLE_PER_DESIGN_LOWER}, the low end -- at the mean it would be ~${RUN_PROJECTED_ORDERABLE_MID}"
+  echo "    interval is ${RUN_ORDERABLE_DESIGN_EFFECT}x wider than treating designs as independent draws"
 fi
 echo
 echo "  submit with: scripts/submit_campaign.sh production ${FOLLOWUP_SEEDS}"

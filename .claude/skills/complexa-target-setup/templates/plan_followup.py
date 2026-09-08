@@ -29,8 +29,12 @@ the outputs afterwards.
 from __future__ import annotations
 
 import argparse
+import ast
+import csv
 import json
 import math
+import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -180,57 +184,120 @@ def completed_runs(campaign_dir: Path, first_run_seeds: int) -> list[dict]:
     return runs
 
 
-def orderable_yield(campaign_dir: Path, first_run_seeds: int) -> dict:
-    """Orderable sequences per seed, per completed run and most recently.
+def _design_cluster(pdb_path: str) -> str:
+    """What a design's per-design outcome is correlated with.
 
-    A different question from designs per seed, and a much noisier one. Designs
-    are what generation produced; orderable sequences are what survived six
-    success criteria, so this folds in everything the gate looks at.
+    Beam search expands one nres draw into several candidates, so designs sharing
+    a root are not independent draws -- and binder length, which dominates whether
+    a design passes (0.14 / 0.37 / 0.58 per orderable-per-design by length band on
+    CBLN1), is drawn per root. Treating the designs as independent understated the
+    variance 4-7 fold there.
 
-    Measured on CBLN1 it fell monotonically -- 2.56, 2.19, 1.78 per seed across
-    the three runs -- because later runs deduplicate against earlier ones and the
-    easy modes go first. The pooled average of 2.05 therefore over-predicts the
-    next run by about 15%, which is why the planning number here is the most
-    recent run's rate and the series is reported alongside it. A single average
-    would have looked authoritative and been optimistic.
-
-    Needs the pooled report: orderable counts come from applying the success
-    thresholds, which is analysis, not generation.
+    Read from the name, which encodes `_n_{nres}_` and `beam_orig{k}`. A run whose
+    names carry neither gets one cluster per design, which is the naive estimate --
+    honest for a sampler with no such structure, and no worse than what preceded
+    this for one that has it under another name.
     """
-    pooled = campaign_dir / "metadata" / "pooled_analysis.json"
-    if not pooled.exists():
+    base = os.path.basename(pdb_path)
+    nres = re.search(r"_n_(\d+)_", base)
+    orig = re.search(r"beam_orig(\d+)", base)
+    if nres and orig:
+        return f"{nres.group(1)}:{orig.group(1)}"
+    if nres:
+        return nres.group(1)
+    return base
+
+
+def _orderable_per_design(run_dir: Path) -> list[tuple[str, int]]:
+    """(cluster, orderable count) for every design of one run.
+
+    Counted from the per-sequence verdicts the analysis stage wrote, which is the
+    same arithmetic the pooled report sums -- there is no second definition of
+    "orderable" here.
+    """
+    matches = sorted(run_dir.glob("RAW_*_combined.csv"))
+    if not matches:
+        return []
+    out = []
+    with matches[0].open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            total = 0
+            for key, value in row.items():
+                if key.endswith("_pass_all") and isinstance(value, str) and value.startswith("["):
+                    try:
+                        total += sum(1 for x in ast.literal_eval(value) if x)
+                    except (ValueError, SyntaxError):
+                        continue
+            out.append((_design_cluster(row.get("pdb_path", "")), total))
+    return out
+
+
+def orderable_yield(
+    campaign_dir: Path, first_run_seeds: int, config_name: str, task_name: str, run_prefix: str
+) -> dict:
+    """Orderable sequences per design, pooled, with a cluster-robust interval.
+
+    A different quantity from designs per seed, and a much less stable one: on
+    CBLN1 designs per seed held at 5.31-5.56 across three runs while this fell
+    0.482, 0.396, 0.319. So it is reported with an interval and sized on the low
+    end of it, rather than as a point estimate.
+
+    The interval is clustered by :func:`_design_cluster`. The naive one -- treating
+    every design as an independent draw -- gave [0.391, 0.574] after the first run
+    and excluded what the third run actually delivered; clustered, [0.292, 0.673]
+    covered both later runs. Sizing on 0.29 rather than 0.48 would have asked for
+    about 1.6x the designs and over-delivered, which is the failure direction to
+    prefer.
+    """
+    root = campaign_dir / "evaluation_results"
+    series, pooled = [], []
+    for run in completed_runs(campaign_dir, first_run_seeds):
+        designs = _orderable_per_design(root / f"{config_name}_{task_name}_{run_prefix}_{run['tag']}")
+        if not designs:
+            continue
+        total = sum(n for _, n in designs)
+        series.append(
+            {
+                "tag": run["tag"],
+                "designs": len(designs),
+                "orderable": total,
+                "per_design": total / len(designs),
+                "per_seed": total / run["seeds"] if run["seeds"] else 0.0,
+            }
+        )
+        pooled += [(f"{run['tag']}:{cluster}", n) for cluster, n in designs]
+    if not pooled:
         raise SystemExit(
-            f"Cannot size by orderable sequences: {pooled} does not exist. Orderable counts come "
-            f"from the pooled report, which applies the success thresholds -- run the `pooled` stage "
+            f"Cannot size by orderable sequences: no RAW_*_combined.csv found under {root}. Those "
+            f"carry the per-sequence verdicts orderable counts come from -- run the analyze stage "
             f"first, or size the run by designs or by seeds instead."
         )
-    per_run = (_load(pooled).get("per_run") or {})
-    by_tag = {}
-    for name, value in per_run.items():
-        for tag in (name.split("_")[-1],):
-            if run_number(tag) is not None:
-                by_tag[tag] = value
-    series = []
-    for run in completed_runs(campaign_dir, first_run_seeds):
-        stats = by_tag.get(run["tag"])
-        if not stats or not run["seeds"]:
-            continue
-        orderable = int(stats.get("orderable_sequences") or 0)
-        series.append({"tag": run["tag"], "seeds": run["seeds"], "orderable": orderable,
-                       "per_seed": orderable / run["seeds"]})
-    if not series:
+
+    counts = [n for _, n in pooled]
+    n = len(counts)
+    mean = sum(counts) / n
+    groups: dict[str, list[int]] = {}
+    for cluster, value in pooled:
+        groups.setdefault(cluster, []).append(value)
+    # Cluster-robust variance of a mean, with the usual small-sample correction.
+    G = len(groups)
+    ss = sum((sum(v) - len(v) * mean) ** 2 for v in groups.values())
+    se = math.sqrt(ss / n**2 * (G / (G - 1))) if G > 1 else float("inf")
+    naive = math.sqrt(sum((c - mean) ** 2 for c in counts) / (n - 1) / n) if n > 1 else float("inf")
+    lower = max(mean - 1.96 * se, 0.0)
+    if lower <= 0:
         raise SystemExit(
-            f"Cannot size by orderable sequences: {pooled} reports none of this campaign's completed "
-            f"runs. Re-run the pooled stage so the two agree about which runs exist."
+            f"Cannot size by orderable sequences: the pooled rate is {mean:.3f} per design with a "
+            f"95% lower bound at or below zero over {G} clusters. Too little has been measured to "
+            f"size on it; use --want-designs or --seeds."
         )
     return {
         "orderable_series": series,
-        # The most recent run, not the pooled average: the rate has a direction,
-        # and planning on the mean of a declining series plans for a run that
-        # already happened.
-        "orderable_per_seed": series[-1]["per_seed"],
-        "orderable_basis": series[-1]["tag"],
-        "orderable_pooled_per_seed": sum(r["orderable"] for r in series) / sum(r["seeds"] for r in series),
+        "orderable_per_design": mean,
+        "orderable_per_design_lower": lower,
+        "orderable_per_design_upper": mean + 1.96 * se,
+        "orderable_clusters": G,
+        "orderable_design_effect": (se / naive) ** 2 if naive else 1.0,
     }
 
 
@@ -308,9 +375,15 @@ def plan(
     if want_orderable is not None:
         if want_orderable < 1:
             raise SystemExit("A run needs a positive number of orderable sequences.")
-        if "orderable_per_seed" not in observed:
-            raise SystemExit("Sizing by orderable sequences needs the pooled report's yield.")
-        seeds = math.ceil(want_orderable / observed["orderable_per_seed"])
+        if "orderable_per_design_lower" not in observed:
+            raise SystemExit("Sizing by orderable sequences needs the measured per-design rate.")
+        # The low end of the interval, not the mean. Designs per seed is stable
+        # enough to pool as a point estimate; orderable per design is not, and
+        # sizing on its mean is what over-promised the first two follow-ups by
+        # about 40%. Over-delivering is the failure direction to prefer.
+        seeds = math.ceil(
+            want_orderable / (observed["orderable_per_design_lower"] * observed["designs_per_seed"])
+        )
     elif seeds is None:
         if want_designs < 1:
             raise SystemExit("A run needs a positive number of designs.")
@@ -344,8 +417,17 @@ def plan(
         # used -- so the merge renames runs without redrawing any of them.
         "rng_seed": base_seed + (number - 1) * SEED_STRIDE,
         "projected_designs": round(seeds * observed["designs_per_seed"]),
+        # Both ends, because a single projection would hide that this is the
+        # quantity the campaign cannot predict well.
         "projected_orderable": (
-            round(seeds * observed["orderable_per_seed"]) if "orderable_per_seed" in observed else None
+            round(seeds * observed["designs_per_seed"] * observed["orderable_per_design_lower"])
+            if "orderable_per_design_lower" in observed
+            else None
+        ),
+        "projected_orderable_mid": (
+            round(seeds * observed["designs_per_seed"] * observed["orderable_per_design"])
+            if "orderable_per_design" in observed
+            else None
         ),
         **observed,
     }
@@ -539,7 +621,12 @@ def main() -> int:
     # Only when asked for: it needs the pooled report, and a campaign that has
     # not run one can still size by designs or by seeds.
     if args.want_orderable is not None:
-        observed = {**observed, **orderable_yield(args.campaign_dir, args.reference_seeds)}
+        observed = {
+            **observed,
+            **orderable_yield(
+                args.campaign_dir, args.reference_seeds, args.config_name, args.task_name, args.run_prefix
+            ),
+        }
 
     if args.check:
         # Asked for what the calibration set produced, the arithmetic must return
@@ -663,11 +750,14 @@ def main() -> int:
     emit("RUN_DESIGNS_PER_SEED", round(float(planned["designs_per_seed"]), 2) if "designs_per_seed" in planned else "")
     emit("RUN_CALIBRATED_ON", ", ".join(planned.get("calibrated_on") or []))
     emit("RUN_PROJECTED_ORDERABLE", planned.get("projected_orderable") or "")
-    emit("RUN_ORDERABLE_PER_SEED", round(float(planned["orderable_per_seed"]), 2) if "orderable_per_seed" in planned else "")
-    emit("RUN_ORDERABLE_BASIS", planned.get("orderable_basis", ""))
+    emit("RUN_PROJECTED_ORDERABLE_MID", planned.get("projected_orderable_mid") or "")
+    for key, digits in (("orderable_per_design", 3), ("orderable_per_design_lower", 3),
+                        ("orderable_per_design_upper", 3), ("orderable_design_effect", 1)):
+        emit(f"RUN_{key.upper()}", round(float(planned[key]), digits) if key in planned else "")
+    emit("RUN_ORDERABLE_CLUSTERS", planned.get("orderable_clusters", ""))
     emit(
         "RUN_ORDERABLE_SERIES",
-        ", ".join(f"{r['tag']} {r['per_seed']:.2f}" for r in planned.get("orderable_series") or []),
+        ", ".join(f"{r['tag']} {r['per_design']:.3f}" for r in planned.get("orderable_series") or []),
     )
     return 0
 
