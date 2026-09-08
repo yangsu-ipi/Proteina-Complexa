@@ -518,6 +518,50 @@ def metadata_state(pkg):
     return {p.name: p.read_bytes() for p in sorted(meta.glob("*"))} if meta.is_dir() else {}
 
 
+def estimate(pkg, *args):
+    return subprocess.run(
+        ["bash", str(pkg / "scripts" / "estimate_run.sh"), *map(str, args)],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "CAMPAIGN_DIR": str(pkg), "HOME": str(pkg)},
+    )
+
+
+def test_a_design_target_converts_to_a_seed_count(tmp_path):
+    """The question a campaign actually asks between runs. It was answerable only
+    by invoking the planner with seven arguments campaign.env already holds, and
+    reading shell-variable output."""
+    pkg = campaign_package(tmp_path)
+    proc = estimate(pkg, 900)
+    assert proc.returncode == 0, proc.stderr
+    assert "seeds ->" in proc.stdout and "designs" in proc.stdout
+    assert "designs per seed, measured over" in proc.stdout, "it says what the estimate rests on"
+    assert "submit_campaign.sh production" in proc.stdout, "and what to do with the answer"
+
+
+def test_a_seed_count_converts_back_to_designs(tmp_path):
+    """Both directions, because the submit path takes seeds and a campaign's
+    target is designs."""
+    pkg = campaign_package(tmp_path)
+    proc = estimate(pkg, "--seeds", 200)
+    assert proc.returncode == 0, proc.stderr
+    assert "200 seeds" in proc.stdout
+
+
+def test_estimating_writes_nothing(tmp_path):
+    """It answers a question. Reserving a run number or rewriting the audit trail
+    to answer one is the failure this whole flag family had."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900)])
+    before = metadata_state(pkg)
+    assert estimate(pkg, 900).returncode == 0
+    assert metadata_state(pkg) == before
+
+
+def test_the_estimate_is_not_presented_as_a_promise(tmp_path):
+    pkg = campaign_package(tmp_path)
+    assert "not a promise" in estimate(pkg, 900).stdout
+
+
 def test_a_dry_run_writes_nothing(tmp_path):
     """DRY_RUN promised "submit nothing" and delivered "queue nothing" -- planning
     still wrote. Previewing a chain against a finished campaign rewrote the
@@ -617,7 +661,7 @@ def campaign_package(tmp_path, *, followups=()):
     (pkg / "scripts").mkdir(parents=True)
     (pkg / "metadata").mkdir(parents=True)
     (pkg / "slurm" / "campaign.sbatch").write_text("#!/usr/bin/env bash\n")
-    for template in ("plan_followup.py", "submit_campaign.sh"):
+    for template in ("plan_followup.py", "submit_campaign.sh", "estimate_run.sh"):
         # Copied in rather than run from the templates directory: the submitter
         # locates campaign.env relative to itself, which is what makes a package
         # self-contained.

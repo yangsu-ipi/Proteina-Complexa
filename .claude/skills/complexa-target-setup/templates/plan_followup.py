@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shlex
 import sys
 from pathlib import Path
 
@@ -557,14 +558,27 @@ def main() -> int:
     # Shell-evalable, so the runner needs no parsing of its own. Still named
     # FOLLOWUP_* because run_campaign.sh of every existing campaign package reads
     # those names; RUN_NUMBER is the addition.
+    #
+    # Every value quoted, because the caller evals this. One of them is a
+    # space-separated list of run tags, and unquoted it made the shell try to run
+    # the second tag as a command -- a path with a space in it would have done
+    # the same, less visibly.
+    def emit(name: str, value: object) -> None:
+        print(f"{name}={shlex.quote(str(value))}")
+
     for key in ("run_name", "seeds", "raw", "keep", "expect", "rng_seed", "index", "pool_manifest"):
-        print(f"FOLLOWUP_{key.upper()}={planned[key]}")
-    print(f"FOLLOWUP_RECORD={record}")
+        emit(f"FOLLOWUP_{key.upper()}", planned[key])
+    emit("FOLLOWUP_RECORD", record)
     # The run's position and the name it actually goes by. One authority for
     # both, so the submitter's job names, the runner's metadata filenames and the
     # inference directory cannot disagree about what this run is called.
-    print(f"RUN_NUMBER={number}")
-    print(f"RUN_TAG={tag}")
+    emit("RUN_NUMBER", number)
+    emit("RUN_TAG", tag)
+    # What the sizing rests on, so a caller can report the estimate honestly
+    # rather than presenting a derived number as a fact.
+    emit("RUN_PROJECTED_DESIGNS", planned.get("projected_designs", ""))
+    emit("RUN_DESIGNS_PER_SEED", round(float(planned["designs_per_seed"]), 2) if "designs_per_seed" in planned else "")
+    emit("RUN_CALIBRATED_ON", ", ".join(planned.get("calibrated_on") or []))
     return 0
 
 

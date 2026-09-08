@@ -14,6 +14,7 @@ benefit.
     run_campaign.sh       TEMPLATE, verbatim
     submit_campaign.sh    TEMPLATE, verbatim
     plan_followup.py      TEMPLATE, verbatim
+    estimate_run.sh       TEMPLATE, verbatim -- how big should the next run be
     trim_shards.py        TEMPLATE, verbatim
     check_preflight.py    TEMPLATE, verbatim
     verify_run_outputs.py TEMPLATE, verbatim
@@ -159,10 +160,19 @@ spelling.
     scripts/submit_campaign.sh followup 900        # still works: 900 more designs
 
 `production N` is **N seeds**, which is what a run actually takes. A design
-target is a separate question — ask the planner what one converts to, then pass
-the seed count you decided on:
+target is a separate question, and `estimate_run.sh` answers it both ways:
 
-    python3 scripts/plan_followup.py --campaign-dir . --want-designs 900 ... | grep SEEDS
+    scripts/estimate_run.sh 900            # how many seeds for ~900 designs
+    scripts/estimate_run.sh --seeds 200    # how many designs from 200 seeds
+
+    run #4 would be 164 seeds -> about 904 designs
+      1312 raw, trimmed to 1280 before global dedup
+      at 5.51 designs per seed, measured over: production, followup1, followup2
+      submit with: scripts/submit_campaign.sh production 164
+
+It writes nothing, reserves no run number and submits nothing. The conversion is
+advice: baking it into the submit path made the estimate binding, and left no way
+to run a size the arithmetic had not chosen.
 
 Only the campaign's first run has to be sized by hand, because it is the only one
 with nothing to calibrate on. Every later run derives raw, keep and expect from
