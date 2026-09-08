@@ -30,7 +30,7 @@ Usage:
         result_type=ligand_binder \\
         results_dir=./evaluation_results/my_ligand_run
 
-    # Analyze monomer results  
+    # Analyze monomer results
     python analyze.py --config-name analyze \\
         result_type=monomer \\
         results_dir=./evaluation_results/my_monomer_run
@@ -65,6 +65,8 @@ from proteinfoundation.result_analysis.analysis_utils import (
     FLOAT_FORMAT_PD,
     SEP_CSV_PD,
     SEQUENCE_TYPES,
+    aa_distribution_row,
+    coerce_to_list,
     filter_columns_for_csv,
     parse_threshold_spec,
 )
@@ -1182,7 +1184,23 @@ def compute_secondary_structure(
     return df_grouped
 
 
-def _count_residues_from_pdb(pdb_path: str) -> dict[str, int]:
+def _binder_chains(pdb_path: str) -> set[str] | None:
+    """The binder chain of a complex, or None for a structure with one chain.
+
+    None means "count everything", which is right for a monomer benchmark: there
+    the single chain IS the designed molecule. Resolved through the same helper
+    the rest of analyze uses, so this cannot come to disagree with which chain the
+    metrics describe.
+    """
+    try:
+        binder_chain, target_chains = get_binder_chain_from_complex(pdb_path)
+    except Exception as exc:
+        logger.debug(f"Could not identify a binder chain in {pdb_path} ({exc}); counting every chain")
+        return None
+    return {binder_chain} if target_chains else None
+
+
+def _count_residues_from_pdb(pdb_path: str, chains: set[str] | None = None) -> dict[str, int]:
     """
     Count occurrences of each standard amino acid in a PDB file.
 
@@ -1191,6 +1209,7 @@ def _count_residues_from_pdb(pdb_path: str) -> dict[str, int]:
 
     Args:
         pdb_path: Path to PDB file
+        chains: Chain IDs to count; None counts every chain.
 
     Returns:
         Dictionary mapping 3-letter amino acid codes to counts
@@ -1204,6 +1223,8 @@ def _count_residues_from_pdb(pdb_path: str) -> dict[str, int]:
                 res_name = line[17:20].strip()
                 res_seq = line[22:26].strip()
                 chain_id = line[21].strip()
+                if chains is not None and chain_id not in chains:
+                    continue
                 unique_id = (chain_id, res_seq, res_name)
 
                 if res_name in restype_3to1 and unique_id not in seen_residues:
@@ -1247,11 +1268,17 @@ def compute_residue_type_distribution(
     for _, row in df_grouped.iterrows():
         pdb_paths = row["pdb_path"]
 
-        # Aggregate counts across all PDBs in this group
+        # Aggregate counts across all PDBs in this group, over the BINDER alone.
+        # Counting every chain made this mostly a measurement of the target: on
+        # CBLN1 the target is 136 residues against a ~42-residue binder, so 76% of
+        # every count came from a molecule identical in all 340 designs. The
+        # reported proportions matched the whole-complex composition exactly, and
+        # diluted the binder's own signal about four-fold -- L 14.8% read as 9.0%,
+        # E 13.4% as 7.0%. A design campaign is asking about what it designed.
         total_counts = dict.fromkeys(restype_3to1, 0)
         for path in pdb_paths:
             try:
-                counts = _count_residues_from_pdb(path)
+                counts = _count_residues_from_pdb(path, chains=_binder_chains(path))
                 for aa, count in counts.items():
                     total_counts[aa] += count
             except Exception as e:
@@ -1277,6 +1304,73 @@ def compute_residue_type_distribution(
     df_grouped.to_csv(csv_path, sep=SEP_CSV_PD, index=False, float_format=FLOAT_FORMAT_PD)
     logger.debug(f"AA distribution saved: {csv_path}")
 
+    return df_grouped
+
+
+def compute_interface_aa_distribution(
+    df: "pd.DataFrame",
+    groupby_cols: list[str],
+    results_dir: str,
+    metric_suffix: str = "all_samples",
+    sequence_types: list[str] | None = None,
+) -> "pd.DataFrame":
+    """Amino-acid composition of the binder interface, per sequence type.
+
+    Read from the ``{seq}_aa_counts`` and ``{seq}_aa_interface_counts`` columns
+    the evaluation stage already emits, rather than re-derived from structures.
+    Those counts come from the one interface definition the pipeline has -- the
+    same residues ``mpnn_fixed`` holds fixed -- and asking the question a second
+    way here would give the campaign two answers to "what is at the interface"
+    that could disagree without either being wrong on its own terms.
+
+    Three families per sequence type, each over the 20 standard amino acids:
+
+    ``_res_{seq}_aa_prop_{AA}_{suffix}``
+        composition of the whole binder.
+    ``_res_{seq}_aa_interface_prop_{AA}_{suffix}``
+        composition of its interface residues.
+    ``_res_{seq}_aa_interface_enrichment_{AA}_{suffix}``
+        the ratio of the two. 1.0 means an amino acid appears at the interface at
+        the rate it appears anywhere in the binder; above 1.0 means the designer
+        put it there. This is the column worth looking at -- the raw interface
+        proportions largely track the binder's own composition, and the ratio is
+        what separates the two. NaN where an amino acid is absent from the binder
+        entirely, because a ratio to zero is not an enrichment of anything.
+    """
+    # OF_RESTYPES order, which is the order the evaluation stage packed these
+    # vectors in. Imported rather than restated: a local copy in the wrong order
+    # would mislabel every column and nothing would look wrong.
+    from openfold.np.residue_constants import restypes as OF_RESTYPES
+
+    if sequence_types is None:
+        sequence_types = list(SEQUENCE_TYPES)
+
+    present = [
+        t for t in sequence_types if f"{t}_aa_counts" in df.columns and f"{t}_aa_interface_counts" in df.columns
+    ]
+    if not present:
+        logger.debug("No aa count columns found, skipping interface AA distribution")
+        return pd.DataFrame()
+
+    columns = [c for t in present for c in (f"{t}_aa_counts", f"{t}_aa_interface_counts")]
+    df_grouped = df.groupby(groupby_cols, dropna=False)[columns].agg(list).reset_index()
+
+    for seq_type in present:
+        rows = [
+            aa_distribution_row(
+                [coerce_to_list(v, f"{seq_type}_aa_counts") for v in row[f"{seq_type}_aa_counts"]],
+                [coerce_to_list(v, f"{seq_type}_aa_interface_counts") for v in row[f"{seq_type}_aa_interface_counts"]],
+                list(OF_RESTYPES),
+            )
+            for _, row in df_grouped.iterrows()
+        ]
+        for key in rows[0] if rows else []:
+            df_grouped[f"_res_{seq_type}_{key}_{metric_suffix}"] = [r[key] for r in rows]
+
+    df_grouped = df_grouped.drop(columns=columns)
+    csv_path = os.path.join(results_dir, f"res_aa_interface_distribution_{metric_suffix}.csv")
+    df_grouped.to_csv(csv_path, sep=SEP_CSV_PD, index=False, float_format=FLOAT_FORMAT_PD)
+    logger.debug(f"Interface AA distribution saved: {csv_path}")
     return df_grouped
 
 
@@ -2160,6 +2254,27 @@ def run_monomer_analysis(
                 metric_suffix=suffix,
             ),
             metric_name="aa_distribution",
+            results_accum=all_diversity_dfs,
+            results_dict=results,
+        )
+
+    # Interface composition, from the counts the evaluation stage already emits.
+    # Gated on the same flag: a campaign that does not want a residue breakdown
+    # does not want it split by interface either, and one that does gets both
+    # rather than having to know a second switch exists.
+    if cfg_aggregation.get("compute_residue_type_distribution", True) and any(
+        f"{t}_aa_interface_counts" in df.columns for t in SEQUENCE_TYPES
+    ):
+        compute_metric_on_subsets(
+            df_all=df,
+            subsets=monomer_subsets,
+            compute_fn=lambda df_in, suffix: compute_interface_aa_distribution(
+                df=df_in,
+                groupby_cols=groupby_cols,
+                results_dir=results_dir,
+                metric_suffix=suffix,
+            ),
+            metric_name="aa_interface_distribution",
             results_accum=all_diversity_dfs,
             results_dict=results,
         )

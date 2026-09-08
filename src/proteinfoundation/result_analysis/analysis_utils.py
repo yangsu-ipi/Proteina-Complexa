@@ -411,6 +411,45 @@ def save_filtered_csv(
 # =============================================================================
 
 
+def aa_distribution_row(
+    overall_vectors: list[list[float]],
+    interface_vectors: list[list[float]],
+    restypes: list[str],
+) -> dict[str, float]:
+    """Composition and interface enrichment for one group of designs.
+
+    Both inputs are per-design count vectors in ``restypes`` order, as the
+    evaluation stage packs them. Vectors of the wrong length are dropped rather
+    than padded: a short one would silently read as zero counts for the amino
+    acids it does not reach, which looks like a real absence.
+
+    Returns proportions under ``aa_prop_{AA}`` and ``aa_interface_prop_{AA}``,
+    and their ratio under ``aa_interface_enrichment_{AA}``. The ratio is the
+    number worth reading -- interface proportions largely track the binder's own
+    composition, and dividing by it is what separates "there is a lot of leucine
+    at the interface" from "the designer put leucine at the interface". It is NaN
+    where an amino acid is absent from the binder, because a ratio to zero is not
+    an enrichment of anything.
+    """
+
+    def totals(vectors):
+        usable = [v for v in vectors if len(v) == len(restypes)]
+        return [sum(v[i] for v in usable) for i in range(len(restypes))]
+
+    out: dict[str, float] = {}
+    sums = {}
+    for label, vectors in (("aa_prop", overall_vectors), ("aa_interface_prop", interface_vectors)):
+        counts = totals(vectors)
+        total = sum(counts)
+        sums[label] = counts
+        for i, aa in enumerate(restypes):
+            out[f"{label}_{aa}"] = (counts[i] / total) if total > 0 else 0.0
+    for aa in restypes:
+        overall = out[f"aa_prop_{aa}"]
+        out[f"aa_interface_enrichment_{aa}"] = (out[f"aa_interface_prop_{aa}"] / overall) if overall > 0 else float("nan")
+    return out
+
+
 def coerce_to_list(value: Any, col_name: str = "") -> list:
     """Parse a cell value into a list, handling string representations.
 

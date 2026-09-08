@@ -726,7 +726,8 @@ Both diversity methods are run on **all samples** and on **successful samples** 
 | `res_motif_binder_per_task_pass_rates.csv` | Per-task motif binder pass rates |
 | `res_ss_biot_{suffix}.csv` | Secondary structure fractions |
 | `res_type_prop_{suffix}.csv` | Residue type proportions |
-| `res_aa_distribution_{suffix}.csv` | AA distribution |
+| `res_aa_distribution_{suffix}.csv` | Amino-acid composition of the **binder chain** (`_res_aa_prop_{AA}_{suffix}`). Counted every chain until 2026-09; on a 136-residue target against a 42-residue binder that made 76% of each count the target, identical in every design. |
+| `res_aa_interface_distribution_{suffix}.csv` | Per sequence type: binder composition (`_res_{seq}_aa_prop_{AA}_{suffix}`), its interface subset (`_res_{seq}_aa_interface_prop_{AA}_{suffix}`), and the ratio (`_res_{seq}_aa_interface_enrichment_{AA}_{suffix}`). Read the ratio: interface proportions largely track the binder's own composition. NaN where an amino acid is absent from the binder — SolubleMPNN omits cysteine, so every `mpnn` redesign has none. Derived from the counts the evaluation stage emits, so it uses the one interface definition rather than a second one. |
 | `res_div_foldseek_{mode}_{suffix}.csv` | FoldSeek diversity |
 | `res_div_mmseqs_{suffix}.csv` | MMseqs diversity |
 | `success_criteria_*.json` | Saved thresholds used for filtering |
