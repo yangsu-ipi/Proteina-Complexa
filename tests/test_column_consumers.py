@@ -181,3 +181,20 @@ def test_every_result_frame_is_built_through_the_guard():
                 (guarded if through else unguarded).append(where)
     assert not unguarded, "reindex(columns=...) not routed through dedupe_columns:\n  " + "\n  ".join(unguarded)
     assert len(guarded) >= 5, f"expected the five known result frames, found {guarded}"
+
+
+def test_the_two_sample_counts_read_the_columns_that_can_answer_them():
+    """`original_samples` counts designs, so the headline path -- one per design --
+    answers it. `total_redesigns` counts sequences, which only the _all column
+    holds. Reading both off the headline summed string lengths, or zero once the
+    aggregation had coerced a non-list string to []: it reported 0 for every run
+    of every campaign, next to a plausible-looking design count."""
+    source = (SRC / "result_analysis/binder_analysis.py").read_text()
+    block = source[source.index("first_col = path_col[seq_type]") :][:900]
+    assert "redesigns_col = all_paths_col[seq_type]" in block
+    assert "sum(len(sample) for sample in row[rc])" in block, "the per-redesign lists"
+    assert "len(row[fc])" in block, "and the design count still comes from the headline"
+    # Both columns have to survive the aggregation to be read after it.
+    setup = source[source.index("path_col = {t: rename(") :][:1200]
+    assert "all_columns.append(path_col[seq_type])" in setup
+    assert "all_columns.append(all_paths_col[seq_type])" in setup
