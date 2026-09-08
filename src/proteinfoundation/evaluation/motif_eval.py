@@ -20,6 +20,7 @@ from loguru import logger
 from omegaconf import DictConfig
 from openfold.np.residue_constants import restype_num, restype_order
 
+from proteinfoundation.evaluation.binder_eval_utils import dedupe_columns
 from proteinfoundation.evaluation.monomer_eval import fold_sequences
 from proteinfoundation.evaluation.monomer_eval_utils import (
     DEFAULT_CODESIGNABILITY_MODES,
@@ -1002,7 +1003,7 @@ def compute_motif_metrics(
         )
 
     # --- Build DataFrame ---
-    df = pd.DataFrame(rows).reindex(columns=columns)
+    df = pd.DataFrame(rows).reindex(columns=dedupe_columns(columns, "Motif results"))
     for col_name, values in metrics.items():
         df[col_name] = values
 

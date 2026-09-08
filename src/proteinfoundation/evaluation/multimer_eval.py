@@ -9,6 +9,7 @@ from biotite.structure.io import load_structure
 from loguru import logger
 from omegaconf import DictConfig
 
+from proteinfoundation.evaluation.binder_eval_utils import dedupe_columns
 from proteinfoundation.evaluation.utils import parse_cfg_for_table
 from proteinfoundation.metrics.designability import run_multimer_eval
 
@@ -111,5 +112,5 @@ def compute_multimer_metrics(
         results.append(row_dict)
 
     df = pd.DataFrame(results)
-    df = df.reindex(columns=columns)
+    df = df.reindex(columns=dedupe_columns(columns, "Multimer results"))
     return df

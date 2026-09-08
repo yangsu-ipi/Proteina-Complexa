@@ -545,6 +545,40 @@ def check_thresholds_are_computable(
         )
 
 
+def dedupe_columns(columns: list[str], source: str = "") -> list[str]:
+    """The column order with duplicates removed, reporting any it found.
+
+    A frame built by ``reindex(columns=...)`` onto a list naming a column twice
+    carries that column twice, and ``frame[name]`` then returns a DataFrame
+    rather than a Series. Nothing notices until some consumer treats it as one --
+    at which point pandas raises from inside its own internals, naming neither
+    the column nor the duplication. That is how ``complex_folding_backend``,
+    appended once per sequence type instead of once per run, took down an
+    evaluate stage in code that never mentioned it.
+
+    Duplicates are dropped rather than refused. Every copy comes from one key in
+    one row dict, so they hold identical values and removing the extras loses
+    nothing, while raising here would discard a completed run's results over a
+    bookkeeping mistake. The error is what makes the producer's bug visible.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    repeated: list[str] = []
+    for column in columns:
+        if column in seen:
+            repeated.append(column)
+            continue
+        seen.add(column)
+        ordered.append(column)
+    if repeated:
+        logger.error(
+            f"{source or 'Result frame'} names {sorted(set(repeated))} more than once in its column "
+            f"list. Selecting such a column by name yields a DataFrame rather than a Series, which "
+            f"breaks any consumer that reads it. Emitting one copy of each; fix the producer."
+        )
+    return ordered
+
+
 def per_sequence_pass(row_dict: dict, seq_type: str, thresholds: dict) -> list[int] | None:
     """Per-sequence pass/fail for one design, from the ``*_all`` columns just built.
 

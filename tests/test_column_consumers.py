@@ -94,3 +94,90 @@ def test_the_check_can_actually_see_a_stale_name():
 def test_a_name_built_through_rename_is_not_flagged():
     tree = ast.parse('col = rename(f"{seq_type}_complex_pdb_path", backend)')
     assert not list(_templated_literals(tree))
+
+
+# ---------------------------------------------------------------------------
+# A column emitted more than once.
+#
+# `complex_folding_backend` was appended to the column list inside the
+# per-sequence-type loop under `if idx == 0` -- true once per type, not once per
+# run -- so every per-job CSV of a two-type run carried it twice. It stayed inert
+# for months because the analyze stage reads it from CSV, and pandas mangles
+# duplicate headers on read into `name` and `name.1`. The first code to select
+# the duplicated label on an in-memory frame got a DataFrame instead of a Series
+# and died inside pandas, naming neither the column nor the duplication, taking
+# a GPU evaluate stage with it.
+#
+# The literal-name guard above cannot see this class: every name involved is
+# correctly built. What is wrong is how many times it is emitted.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicates_are_dropped_in_order_and_reported(caplog):
+    from proteinfoundation.evaluation.binder_eval_utils import dedupe_columns
+
+    assert dedupe_columns(["a", "b", "a", "c", "b"]) == ["a", "b", "c"], "first occurrence wins"
+    assert dedupe_columns(["a", "b"]) == ["a", "b"], "an already-clean list is untouched"
+
+
+def test_a_clean_list_reports_nothing(capsys):
+    """The error is the point of the helper; it must not cry wolf."""
+    import io
+
+    from loguru import logger
+
+    from proteinfoundation.evaluation.binder_eval_utils import dedupe_columns
+
+    sink = io.StringIO()
+    handle = logger.add(sink, level="ERROR")
+    try:
+        dedupe_columns(["a", "b", "c"])
+        assert sink.getvalue() == ""
+        dedupe_columns(["a", "a"], "Binder results")
+        message = sink.getvalue()
+    finally:
+        logger.remove(handle)
+    assert "Binder results" in message and "'a'" in message
+    assert "DataFrame rather than a Series" in message, "the message says why it matters"
+
+
+def test_the_real_scenario_survives_the_helper():
+    """The exact frame that crashed: a provenance column named once per sequence
+    type, reindexed onto, then read as a Series."""
+    import pandas as pd
+
+    from proteinfoundation.evaluation.binder_eval_utils import dedupe_columns
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        COMPLEX_BACKEND_COLUMN,
+        complex_backend_of,
+    )
+
+    rows = [{"x": 1, COMPLEX_BACKEND_COLUMN: "af2"}]
+    naive = pd.DataFrame(rows).reindex(columns=["x", COMPLEX_BACKEND_COLUMN, COMPLEX_BACKEND_COLUMN])
+    assert naive[COMPLEX_BACKEND_COLUMN].ndim == 2, "the fixture reproduces the duplication"
+
+    guarded = pd.DataFrame(rows).reindex(
+        columns=dedupe_columns(["x", COMPLEX_BACKEND_COLUMN, COMPLEX_BACKEND_COLUMN])
+    )
+    assert guarded[COMPLEX_BACKEND_COLUMN].ndim == 1
+    assert complex_backend_of(guarded) == "af2"
+
+
+def test_every_result_frame_is_built_through_the_guard():
+    """The class-level check. Any future `reindex(columns=...)` that accumulates
+    its column list is the same bug waiting to happen, and there are five such
+    frames across the evaluation modules."""
+    guarded, unguarded = [], []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "reindex"):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "columns":
+                    continue
+                where = f"{path.relative_to(SRC.parent.parent)}:{node.lineno}"
+                through = isinstance(kw.value, ast.Call) and getattr(kw.value.func, "id", None) == "dedupe_columns"
+                (guarded if through else unguarded).append(where)
+    assert not unguarded, "reindex(columns=...) not routed through dedupe_columns:\n  " + "\n  ".join(unguarded)
+    assert len(guarded) >= 5, f"expected the five known result frames, found {guarded}"

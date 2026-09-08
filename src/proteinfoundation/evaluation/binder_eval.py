@@ -37,6 +37,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     apo_fold_fingerprint,
     apo_plddt_column,
     check_thresholds_are_computable,
+    dedupe_columns,
     extract_binder_chain_to_pdb,
     gated_columns,
     get_binder_chain_from_complex,
@@ -1053,7 +1054,7 @@ def compute_binder_metrics(
     if reuse_cached_folding:
         logger.info(f"Binder evaluation reused cached refolding for {n_reused}/{len(results)} designs")
 
-    df = pd.DataFrame(results).reindex(columns=all_columns)
+    df = pd.DataFrame(results).reindex(columns=dedupe_columns(all_columns, "Binder results"))
     # Carried out-of-band rather than as columns: both are properties of the run,
     # constant across every row, and the caller writes them to a sidecar beside
     # the CSV. Attached to the frame instead of recomputed by the caller so the
@@ -1288,7 +1289,7 @@ def compute_interface_metrics_df(
 
     all_columns = columns + ["id_gen", "pdb_path"] + metric_cols
 
-    return pd.DataFrame(results).reindex(columns=all_columns)
+    return pd.DataFrame(results).reindex(columns=dedupe_columns(all_columns, "Interface metrics"))
 
 
 # =============================================================================

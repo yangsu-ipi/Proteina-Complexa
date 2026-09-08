@@ -26,7 +26,11 @@ from atomworks.io.utils.io_utils import load_any
 from loguru import logger
 from omegaconf import DictConfig
 
-from proteinfoundation.evaluation.binder_eval_utils import extract_binder_chain_to_pdb, get_binder_chain_from_complex
+from proteinfoundation.evaluation.binder_eval_utils import (
+    dedupe_columns,
+    extract_binder_chain_to_pdb,
+    get_binder_chain_from_complex,
+)
 from proteinfoundation.evaluation.monomer_eval_utils import (
     DesignabilityResult,
     FoldingResult,
@@ -1007,7 +1011,7 @@ def compute_monomer_metrics(
             f"coil={np.nanmean(metrics['_res_ss_coil']):.3f}"
         )
 
-    df = pd.DataFrame(results).reindex(columns=columns)
+    df = pd.DataFrame(results).reindex(columns=dedupe_columns(columns, "Monomer results"))
     for metric in metrics:
         df[metric] = metrics[metric]
 
