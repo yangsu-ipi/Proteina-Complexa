@@ -512,6 +512,43 @@ def test_the_pooled_report_runs_last_and_not_for_smoke():
     assert "pooled" not in smoke
 
 
+def metadata_state(pkg):
+    """Every metadata file and its contents, for comparing before and after."""
+    meta = pkg / "metadata"
+    return {p.name: p.read_bytes() for p in sorted(meta.glob("*"))} if meta.is_dir() else {}
+
+
+def test_a_dry_run_writes_nothing(tmp_path):
+    """DRY_RUN promised "submit nothing" and delivered "queue nothing" -- planning
+    still wrote. Previewing a chain against a finished campaign rewrote the
+    absolute paths in its follow-up records and pool manifests to wherever the
+    preview was pointed, which would have left its provenance naming a directory
+    that does not exist on the cluster."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
+    before = metadata_state(pkg)
+    proc, _ = submit(pkg, "followup", "900", "evaluate..analyze")
+    assert proc.returncode == 0, proc.stderr
+    assert metadata_state(pkg) == before, "a preview must not touch the audit trail"
+
+
+def test_a_dry_run_does_not_burn_a_run_number(tmp_path):
+    """A run planned but never executed still consumes its number, which is what
+    keeps seeds from being reused. That is right for a submission and wrong for a
+    preview: nothing was submitted, so nothing should be reserved."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
+    proc, _ = submit(pkg, "followup", "700")
+    assert proc.returncode == 0, proc.stderr
+    assert "run #4" in proc.stdout, "it still reports what it would do"
+    assert not (pkg / "metadata" / "run_4.json").exists(), "but reserves nothing"
+
+
+def test_a_dry_run_says_the_record_was_not_written(tmp_path):
+    """Otherwise the line reads as a statement that it was."""
+    pkg = campaign_package(tmp_path, followups=[(1, 900)])
+    proc, _ = submit(pkg, "followup", "900", "evaluate..analyze")
+    assert "not written: this is a dry run" in proc.stdout
+
+
 def test_the_submitter_can_be_previewed_without_submitting():
     """A chain of five jobs against a shared cluster is worth reading first."""
     assert "DRY_RUN" in SUBMIT.read_text()
@@ -768,8 +805,10 @@ def test_a_followup_with_no_stage_still_plans_a_new_one(tmp_path):
     assert proc.returncode == 0, proc.stderr
     # Run 4 of the campaign: production is 1, followup1 and followup2 are 2 and 3.
     # It gets the current spelling, while the runs already on disk keep theirs.
+    # No record to check: the harness previews, and a preview reserves nothing --
+    # see test_a_dry_run_does_not_burn_a_run_number.
     assert "run #4 (production4)" in proc.stdout, "a new run gets the current spelling"
-    assert (pkg / "metadata" / "run_4.json").exists()
+    assert "1005" not in proc.stdout, "planned fresh, not resumed from followup1"
     assert [s[-1] for s in stages] == ["generate", "filter", "evaluate", "analyze", "pooled"]
 
 

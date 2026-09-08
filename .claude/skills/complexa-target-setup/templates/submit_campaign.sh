@@ -173,7 +173,7 @@ if [[ -n "$SIZED" ]]; then
     --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
     --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
     --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME" \
-    ${RESUME[@]+"${RESUME[@]}"})"
+    ${DRY_RUN:+--dry-run} ${RESUME[@]+"${RESUME[@]}"})"
   eval "$PLAN"
   export FOLLOWUP_INDEX="$FOLLOWUP_INDEX"
   export RUN_NUMBER="$RUN_NUMBER"
@@ -183,7 +183,7 @@ if [[ -n "$SIZED" ]]; then
   # the inference directory came to be able to disagree.
   TAG="$RUN_TAG"
   echo "run #${RUN_NUMBER} (${RUN_TAG}): ${FOLLOWUP_SEEDS} seeds, seed ${FOLLOWUP_RNG_SEED}${WANT_DESIGNS:+ -- sized for ${WANT_DESIGNS} designs}"
-  echo "  planned in ${FOLLOWUP_RECORD}"
+  echo "  planned in ${FOLLOWUP_RECORD}${DRY_RUN:+ (not written: this is a dry run)}"
   echo "  deduplicated against ${FOLLOWUP_POOL_MANIFEST}"
 fi
 

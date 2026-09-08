@@ -451,6 +451,11 @@ def main() -> int:
         help="reuse the existing run asking for --want-designs instead of allocating a new number",
     )
     p.add_argument("--check", action="store_true", help="verify the derivation reproduces the calibration set")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="compute and report the plan without writing the record or the pool manifest",
+    )
     args = p.parse_args()
 
     observed = observed_yield_pooled(args.campaign_dir, args.reference_seeds)
@@ -532,13 +537,22 @@ def main() -> int:
     # same whether it was never drawn or dropped as a duplicate.
     pool = pool_dirs(args.campaign_dir, args.config_name, args.task_name, args.run_prefix, number)
     manifest = args.campaign_dir / "metadata" / f"pool_{tag}.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"for_run": planned["run_name"], "inference_dirs": pool}, indent=2) + "\n")
     planned["pool_manifest"] = str(manifest)
     planned["pooled_against"] = pool
 
-    record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(json.dumps(planned, indent=2, sort_keys=True) + "\n")
+    # Planning is a write, and that is the point: the parameters reach disk before
+    # anything is queued, so a chain sitting in the queue for a day is already
+    # auditable. A dry run queues nothing, so there is nothing to make auditable
+    # -- and writing anyway rewrote the absolute paths of a finished campaign's
+    # records to wherever the dry run happened to be pointed, and would have
+    # burned a run number on a run nobody submitted.
+    if not args.dry_run:
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"for_run": planned["run_name"], "inference_dirs": pool}, indent=2) + "\n")
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(planned, indent=2, sort_keys=True) + "\n")
+    else:
+        print(f"DRY_RUN_PLAN_NOT_WRITTEN={record}", file=sys.stderr)
 
     # Shell-evalable, so the runner needs no parsing of its own. Still named
     # FOLLOWUP_* because run_campaign.sh of every existing campaign package reads
