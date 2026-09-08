@@ -55,10 +55,21 @@ CPU_TIME="${SLURM_TIME_CPU:-04:00:00}"
 
 RUN_ARGS=("$KIND")
 TAG="$KIND"
+SIZED=""
 if [[ "$KIND" == followup ]]; then
   WANT_DESIGNS="${1:?followup needs a design count, e.g. submit_campaign.sh followup 900}"
   shift
   RUN_ARGS=(followup "$WANT_DESIGNS")
+  SIZED="--want-designs $WANT_DESIGNS"
+elif [[ "$KIND" == production && "${1:-}" =~ ^[0-9]+$ ]]; then
+  # `production N` is N seeds, which is what a run actually takes. The design
+  # target is a separate question -- ask scripts/plan_followup.py --want-designs
+  # what a target converts to, then pass the number you decided on.
+  RUN_SEEDS="$1"
+  shift
+  RUN_ARGS=(production "$RUN_SEEDS")
+  SIZED="--seeds $RUN_SEEDS"
+  WANT_DESIGNS=""
 fi
 
 # Parsed before the follow-up is planned, because which stages run decides
@@ -135,8 +146,8 @@ FIRST_STAGE="${SELECTED[0]%%:*}"
 # so the template would parse everywhere and run only on the cluster.
 LAST_STAGE="${SELECTED[${#SELECTED[@]}-1]%%:*}"
 
-if [[ "$KIND" == followup ]]; then
-  # A chain that includes generate is a new follow-up; one that starts later is a
+if [[ -n "$SIZED" ]]; then
+  # A chain that includes generate is a new run; one that starts later is a
   # re-run of a follow-up that already exists and must reuse its index. Allocating
   # a fresh one there would name an inference directory nothing ever wrote, and
   # would burn a seed no run will ever use.
@@ -158,15 +169,20 @@ if [[ "$KIND" == followup ]]; then
   # wrote. Planning here also puts the parameters on disk before anything is
   # queued, which is what makes a submitted chain auditable.
   PLAN="$(python3 "$CAMPAIGN_DIR/scripts/plan_followup.py" \
-    --campaign-dir "$CAMPAIGN_DIR" --want-designs "$WANT_DESIGNS" --shards "$SHARDS" \
+    --campaign-dir "$CAMPAIGN_DIR" $SIZED --shards "$SHARDS" \
     --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
     --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
     --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME" \
     ${RESUME[@]+"${RESUME[@]}"})"
   eval "$PLAN"
   export FOLLOWUP_INDEX="$FOLLOWUP_INDEX"
-  TAG="followup${FOLLOWUP_INDEX}"
-  echo "follow-up #${FOLLOWUP_INDEX}: ${WANT_DESIGNS} designs -> ${FOLLOWUP_SEEDS} seeds, seed ${FOLLOWUP_RNG_SEED}"
+  export RUN_NUMBER="$RUN_NUMBER"
+  # The tag the planner chose, not one rebuilt here. A run already on disk keeps
+  # the name it was written under; a new one gets the current spelling. Rebuilding
+  # it from the follow-up index is how the job name, the metadata filenames and
+  # the inference directory came to be able to disagree.
+  TAG="$RUN_TAG"
+  echo "run #${RUN_NUMBER} (${RUN_TAG}): ${FOLLOWUP_SEEDS} seeds, seed ${FOLLOWUP_RNG_SEED}${WANT_DESIGNS:+ -- sized for ${WANT_DESIGNS} designs}"
   echo "  planned in ${FOLLOWUP_RECORD}"
   echo "  deduplicated against ${FOLLOWUP_POOL_MANIFEST}"
 fi
@@ -180,7 +196,7 @@ submit() {  # name kind_of_node dependency args...
     flags+=(--time="$CPU_TIME")
   fi
   [[ -n "$dep" ]] && flags+=(--dependency="afterok:${dep}")
-  flags+=(--export="ALL,CAMPAIGN_DIR=${CAMPAIGN_DIR}${FOLLOWUP_INDEX:+,FOLLOWUP_INDEX=${FOLLOWUP_INDEX}}")
+  flags+=(--export="ALL,CAMPAIGN_DIR=${CAMPAIGN_DIR}${FOLLOWUP_INDEX:+,FOLLOWUP_INDEX=${FOLLOWUP_INDEX}}${RUN_NUMBER:+,RUN_NUMBER=${RUN_NUMBER}}")
   if [[ -n "${DRY_RUN:-}" ]]; then
     echo "sbatch ${flags[*]} $SBATCH_TEMPLATE $*" >&2
     echo "DRY"

@@ -230,6 +230,12 @@ def test_the_runner_reads_nothing_the_config_does_not_define():
         # parser cannot see the assignment. Listed rather than ignored, because
         # a typo in one of these names is exactly what this test is for.
         "FOLLOWUP_RUN_NAME",
+        # The run's position in the campaign and the name it goes by. Both come
+        # from the planner, which is the single authority on them -- the runner
+        # rebuilding either would let a run's metadata files disagree with its
+        # inference directory.
+        "RUN_NUMBER",
+        "RUN_TAG",
         "FOLLOWUP_SEEDS",
         "FOLLOWUP_RAW",
         "FOLLOWUP_KEEP",
@@ -403,7 +409,11 @@ def test_a_followup_gets_its_own_run_name_and_metadata():
     simply not run."""
     runner = RUNNER.read_text()
     assert 'RUN_NAME="$FOLLOWUP_RUN_NAME"' in runner
-    assert 'KIND_TAG="followup${FOLLOWUP_INDEX}"' in runner
+    # The tag comes from the planner rather than being rebuilt here, so a run's
+    # metadata files carry the same name as its inference directory whichever
+    # spelling it uses -- `followup1` for a run written before the kinds merged,
+    # `production4` for one written after.
+    assert 'KIND_TAG="$RUN_TAG"' in runner
     for path in ("resolved_config_", "shard_trim_", "preflight_", "run_outputs_"):
         assert f"{path}${{KIND_TAG}}" in runner, f"{path} is not per-run"
 
@@ -480,8 +490,12 @@ def test_a_followup_is_planned_before_anything_is_queued():
     not before: which stages run decides whether this is a new follow-up or a
     re-run of one that exists."""
     text = SUBMIT.read_text()
-    assert text.index("STAGES=(") < text.index("plan_followup.py")
-    assert text.index("plan_followup.py") < text.index('for entry in "${SELECTED[@]}"')
+    # Anchored on the invocation, not on any mention of the script: a comment
+    # naming it appears earlier, where the sized form points at it for converting
+    # a design target into a seed count.
+    invocation = 'python3 "$CAMPAIGN_DIR/scripts/plan_followup.py"'
+    assert text.index("STAGES=(") < text.index(invocation)
+    assert text.index(invocation) < text.index('for entry in "${SELECTED[@]}"')
 
 
 def test_the_pooled_report_runs_last_and_not_for_smoke():
@@ -588,8 +602,23 @@ def campaign_package(tmp_path, *, followups=()):
     inf.mkdir(parents=True)
     (inf / "top_samples_pipeline.csv").write_text("x\n")
     for index, wanted in followups:
+        # Full records, because a run that already exists is now replayed rather
+        # than re-derived: its size is history, and re-deriving would move it as
+        # the campaign's calibration set grows.
         (pkg / "metadata" / f"followup_{index}.json").write_text(
-            json.dumps({"index": index, "want_designs": wanted, "run_name": f"pfx_followup{index}"})
+            json.dumps(
+                {
+                    "index": index,
+                    "number": index + 1,
+                    "want_designs": wanted,
+                    "run_name": f"pfx_followup{index}",
+                    "seeds": 170,
+                    "raw": 1360,
+                    "keep": 664,
+                    "expect": 1328,
+                    "rng_seed": 5 + index * 1000,
+                }
+            )
         )
         d = pkg / "inference" / f"pipeline_T_pfx_followup{index}"
         d.mkdir(parents=True, exist_ok=True)
@@ -725,7 +754,7 @@ def test_a_followup_rerun_reuses_its_index_rather_than_becoming_a_new_run(tmp_pa
     pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
     proc, stages = submit(pkg, "followup", "900", "evaluate")
     assert proc.returncode == 0, proc.stderr
-    assert "follow-up #1:" in proc.stdout
+    assert "run #2 (followup1)" in proc.stdout, "production is run 1, so followup1 is run 2 -- keeping its name"
     assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
     assert not (pkg / "metadata" / "followup_3.json").exists(), "no new follow-up was planned"
     assert "FOLLOWUP_INDEX=1" in proc.stderr, "and the index reaches the job environment"
@@ -737,8 +766,10 @@ def test_a_followup_with_no_stage_still_plans_a_new_one(tmp_path):
     pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 1110)])
     proc, stages = submit(pkg, "followup", "700")
     assert proc.returncode == 0, proc.stderr
-    assert "follow-up #3:" in proc.stdout
-    assert (pkg / "metadata" / "followup_3.json").exists()
+    # Run 4 of the campaign: production is 1, followup1 and followup2 are 2 and 3.
+    # It gets the current spelling, while the runs already on disk keep theirs.
+    assert "run #4 (production4)" in proc.stdout, "a new run gets the current spelling"
+    assert (pkg / "metadata" / "run_4.json").exists()
     assert [s[-1] for s in stages] == ["generate", "filter", "evaluate", "analyze", "pooled"]
 
 
@@ -768,7 +799,7 @@ def test_an_explicit_index_settles_an_ambiguous_count(tmp_path):
     pkg = campaign_package(tmp_path, followups=[(1, 900), (2, 900)])
     proc, stages = submit(pkg, "followup", "900", "evaluate", FOLLOWUP_INDEX="2")
     assert proc.returncode == 0, proc.stderr
-    assert "follow-up #2:" in proc.stdout
+    assert "run #3 (followup2)" in proc.stdout
     assert [s[-1] for s in stages] == ["evaluate", "analyze", "pooled"]
     assert "FOLLOWUP_INDEX=2" in proc.stderr, "and it reaches the job environment"
 
@@ -779,7 +810,10 @@ def test_a_generate_rerun_is_a_new_followup_not_a_resumed_one(tmp_path):
     pkg = campaign_package(tmp_path, followups=[(1, 900)])
     proc, _ = submit(pkg, "followup", "900", "generate")
     assert proc.returncode == 0, proc.stderr
-    assert "follow-up #2:" in proc.stdout
+    # A new run, so the current spelling -- production is run 1, followup1 run 2,
+    # and this one run 3. The runs already on disk keep the names they were
+    # written under; only new ones are named the new way.
+    assert "run #3 (production3)" in proc.stdout
 
 
 def test_overrides_still_reach_a_partial_chain(tmp_path):

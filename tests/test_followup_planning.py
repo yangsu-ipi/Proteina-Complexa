@@ -8,6 +8,7 @@ sizing variables, and the audit record that makes a run reconstructable.
 """
 
 import importlib.util
+import itertools
 import json
 import pathlib
 
@@ -55,12 +56,12 @@ def test_asking_for_what_production_produced_reproduces_production(tmp_path):
     """The arithmetic's own regression test. If inverting production's yield does
     not return production's parameters, every follow-up is skewed by the same
     factor and nothing in the output would say so."""
-    got = plan_followup.plan(340, shards=2, base_seed=5, index=1, observed=observed(tmp_path))
+    got = plan_followup.plan(2, 5, 2, observed(tmp_path), want_designs=340)
     assert (got["seeds"], got["raw"], got["keep"], got["expect"]) == (64, 512, 250, 500)
 
 
 def test_a_bigger_ask_scales_the_whole_sizing_set(tmp_path):
-    got = plan_followup.plan(700, shards=2, base_seed=5, index=1, observed=observed(tmp_path))
+    got = plan_followup.plan(2, 5, 2, observed(tmp_path), want_designs=700)
     assert got["seeds"] == 132
     assert got["raw"] == got["seeds"] * 8, "seeds x the observed beam expansion"
     assert got["expect"] == got["keep"] * 2, "keep is per shard"
@@ -71,7 +72,7 @@ def test_the_ask_is_never_rounded_down(tmp_path):
     """Asking for 700 and planning for 699 is the failure this exists to remove."""
     obs = observed(tmp_path)
     for want in (1, 7, 341, 700, 1739):
-        got = plan_followup.plan(want, shards=2, base_seed=5, index=1, observed=obs)
+        got = plan_followup.plan(2, 5, 2, obs, want_designs=want)
         assert got["projected_designs"] >= want, f"{want} designs planned short"
 
 
@@ -81,7 +82,7 @@ def test_seeds_divide_evenly_across_shards(tmp_path):
     obs = observed(tmp_path)
     for want in (1, 100, 700):
         for shards in (2, 3, 4):
-            got = plan_followup.plan(want, shards=shards, base_seed=5, index=1, observed=obs)
+            got = plan_followup.plan(shards, 5, 2, obs, want_designs=want)
             assert got["seeds"] % shards == 0, f"{got['seeds']} seeds over {shards} shards"
 
 
@@ -89,10 +90,12 @@ def test_each_followup_draws_a_seed_no_earlier_run_used(tmp_path):
     """The seed reaching generation is base + job_id, so runs closer together
     than SHARDS would have one follow-up's shard 0 redraw another's shard 1."""
     obs = observed(tmp_path)
-    seeds = {plan_followup.plan(100, 2, 5, i, obs)["rng_seed"] for i in range(1, 6)}
-    assert len(seeds) == 5
-    assert 5 not in seeds, "and none of them is production's own seed"
-    assert min(seeds) - 5 > 64, "spaced far wider than any plausible shard count"
+    seeds = [plan_followup.plan(2, 5, n, obs, want_designs=100)["rng_seed"] for n in range(1, 7)]
+    assert len(set(seeds)) == 6, "every run number draws its own"
+    assert seeds[0] == 5, "run 1 IS the campaign's base seed -- the old `production` kind's"
+    gaps = {b - a for a, b in itertools.pairwise(seeds)}
+    assert gaps == {plan_followup.SEED_STRIDE}, "evenly spaced"
+    assert min(gaps) > 64, "spaced far wider than any plausible shard count"
 
 
 def test_the_index_comes_from_the_records_not_a_config(tmp_path):
@@ -131,13 +134,13 @@ def test_a_nonsense_ask_is_refused(tmp_path):
     obs = observed(tmp_path)
     for want in (0, -5):
         with pytest.raises(SystemExit):
-            plan_followup.plan(want, 2, 5, 1, obs)
+            plan_followup.plan(2, 5, 2, obs, want_designs=want)
 
 
 def test_the_record_holds_everything_needed_to_reconstruct_the_run(tmp_path):
     """Including the seed, which is the one parameter that cannot be recovered
     from the outputs afterwards."""
-    got = plan_followup.plan(700, shards=2, base_seed=5, index=3, observed=observed(tmp_path))
+    got = plan_followup.plan(2, 5, 4, observed(tmp_path), want_designs=700)
     for key in (
         "seeds",
         "raw",
@@ -162,7 +165,7 @@ def test_a_worse_yielding_target_needs_more_seeds(tmp_path):
     stingy = plan_followup.observed_yield(
         campaign(tmp_path / "b", outputs={**PROD_OUTPUTS, "live_after_global_dedup": 170}), "production", 64
     )
-    assert plan_followup.plan(700, 2, 5, 1, stingy)["seeds"] > plan_followup.plan(700, 2, 5, 1, generous)["seeds"]
+    assert plan_followup.plan(2, 5, 2, stingy, want_designs=700)["seeds"] > plan_followup.plan(2, 5, 2, generous, want_designs=700)["seeds"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +186,7 @@ def test_the_pool_is_production_and_earlier_followups(tmp_path):
     root = campaign(tmp_path)
     for name in ("p_production", "p_followup1", "p_followup2", "p_smoke"):
         _run_dir(root, "cfg", "TASK", name, ["1,2", "3,4"])
-    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=3)
+    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", before_run=4)
     names = [pathlib.Path(d).name for d in pool]
     assert names == ["cfg_TASK_p_production", "cfg_TASK_p_followup1", "cfg_TASK_p_followup2"]
 
@@ -194,7 +197,7 @@ def test_the_smoke_run_never_claims_a_sequence(tmp_path):
     root = campaign(tmp_path)
     _run_dir(root, "cfg", "TASK", "p_production", ["1,2"])
     _run_dir(root, "cfg", "TASK", "p_smoke", ["9,9"])
-    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=1)
+    pool = plan_followup.pool_dirs(root, "cfg", "TASK", "p", before_run=2)
     # basenames, because pytest puts this test's own name in tmp_path
     assert all("smoke" not in pathlib.Path(d).name for d in pool)
     assert len(pool) == 1
@@ -207,14 +210,14 @@ def test_a_run_that_never_filtered_is_refused_not_skipped(tmp_path):
     _run_dir(root, "cfg", "TASK", "p_production", ["1,2"])
     (root / "inference" / "cfg_TASK_p_followup1").mkdir(parents=True)
     with pytest.raises(SystemExit, match="is missing"):
-        plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=2)
+        plan_followup.pool_dirs(root, "cfg", "TASK", "p", before_run=3)
 
 
 def test_no_completed_run_is_refused(tmp_path):
     root = campaign(tmp_path)
     (root / "inference").mkdir(exist_ok=True)
     with pytest.raises(SystemExit, match="no completed run"):
-        plan_followup.pool_dirs(root, "cfg", "TASK", "p", upto=1)
+        plan_followup.pool_dirs(root, "cfg", "TASK", "p", before_run=2)
 
 
 def test_the_pooled_keys_are_the_union_of_what_each_run_kept(tmp_path):
@@ -402,3 +405,68 @@ def test_stringified_verdicts_survive_the_csv_round_trip():
     real = pd.DataFrame({"pooled_run": ["r"], "self_pass_all": [[1, 0, 1]]})
     assert summarise(text, ["self"])["pooled"] == summarise(real, ["self"])["pooled"]
     assert summarise(text, ["self"])["pooled"]["sequences"] == 3
+
+
+# ---------------------------------------------------------------------------
+# One numbered sequence, three spellings.
+#
+# `production`, `followup{K}` and `production{N}` all name runs in one sequence:
+# production is run 1 and followup{K} is run K+1. The merge is a rename, not a
+# renumbering -- seeds are base + (number - 1) * stride, which is exactly what
+# the two old kinds produced, so no campaign on disk has to move.
+# ---------------------------------------------------------------------------
+
+
+def test_the_three_spellings_number_one_sequence():
+    for suffix, number in [
+        ("production", 1),
+        ("followup1", 2),
+        ("followup2", 3),
+        ("production1", 1),
+        ("production7", 7),
+    ]:
+        assert plan_followup.run_number(suffix) == number, suffix
+
+
+def test_a_smoke_run_is_not_part_of_the_sequence():
+    for suffix in ("smoke", "smoke_bw8", "followupX", "productionX", ""):
+        assert plan_followup.run_number(suffix) is None, suffix
+
+
+def test_the_planner_and_the_pipeline_agree_on_every_spelling():
+    """The planner carries its own copy of the numbering, because
+    submit_campaign.sh runs it with plain python3 before any conda environment
+    exists, so it cannot import the pipeline's. A forced duplicate is only safe
+    while something compares the two."""
+    from proteinfoundation.utils import run_pooling
+
+    for suffix in [
+        "production", "production1", "production2", "production40",
+        "followup1", "followup2", "followup10",
+        "smoke", "smoke_bw8", "followup", "productionX", "", "prod",
+    ]:
+        assert plan_followup.run_number(suffix) == run_pooling.run_index(suffix), suffix
+    for number in (1, 2, 3, 17):
+        assert plan_followup.run_suffix(number) == run_pooling.run_suffix(number)
+
+
+def test_a_run_keeps_the_seed_its_old_kind_drew(tmp_path):
+    """The rename must not redraw anything. production used the base seed and
+    followup{K} used base + K * stride; under the numbering those are runs 1 and
+    K+1, and base + (number - 1) * stride reproduces both."""
+    obs = observed(tmp_path)
+    base = 5
+    assert plan_followup.plan(2, base, 1, obs, seeds=64)["rng_seed"] == base
+    for legacy_k in (1, 2, 3):
+        planned = plan_followup.plan(2, base, legacy_k + 1, obs, seeds=64)
+        assert planned["rng_seed"] == base + legacy_k * plan_followup.SEED_STRIDE
+        assert planned["index"] == legacy_k, "and still records the legacy index its files are named by"
+
+
+def test_a_run_is_sized_by_seeds_or_by_designs_but_not_both(tmp_path):
+    obs = observed(tmp_path)
+    assert plan_followup.plan(2, 5, 2, obs, seeds=200)["seeds"] == 200
+    with pytest.raises(SystemExit, match="not both and not neither"):
+        plan_followup.plan(2, 5, 2, obs, seeds=200, want_designs=700)
+    with pytest.raises(SystemExit, match="not both and not neither"):
+        plan_followup.plan(2, 5, 2, obs)

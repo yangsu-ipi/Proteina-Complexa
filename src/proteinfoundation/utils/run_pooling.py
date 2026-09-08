@@ -82,42 +82,88 @@ def read_pool_manifest(path: str) -> list[str]:
     return dirs
 
 
-# Exactly the runs whose designs are part of the deliverable. Matched rather than
-# pattern-excluded, so a smoke variant nobody anticipated -- `_smoke_bw8`, say --
-# is left out by default instead of by having been thought of.
-_POOLED_SUFFIXES = ("production",)
+# A campaign's deliverable is a numbered sequence of runs, and a run is named for
+# its position in it. Three spellings name the same sequence:
+#
+#   production      the first run of a campaign written before the kinds merged
+#   followup{K}     the K-th run after that one, so index K+1
+#   production{N}   the current spelling, N from 1
+#
+# The merge is a rename, not a renumbering: `production` and `followup1` were
+# always runs 1 and 2, they were just named for how they came about rather than
+# for where they sat. Seeds are derived as base + (index - 1) * stride, which is
+# what the two old kinds already produced, so nothing on disk has to move.
+#
+# Matched rather than pattern-excluded, so a smoke variant nobody anticipated --
+# `_smoke_bw8`, say -- is left out by default instead of by having been thought of.
+LEGACY_FIRST_RUN_SUFFIX = "production"
+RUN_SUFFIX_PREFIX = "production"
+LEGACY_LATER_RUN_PREFIX = "followup"
+
+
+def run_suffix(index: int) -> str:
+    """The directory suffix naming run *index*, counting from 1."""
+    if index < 1:
+        raise ValueError(f"a campaign run is numbered from 1, not {index}")
+    return f"{RUN_SUFFIX_PREFIX}{index}"
+
+
+def run_index(suffix: str) -> int | None:
+    """The run number a suffix names, or None if it names no pooled run.
+
+    The one place the three spellings are reconciled. Everything that orders,
+    deduplicates against, or reports over a campaign's runs asks this rather than
+    matching names itself, because a second copy of the mapping would disagree
+    silently in exactly the two directions that matter: a run pooled but not
+    deduplicated against, or the reverse.
+    """
+    if suffix == LEGACY_FIRST_RUN_SUFFIX:
+        return 1
+    for prefix, offset in ((LEGACY_LATER_RUN_PREFIX, 1), (RUN_SUFFIX_PREFIX, 0)):
+        rest = suffix[len(prefix) :]
+        if suffix.startswith(prefix) and rest.isdigit():
+            return int(rest) + offset
+    return None
 
 
 def is_pooled_run(dir_name: str, config_name: str, task_name: str, run_prefix: str) -> bool:
     """Whether a run directory belongs to the campaign's pooled deliverable.
 
-    The one rule, shared by the follow-up planner (which deduplicates against
-    these) and the pooled analysis (which reports over them). Two copies would
-    drift, and the failure would be silent in both directions: designs
-    deduplicated against a run the analysis ignores, or counted from a run the
-    dedup never saw.
+    The one rule, shared by the run planner (which deduplicates against these)
+    and the pooled analysis (which reports over them). Two copies would drift,
+    and the failure would be silent in both directions: designs deduplicated
+    against a run the analysis ignores, or counted from a run the dedup never saw.
     """
     stem = f"{config_name}_{task_name}_{run_prefix}_"
     if not dir_name.startswith(stem):
         return False
-    suffix = dir_name[len(stem) :]
-    if suffix in _POOLED_SUFFIXES:
-        return True
-    return suffix.startswith("followup") and suffix[len("followup") :].isdigit()
+    return run_index(dir_name[len(stem) :]) is not None
 
 
 def pooled_run_dirs(root: str, config_name: str, task_name: str, run_prefix: str) -> list[str]:
-    """Pooled run directories under *root*, production first then follow-ups.
+    """Pooled run directories under *root*, in run order.
 
     Ordered so a pooled report reads chronologically rather than however the
     filesystem happened to list them.
+
+    Two directories claiming one run number is refused rather than ordered. It
+    means a campaign holds the same run under two spellings -- `_production` and
+    `_production1` -- and pooling both would count its designs twice while the
+    duplicate check, which compares sequences across runs, would report them as
+    duplicates of themselves.
     """
     if not os.path.isdir(root):
         return []
+    stem = f"{config_name}_{task_name}_{run_prefix}_"
     names = [n for n in os.listdir(root) if is_pooled_run(n, config_name, task_name, run_prefix)]
 
-    def order(name: str) -> tuple[int, int]:
-        suffix = name[len(f"{config_name}_{task_name}_{run_prefix}_") :]
-        return (0, 0) if suffix == "production" else (1, int(suffix[len("followup") :]))
-
-    return [os.path.join(root, n) for n in sorted(names, key=order)]
+    by_index: dict[int, list[str]] = {}
+    for name in names:
+        by_index.setdefault(run_index(name[len(stem) :]), []).append(name)
+    collisions = {i: sorted(v) for i, v in by_index.items() if len(v) > 1}
+    if collisions:
+        raise ValueError(
+            f"more than one run directory claims the same run number in {root}: {collisions}. "
+            f"These are the same run under different spellings; keep one."
+        )
+    return [os.path.join(root, by_index[i][0]) for i in sorted(by_index)]

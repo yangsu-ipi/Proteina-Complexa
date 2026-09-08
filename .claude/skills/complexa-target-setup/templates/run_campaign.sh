@@ -20,8 +20,18 @@ KIND="${1:?usage: run_campaign.sh smoke|production [STAGE] | followup N_DESIGNS 
 # runs, the second reading an inference directory the first never wrote.
 # submit_campaign.sh sets it once for the whole chain.
 shift
+# A campaign's runs are one numbered sequence. `production N` starts run N-seeds
+# wide; `production` alone is the campaign's first run, sized from campaign.env
+# because it is the only one with nothing to calibrate on. `followup N` is the
+# older spelling for "N more designs" and still works -- the merge renamed the
+# kinds, it did not renumber the runs.
+RUN_SEEDS=""
+WANT_DESIGNS=""
 if [[ "$KIND" == followup ]]; then
   WANT_DESIGNS="${1:?followup needs a design count, e.g. run_campaign.sh followup 700}"
+  shift
+elif [[ "$KIND" == production && "${1:-}" =~ ^[0-9]+$ ]]; then
+  RUN_SEEDS="$1"
   shift
 fi
 STAGE="all"
@@ -83,13 +93,13 @@ fi
 
 # Follow-ups are numbered, so their metadata does not overwrite each other's --
 # a campaign's audit trail is one file per run, not one file per kind.
-if [[ "$KIND" == followup ]]; then
+if [[ "$KIND" == followup || -n "$RUN_SEEDS" ]]; then
   PLAN="$(python scripts/plan_followup.py \
-    --campaign-dir "$CAMPAIGN_DIR" --want-designs "$WANT_DESIGNS" --shards "$SHARDS" \
+    --campaign-dir "$CAMPAIGN_DIR" ${RUN_SEEDS:+--seeds "$RUN_SEEDS"} ${WANT_DESIGNS:+--want-designs "$WANT_DESIGNS"} --shards "$SHARDS" \
     --base-seed "${PRODUCTION_RNG_SEED:?set PRODUCTION_RNG_SEED in campaign.env}" \
     --reference-seeds "${PRODUCTION_SEEDS:?set PRODUCTION_SEEDS in campaign.env}" \
     --run-prefix "$RUN_PREFIX" --config-name "$CONFIG_NAME" --task-name "$TASK_NAME" \
-    ${FOLLOWUP_INDEX:+--index "$FOLLOWUP_INDEX"})"
+    ${RUN_NUMBER:+--run-number "$RUN_NUMBER"} ${FOLLOWUP_INDEX:+--index "$FOLLOWUP_INDEX"})"
   eval "$PLAN"
   RUN_NAME="$FOLLOWUP_RUN_NAME"
   SEEDS=$FOLLOWUP_SEEDS
@@ -97,8 +107,11 @@ if [[ "$KIND" == followup ]]; then
   KEEP=$FOLLOWUP_KEEP
   EXPECT=$FOLLOWUP_EXPECT
   RNG_SEED=$FOLLOWUP_RNG_SEED
-  KIND_TAG="followup${FOLLOWUP_INDEX}"
-  echo "follow-up #${FOLLOWUP_INDEX}: ${WANT_DESIGNS} more designs -> ${SEEDS} seeds, seed ${RNG_SEED}"
+  # The tag the planner chose. Every metadata file this run writes is keyed on
+  # it, so rebuilding it here from the follow-up index would name a run's records
+  # differently from its inference directory the moment the two spellings differ.
+  KIND_TAG="$RUN_TAG"
+  echo "run #${RUN_NUMBER} (${RUN_TAG}): ${SEEDS} seeds, seed ${RNG_SEED}${WANT_DESIGNS:+ -- sized for ${WANT_DESIGNS} designs}"
   echo "  parameters recorded in ${FOLLOWUP_RECORD}"
   echo "  deduplicated against the runs in ${FOLLOWUP_POOL_MANIFEST}"
 else

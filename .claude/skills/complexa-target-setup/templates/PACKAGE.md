@@ -137,10 +137,43 @@ soon as two of them share it. Name the run instead:
 An explicit index wins over the count for any starting stage — naming a run is a
 stronger statement than describing it.
 
-A follow-up takes only the number of additional designs wanted. Seeds, raw,
-keep, expect and its own RNG seed are derived from what the production run
-actually produced, recorded in `metadata/followup_<n>.json` before anything is
-queued, and it is deduplicated against every earlier pooled run.
+### One numbered sequence, three spellings
+
+A campaign's pooled runs are one numbered sequence, and a run is named for its
+position in it:
+
+| spelling | meaning |
+|---|---|
+| `production` | the first run of a campaign written before the kinds merged — run 1 |
+| `followup{K}` | the K-th run after that one — run K+1 |
+| `production{N}` | the current spelling, N from 1 |
+
+The merge is a rename, not a renumbering. Seeds are `base + (number - 1) × 1000`,
+which is exactly what the two old kinds produced, so **nothing on disk moves**:
+`production` keeps the base seed, `followup1` keeps `base + 1000`. Runs already
+written keep the names they were written under; only new ones use the current
+spelling.
+
+    scripts/submit_campaign.sh production 200      # a new run, 200 seeds
+    scripts/submit_campaign.sh production          # the first run, sized from campaign.env
+    scripts/submit_campaign.sh followup 900        # still works: 900 more designs
+
+`production N` is **N seeds**, which is what a run actually takes. A design
+target is a separate question — ask the planner what one converts to, then pass
+the seed count you decided on:
+
+    python3 scripts/plan_followup.py --campaign-dir . --want-designs 900 ... | grep SEEDS
+
+Only the campaign's first run has to be sized by hand, because it is the only one
+with nothing to calibrate on. Every later run derives raw, keep and expect from
+what a seed has been worth **across every completed run**, not just the first —
+calibrating on the first alone anchors a campaign on its smallest and least
+representative run and never updates.
+
+A run that already exists is replayed, not re-derived: its size decided what
+generation drew and what `verify_run_outputs` expects, so it is history rather
+than a derivation. Its parameters are recorded before anything is queued, and it
+is deduplicated against every earlier pooled run.
 
 `SLURM_TIME_GPU` and `SLURM_TIME_CPU` in campaign.env override the wall clocks;
 both have defaults, so neither has to be set.
