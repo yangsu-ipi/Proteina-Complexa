@@ -53,6 +53,7 @@ from proteinfoundation.evaluation.motif_eval import (
 )
 from proteinfoundation.evaluation.motif_eval_utils import MotifInfo
 from proteinfoundation.evaluation.utils import maybe_tqdm
+from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.utils.motif_utils import extract_motif_from_pdb
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb
@@ -463,7 +464,7 @@ def compute_motif_binder_metrics(
         # RMSD using the SAME alignment from the generated structure.
         # =================================================================
         for seq_type in sequence_types:
-            all_paths_col = f"{seq_type}_complex_pdb_path_all"
+            all_paths_col = f"{rename(f'{seq_type}_complex_pdb_path', complex_backend)}_all"
             all_seqs_col = f"{seq_type}_sequence_all"
 
             if all_paths_col not in binder_df.columns:

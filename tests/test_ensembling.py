@@ -454,13 +454,22 @@ def test_complex_plddt_is_gone_and_still_addressable():
         assert normalized["complex_binder_pLDDT"]["threshold"] == 0.8, "and keeps its threshold"
 
 
-def test_the_only_reader_of_the_old_column_was_repointed():
-    """refolded_structure_utils skips a sample when any of its three metric
-    columns is absent, and skips it at debug level -- so leaving it pointed at
-    the retired name would have quietly stopped exporting structures."""
+def test_the_refolded_path_lookup_builds_its_column_rather_than_guessing():
+    """This test used to assert that three metric columns in this file had been
+    repointed. They had -- but they were inside a function nothing called, while
+    the live path lookup a few lines above went on guessing among four candidate
+    names, three of which never existed in any frame. The dead function is gone
+    (it also carried its own copy of the success criteria, three criteria out of
+    date); what is checked now is the code that runs."""
     source = (SRC / "src/proteinfoundation/utils/refolded_structure_utils.py").read_text()
-    assert '_complex_binder_pLDDT"' in source
-    assert '_complex_pLDDT"' not in source
+    assert "get_successful_best_samples_with_paths" not in source
+    assert "possible_columns" not in source, "no candidate list -- one name, built once"
+    assert 'rename(f"{t}_complex_pdb_path", backend)' in source
+    assert "complex_backend_of(df)" in source, "the backend comes from the frame's provenance"
+    # And finding nothing is loud, because that is what made it invisible: a run
+    # asking for refolded interface metrics got none, with only a debug line.
+    assert "logger.error(" in source
+    assert "if not any(best_paths.values()):" in source
 
 
 def test_the_reduction_rule_is_derivation_not_structure():

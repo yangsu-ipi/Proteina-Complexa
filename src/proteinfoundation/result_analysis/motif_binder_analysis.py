@@ -19,6 +19,7 @@ import os
 import pandas as pd
 from loguru import logger
 
+from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.result_analysis.analysis_utils import (
     FLOAT_FORMAT_PD,
     SEP_CSV_PD,
@@ -35,7 +36,7 @@ from proteinfoundation.result_analysis.analysis_utils import (
     parse_threshold_spec,
     save_filtered_csv,
 )
-from proteinfoundation.result_analysis.binder_analysis_utils import threshold_column
+from proteinfoundation.result_analysis.binder_analysis_utils import complex_backend_of, threshold_column
 from proteinfoundation.result_analysis.motif_binder_analysis_utils import (
     check_redesign_passes_binder_and_motif,
     check_sample_has_passing_redesign,
@@ -187,6 +188,7 @@ def compute_motif_binder_pass_rate(
         success_thresholds = get_default_motif_binder_success(result_type)
 
     # Build the list of all columns we need for groupby aggregation
+    backend = complex_backend_of(df) or "af2"
     all_columns = set()
     for seq_type in SEQUENCE_TYPES:
         parsed_binder, resolved_motif = parse_motif_binder_success(success_thresholds, seq_type)
@@ -196,7 +198,7 @@ def compute_motif_binder_pass_rate(
         for criterion in resolved_motif:
             all_columns.add(criterion["column"])
         # Sample count column
-        all_columns.add(f"{seq_type}_complex_pdb_path")
+        all_columns.add(rename(f"{seq_type}_complex_pdb_path", backend))
 
     existing_columns = sorted(col for col in all_columns if col in df.columns)
     if not existing_columns:
@@ -234,7 +236,7 @@ def compute_motif_binder_pass_rate(
         df_grouped[per_sample_col] = results.apply(lambda x: x[1])
 
         # Sample and redesign counts
-        count_col = f"{seq_type}_complex_pdb_path"
+        count_col = rename(f"{seq_type}_complex_pdb_path", backend)
         if count_col in df_grouped.columns:
             df_grouped[f"_res_{seq_type}_original_samples_{metric_suffix}"] = df_grouped[count_col].apply(
                 lambda v: len(v) if isinstance(v, list) else 0

@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from proteinfoundation.metrics.column_names import rename
+
 # Import utilities from binder_analysis_utils
 from proteinfoundation.result_analysis.analysis_utils import (
     FLOAT_FORMAT_PD,
@@ -673,13 +675,18 @@ def compute_filter_pass_rate(
     # criterion left unexpanded here would drop the apo columns and then
     # add_success_rate_columns -- which expands against the grouped frame -- would
     # find nothing to gate on.
+    # Resolved from the frame's own provenance column, like the criteria above:
+    # a hardcoded {seq}_complex_pdb_path silently aggregated nothing after the
+    # rename, and the two counts derived from it reported 0 for every run.
+    backend = complex_backend_of(df) or "af2"
+    path_col = {t: rename(f"{t}_complex_pdb_path", backend) for t in sequence_types}
     all_columns = []
     for seq_type in sequence_types:
         for metric_name, spec in expand_model_criteria(thresholds, seq_type, df.columns).items():
             parsed = parse_threshold_spec(spec)
             col_name = threshold_column(seq_type, metric_name, parsed)
             all_columns.append(col_name)
-        all_columns.append(f"{seq_type}_complex_pdb_path")
+        all_columns.append(path_col[seq_type])
 
     agg_dict = {col: keep_lists_separate for col in all_columns if col in df.columns}
 
@@ -693,7 +700,7 @@ def compute_filter_pass_rate(
     for seq_type in sequence_types:
         add_success_rate_columns(df_grouped, seq_type, thresholds, "success", metric_suffix)
 
-        first_col = f"{seq_type}_complex_pdb_path"
+        first_col = path_col[seq_type]
         df_grouped[f"_res_{seq_type}_original_samples_{metric_suffix}"] = df_grouped.apply(
             lambda row, fc=first_col: len(row[fc]) if fc in row.index else 0, axis=1
         )
