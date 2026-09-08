@@ -390,7 +390,13 @@ def complex_backend_of(frame) -> str | None:
     """
     if COMPLEX_BACKEND_COLUMN not in getattr(frame, "columns", ()):
         return None
-    values = {v for v in frame[COMPLEX_BACKEND_COLUMN].dropna().unique()}
+    # Flattened rather than assumed to be a Series. Per-job CSVs written while the
+    # row builder appended this column once per sequence type carry two identical
+    # copies, and selecting by name then returns a DataFrame -- whose .unique()
+    # raised an AttributeError from inside pandas, naming neither this column nor
+    # the duplication. Copies carrying the same value are one fact recorded twice;
+    # copies that disagree still raise below, which is the case worth stopping for.
+    values = {v for v in np.ravel(frame[COMPLEX_BACKEND_COLUMN].to_numpy()) if v is not None and v == v}
     if not values:
         return None
     if len(values) > 1:

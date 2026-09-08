@@ -762,7 +762,13 @@ def compute_binder_metrics(
                 # reach, and a pooled frame can hold runs that used different
                 # folders, so it travels with the rows like redesign_model does.
                 row_dict[COMPLEX_BACKEND_COLUMN] = complex_backend
-                if idx == 0:
+                # Guarded on membership, not on idx == 0: this block runs once per
+                # sequence type, so "first design" fires once per type and the
+                # frame ended up carrying the column as many times as there were
+                # types. Selecting it by name then yields a DataFrame rather than
+                # a Series, and the first caller to treat it as one died several
+                # frames below anything that mentioned the column.
+                if COMPLEX_BACKEND_COLUMN not in all_columns:
                     all_columns.append(COMPLEX_BACKEND_COLUMN)
 
                 # Complex metrics (best and all). Named through the same mapping

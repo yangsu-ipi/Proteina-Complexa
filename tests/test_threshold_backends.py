@@ -98,3 +98,71 @@ def test_rows_disagreeing_about_the_backend_raise():
 def test_an_all_nan_column_reads_as_absent():
     frame = pd.DataFrame({COMPLEX_BACKEND_COLUMN: [None, None]})
     assert complex_backend_of(frame) is None
+
+
+# ---------------------------------------------------------------------------
+# A frame that carries the provenance column twice.
+#
+# The row builder appended it once per sequence type, so every per-job CSV of a
+# two-type run holds two identical copies. Nothing read it as a Series until the
+# refolded-metrics path did, and then pandas raised
+# `'DataFrame' object has no attribute 'unique'` from inside its own internals,
+# naming neither the column nor the duplication. The evaluate stage died on it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_duplicated_provenance_column_is_one_fact_recorded_twice():
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        COMPLEX_BACKEND_COLUMN,
+        complex_backend_of,
+    )
+
+    frame = pd.DataFrame(
+        [["af2", "af2", 1.0], ["af2", "af2", 2.0]],
+        columns=[COMPLEX_BACKEND_COLUMN, COMPLEX_BACKEND_COLUMN, "x"],
+    )
+    assert frame[COMPLEX_BACKEND_COLUMN].shape[1] == 2, "the fixture really is duplicated"
+    assert complex_backend_of(frame) == "af2"
+
+
+def test_duplicated_copies_that_disagree_still_raise():
+    """Tolerating a duplicate is not tolerating a contradiction: a frame whose
+    copies disagree cannot be gated by one resolved set either way."""
+    import pandas as pd
+    import pytest
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        COMPLEX_BACKEND_COLUMN,
+        ThresholdSpecError,
+        complex_backend_of,
+    )
+
+    frame = pd.DataFrame([["af2", "rf3"]], columns=[COMPLEX_BACKEND_COLUMN, COMPLEX_BACKEND_COLUMN])
+    with pytest.raises(ThresholdSpecError):
+        complex_backend_of(frame)
+
+
+def test_nan_is_still_not_a_backend():
+    import numpy as np
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        COMPLEX_BACKEND_COLUMN,
+        complex_backend_of,
+    )
+
+    assert complex_backend_of(pd.DataFrame({COMPLEX_BACKEND_COLUMN: [np.nan, "af2"]})) == "af2"
+    assert complex_backend_of(pd.DataFrame({COMPLEX_BACKEND_COLUMN: [np.nan]})) is None
+
+
+def test_the_provenance_column_is_emitted_once_per_run_not_once_per_sequence_type():
+    """It is a property of the run. The guard has to be membership, not
+    `idx == 0`: that block runs once per sequence type, so first-design fires
+    once per type."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "src/proteinfoundation/evaluation/binder_eval.py").read_text()
+    block = source[source.index("row_dict[COMPLEX_BACKEND_COLUMN] = complex_backend") :][:800]
+    assert "if COMPLEX_BACKEND_COLUMN not in all_columns:" in block
