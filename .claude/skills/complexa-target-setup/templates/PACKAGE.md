@@ -162,8 +162,9 @@ spelling.
 `production N` is **N seeds**, which is what a run actually takes. A design
 target is a separate question, and `estimate_run.sh` answers it both ways:
 
-    scripts/estimate_run.sh 900            # how many seeds for ~900 designs
-    scripts/estimate_run.sh --seeds 200    # how many designs from 200 seeds
+    scripts/estimate_run.sh 900              # how many seeds for ~900 designs
+    scripts/estimate_run.sh --orderable 500  # ... for ~500 sequences past the gate
+    scripts/estimate_run.sh --seeds 200      # what 200 seeds should yield
 
     run #4 would be 164 seeds -> about 904 designs
       1312 raw, trimmed to 1280 before global dedup
@@ -173,6 +174,15 @@ target is a separate question, and `estimate_run.sh` answers it both ways:
 It writes nothing, reserves no run number and submits nothing. The conversion is
 advice: baking it into the submit path made the estimate binding, and left no way
 to run a size the arithmetic had not chosen.
+
+**Orderable is the noisier target, and the command says so.** Designs per seed is
+close to stable; sequences per seed that pass all six criteria is not. On CBLN1 it
+fell every run — 2.56, 2.19, 1.78 — as later runs deduplicated against earlier
+ones and the easy modes went first. So the planning number is the *most recent*
+run's rate, not the pooled mean, and the series is printed alongside it: an
+average of a falling series plans for a run that already happened. Sizing this way
+needs `metadata/pooled_analysis.json`, since orderable counts come from applying
+the success thresholds; without it, size by designs or seeds.
 
 Only the campaign's first run has to be sized by hand, because it is the only one
 with nothing to calibrate on. Every later run derives raw, keep and expect from

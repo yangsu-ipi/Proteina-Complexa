@@ -180,6 +180,60 @@ def completed_runs(campaign_dir: Path, first_run_seeds: int) -> list[dict]:
     return runs
 
 
+def orderable_yield(campaign_dir: Path, first_run_seeds: int) -> dict:
+    """Orderable sequences per seed, per completed run and most recently.
+
+    A different question from designs per seed, and a much noisier one. Designs
+    are what generation produced; orderable sequences are what survived six
+    success criteria, so this folds in everything the gate looks at.
+
+    Measured on CBLN1 it fell monotonically -- 2.56, 2.19, 1.78 per seed across
+    the three runs -- because later runs deduplicate against earlier ones and the
+    easy modes go first. The pooled average of 2.05 therefore over-predicts the
+    next run by about 15%, which is why the planning number here is the most
+    recent run's rate and the series is reported alongside it. A single average
+    would have looked authoritative and been optimistic.
+
+    Needs the pooled report: orderable counts come from applying the success
+    thresholds, which is analysis, not generation.
+    """
+    pooled = campaign_dir / "metadata" / "pooled_analysis.json"
+    if not pooled.exists():
+        raise SystemExit(
+            f"Cannot size by orderable sequences: {pooled} does not exist. Orderable counts come "
+            f"from the pooled report, which applies the success thresholds -- run the `pooled` stage "
+            f"first, or size the run by designs or by seeds instead."
+        )
+    per_run = (_load(pooled).get("per_run") or {})
+    by_tag = {}
+    for name, value in per_run.items():
+        for tag in (name.split("_")[-1],):
+            if run_number(tag) is not None:
+                by_tag[tag] = value
+    series = []
+    for run in completed_runs(campaign_dir, first_run_seeds):
+        stats = by_tag.get(run["tag"])
+        if not stats or not run["seeds"]:
+            continue
+        orderable = int(stats.get("orderable_sequences") or 0)
+        series.append({"tag": run["tag"], "seeds": run["seeds"], "orderable": orderable,
+                       "per_seed": orderable / run["seeds"]})
+    if not series:
+        raise SystemExit(
+            f"Cannot size by orderable sequences: {pooled} reports none of this campaign's completed "
+            f"runs. Re-run the pooled stage so the two agree about which runs exist."
+        )
+    return {
+        "orderable_series": series,
+        # The most recent run, not the pooled average: the rate has a direction,
+        # and planning on the mean of a declining series plans for a run that
+        # already happened.
+        "orderable_per_seed": series[-1]["per_seed"],
+        "orderable_basis": series[-1]["tag"],
+        "orderable_pooled_per_seed": sum(r["orderable"] for r in series) / sum(r["seeds"] for r in series),
+    }
+
+
 def observed_yield_pooled(campaign_dir: Path, first_run_seeds: int) -> dict:
     """What a seed is worth, measured over every completed run rather than one.
 
@@ -232,6 +286,7 @@ def plan(
     observed: dict,
     want_designs: int | None = None,
     seeds: int | None = None,
+    want_orderable: int | None = None,
 ) -> dict:
     """SEEDS, RAW, KEEP and EXPECT for one run.
 
@@ -240,12 +295,23 @@ def plan(
     Exactly one of the two: a run has one size, and accepting both would let a
     caller state a target and a count that do not correspond.
     """
-    if (want_designs is None) == (seeds is None):
-        raise SystemExit("A run is sized by --seeds or by --want-designs, not both and not neither.")
+    given = [x is not None for x in (want_designs, seeds, want_orderable)]
+    if sum(given) != 1:
+        raise SystemExit(
+            "A run is sized by exactly one of --seeds, --want-designs or --want-orderable. "
+            "A run has one size, and accepting two would let a caller state targets that do not "
+            "correspond."
+        )
     if shards < 1:
         raise SystemExit("A run needs at least one shard.")
 
-    if seeds is None:
+    if want_orderable is not None:
+        if want_orderable < 1:
+            raise SystemExit("A run needs a positive number of orderable sequences.")
+        if "orderable_per_seed" not in observed:
+            raise SystemExit("Sizing by orderable sequences needs the pooled report's yield.")
+        seeds = math.ceil(want_orderable / observed["orderable_per_seed"])
+    elif seeds is None:
         if want_designs < 1:
             raise SystemExit("A run needs a positive number of designs.")
         # Round up: asking for 700 and planning 699 is the failure mode this
@@ -267,6 +333,7 @@ def plan(
         "number": number,
         "index": legacy_followup_index(number),
         "want_designs": want_designs,
+        "want_orderable": want_orderable,
         "seeds": seeds,
         "raw": raw,
         "keep": keep,
@@ -277,6 +344,9 @@ def plan(
         # used -- so the merge renames runs without redrawing any of them.
         "rng_seed": base_seed + (number - 1) * SEED_STRIDE,
         "projected_designs": round(seeds * observed["designs_per_seed"]),
+        "projected_orderable": (
+            round(seeds * observed["orderable_per_seed"]) if "orderable_per_seed" in observed else None
+        ),
         **observed,
     }
 
@@ -437,6 +507,12 @@ def main() -> int:
     size = p.add_mutually_exclusive_group()
     size.add_argument("--seeds", type=int, default=None, help="run size, in beam-search roots")
     size.add_argument("--want-designs", type=int, default=None, help="design target, converted using observed yield")
+    size.add_argument(
+        "--want-orderable",
+        type=int,
+        default=None,
+        help="target for sequences passing the success criteria; needs the pooled report",
+    )
     p.add_argument("--shards", type=int, required=True)
     p.add_argument("--base-seed", type=int, required=True)
     p.add_argument("--reference-kind", default="production", help="ignored; calibration pools every completed run")
@@ -460,6 +536,10 @@ def main() -> int:
     args = p.parse_args()
 
     observed = observed_yield_pooled(args.campaign_dir, args.reference_seeds)
+    # Only when asked for: it needs the pooled report, and a campaign that has
+    # not run one can still size by designs or by seeds.
+    if args.want_orderable is not None:
+        observed = {**observed, **orderable_yield(args.campaign_dir, args.reference_seeds)}
 
     if args.check:
         # Asked for what the calibration set produced, the arithmetic must return
@@ -514,10 +594,14 @@ def main() -> int:
                 f"it was planned with."
             )
     else:
-        if args.seeds is None and args.want_designs is None:
-            raise SystemExit("A run is sized by --seeds or by --want-designs; neither was given.")
         planned = plan(
-            args.shards, args.base_seed, number, observed, want_designs=args.want_designs, seeds=args.seeds
+            args.shards,
+            args.base_seed,
+            number,
+            observed,
+            want_designs=args.want_designs,
+            seeds=args.seeds,
+            want_orderable=args.want_orderable,
         )
     # The name a run already has wins over the name the current scheme would give
     # it, so re-planning an existing run points at the directory it wrote. Its own
@@ -552,8 +636,7 @@ def main() -> int:
         manifest.write_text(json.dumps({"for_run": planned["run_name"], "inference_dirs": pool}, indent=2) + "\n")
         record.parent.mkdir(parents=True, exist_ok=True)
         record.write_text(json.dumps(planned, indent=2, sort_keys=True) + "\n")
-    else:
-        print(f"DRY_RUN_PLAN_NOT_WRITTEN={record}", file=sys.stderr)
+
 
     # Shell-evalable, so the runner needs no parsing of its own. Still named
     # FOLLOWUP_* because run_campaign.sh of every existing campaign package reads
@@ -579,6 +662,13 @@ def main() -> int:
     emit("RUN_PROJECTED_DESIGNS", planned.get("projected_designs", ""))
     emit("RUN_DESIGNS_PER_SEED", round(float(planned["designs_per_seed"]), 2) if "designs_per_seed" in planned else "")
     emit("RUN_CALIBRATED_ON", ", ".join(planned.get("calibrated_on") or []))
+    emit("RUN_PROJECTED_ORDERABLE", planned.get("projected_orderable") or "")
+    emit("RUN_ORDERABLE_PER_SEED", round(float(planned["orderable_per_seed"]), 2) if "orderable_per_seed" in planned else "")
+    emit("RUN_ORDERABLE_BASIS", planned.get("orderable_basis", ""))
+    emit(
+        "RUN_ORDERABLE_SERIES",
+        ", ".join(f"{r['tag']} {r['per_seed']:.2f}" for r in planned.get("orderable_series") or []),
+    )
     return 0
 
 

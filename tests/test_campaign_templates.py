@@ -548,6 +548,54 @@ def test_a_seed_count_converts_back_to_designs(tmp_path):
     assert "200 seeds" in proc.stdout
 
 
+def test_an_orderable_target_converts_to_a_seed_count(tmp_path):
+    """The target a campaign actually cares about: sequences past the gate, not
+    structures produced."""
+    pkg = campaign_package(tmp_path, pooled=True)
+    proc = estimate(pkg, "--orderable", 500)
+    assert proc.returncode == 0, proc.stderr
+    assert "orderable" in proc.stdout
+    assert "orderable per seed, from the most recent run" in proc.stdout
+
+
+def test_the_orderable_rate_is_shown_as_a_series_not_an_average(tmp_path):
+    """It has a direction. On CBLN1 it fell 2.56 -> 2.19 -> 1.78 across three
+    runs, so the pooled mean of 2.05 over-promises the next one by ~15%. Planning
+    on the most recent rate and printing the series lets a reader see that;
+    printing one averaged number would look authoritative and be optimistic."""
+    pkg = campaign_package(tmp_path, pooled=True)
+    out = estimate(pkg, "--orderable", 500).stdout
+    assert "per run so far:" in out
+    assert out.count(" 2.") + out.count(" 1.") >= 2, "more than one rate is shown"
+    assert "would over-promise" in out
+
+
+def test_sizing_by_orderable_needs_the_pooled_report(tmp_path):
+    """Orderable counts come from applying the success thresholds, which is
+    analysis. A campaign that has not run one can still size by designs."""
+    pkg = campaign_package(tmp_path)
+    proc = estimate(pkg, "--orderable", 500)
+    assert proc.returncode != 0
+    assert "pooled_analysis.json" in proc.stderr or "pooled report" in proc.stderr
+    assert estimate(pkg, 900).returncode == 0, "and the other forms still work"
+
+
+def test_a_run_is_sized_by_exactly_one_target(tmp_path):
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("pf", TEMPLATES / "plan_followup.py")
+    pf = importlib.util.module_from_spec(spec)
+    sys.modules["pf"] = pf
+    spec.loader.exec_module(pf)
+    obs = {"designs_per_seed": 5.0, "expansion_per_seed": 8.0, "trim_ratio": 0.97, "orderable_per_seed": 2.0}
+    with pytest.raises(SystemExit, match="exactly one"):
+        pf.plan(2, 5, 2, obs, want_designs=700, want_orderable=500)
+    with pytest.raises(SystemExit, match="exactly one"):
+        pf.plan(2, 5, 2, obs)
+    assert pf.plan(2, 5, 2, obs, want_orderable=500)["seeds"] == 250
+
+
 def test_estimating_writes_nothing(tmp_path):
     """It answers a question. Reserving a run number or rewriting the audit trail
     to answer one is the failure this whole flag family had."""
@@ -654,7 +702,7 @@ def test_the_stage_is_still_optional_with_overrides_present():
 # ---------------------------------------------------------------------------
 
 
-def campaign_package(tmp_path, *, followups=()):
+def campaign_package(tmp_path, *, followups=(), pooled=False):
     """The smallest package submit_campaign.sh will act on."""
     pkg = tmp_path / "camp"
     (pkg / "slurm").mkdir(parents=True)
@@ -682,6 +730,19 @@ def campaign_package(tmp_path, *, followups=()):
     inf = pkg / "inference" / "pipeline_T_pfx_production"
     inf.mkdir(parents=True)
     (inf / "top_samples_pipeline.csv").write_text("x\n")
+    if pooled:
+        # Orderable counts live in the pooled report, because they come from
+        # applying the success thresholds rather than from generation.
+        (pkg / "metadata" / "pooled_analysis.json").write_text(
+            json.dumps(
+                {
+                    "per_run": {
+                        "pipeline_T_pfx_production": {"designs": 340, "orderable_sequences": 164},
+                        "pipeline_T_pfx_followup1": {"designs": 940, "orderable_sequences": 372},
+                    }
+                }
+            )
+        )
     for index, wanted in followups:
         # Full records, because a run that already exists is now replayed rather
         # than re-derived: its size is history, and re-deriving would move it as

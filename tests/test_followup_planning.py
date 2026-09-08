@@ -463,10 +463,15 @@ def test_a_run_keeps_the_seed_its_old_kind_drew(tmp_path):
         assert planned["index"] == legacy_k, "and still records the legacy index its files are named by"
 
 
-def test_a_run_is_sized_by_seeds_or_by_designs_but_not_both(tmp_path):
+def test_a_run_is_sized_by_exactly_one_target(tmp_path):
+    """Seeds, designs or orderable sequences -- a run has one size, and accepting
+    two would let a caller state targets that do not correspond."""
     obs = observed(tmp_path)
     assert plan_followup.plan(2, 5, 2, obs, seeds=200)["seeds"] == 200
-    with pytest.raises(SystemExit, match="not both and not neither"):
-        plan_followup.plan(2, 5, 2, obs, seeds=200, want_designs=700)
-    with pytest.raises(SystemExit, match="not both and not neither"):
-        plan_followup.plan(2, 5, 2, obs)
+    for kwargs in (
+        {"seeds": 200, "want_designs": 700},
+        {"want_designs": 700, "want_orderable": 500},
+        {},
+    ):
+        with pytest.raises(SystemExit, match="exactly one"):
+            plan_followup.plan(2, 5, 2, obs, **kwargs)
