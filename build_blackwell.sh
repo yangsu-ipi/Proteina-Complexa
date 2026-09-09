@@ -181,14 +181,18 @@ if [ "$WITH_ESMFOLD2" != "0" ]; then
   CONS="$ENV_DIR/esmfold2-constraints.txt"
   "$PY" - > "$CONS" <<'PYEOF'
 import importlib.metadata as md
-for pkg in ["torch", "numpy", "scipy", "numba", "einops", "biotite", "jax", "jaxlib",
-            # The one [6b] calls load-bearing: torch cu128 and jax 0.10 coexist ONLY on
-            # cudnn 9.24, and torch's own metadata asks for 9.7.1.26. Freezing jax without
-            # freezing the cudnn jax needs is half a constraint -- anything below that
-            # re-resolves torch's dependency set can pull 9.7 back, and jax then fails at
-            # XLA compile time with `RET_CHECK ... dnn_support != nullptr`, which names
-            # neither cudnn nor this file.
-            "nvidia-cudnn-cu12"]:
+# nvidia-cudnn-cu12 is deliberately NOT frozen here, even though [6b] fought for 9.24.0.43 and
+# jax needs exactly that. torch 2.7.1+cu128 pins `nvidia-cudnn-cu12==9.7.1.26` in its own
+# metadata -- exactly, under a `platform_system == "Linux" and platform_machine == "x86_64"`
+# marker. Constraining 9.24.0.43 sets an exact pin against an exact pin, so ANY resolve that
+# contains torch becomes impossible rather than merely warned about, and the install below
+# contains torch through accelerate and pydssp. pip does not say that: it backtracks through the
+# entire release history of everything requested, building old sdists to read their metadata, for
+# hours at 100% CPU, before finally reporting ResolutionImpossible. The marker means it cannot
+# happen on macOS, only on the boxes this script is for.
+# What actually holds cudnn at 9.24 is keeping torch's dependency set out of the resolve -- the
+# --no-deps line below -- with EXPECT_CUDNN after it as the safety net.
+for pkg in ["torch", "numpy", "scipy", "numba", "einops", "biotite", "jax", "jaxlib"]:
     try:
         print(f"{pkg}=={md.version(pkg)}")
     except md.PackageNotFoundError:
@@ -213,8 +217,15 @@ PYEOF
   # cuequivariance: cuequivariance_ops_torch is imported inside esm/models/esmfold2/fast.py, reached
   # only via enable_fast_inference(), which this repo never calls. Add it later for the ~4.8x trunk
   # speedup at L~=768 (Linux-only wheels).
-  "$PIP" install -c "$CONS" accelerate rdkit msgpack-numpy brotli attrs cloudpathlib \
-    httpx tenacity zstd ipywidgets ipython py3dmol pydssp boto3 pygtrie dna_features_viewer
+  # accelerate and pydssp are the only two that require torch, and pulling torch into a resolve
+  # pulls its `nvidia-cudnn-cu12==9.7.1.26` with it, which would downgrade the cudnn [6b]
+  # installed and break every jax compile. --no-deps keeps that dependency set out of the resolve
+  # entirely; the line after supplies what --no-deps then skipped. Their remaining requirements --
+  # torch, numpy, einops, tqdm -- are already in this env, which is why they are not repeated.
+  "$PIP" install -c "$CONS" --no-deps accelerate pydssp
+  "$PIP" install -c "$CONS" huggingface_hub safetensors psutil pyyaml packaging
+  "$PIP" install -c "$CONS" rdkit msgpack-numpy brotli attrs cloudpathlib \
+    httpx tenacity zstd ipywidgets ipython py3dmol boto3 pygtrie dna_features_viewer
   # [6b]'s jax verification ran BEFORE this step, so nothing here has yet re-checked that jax
   # still works -- a check that runs before the thing that can break it. AF2 reward guidance is
   # used by generation, not just evaluation, so a jax broken here takes the whole pipeline down
