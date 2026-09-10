@@ -1389,10 +1389,101 @@ def test_campaign_env_passes_the_target_to_the_step():
     exported -- a step that expected $TARGET_PDB from the environment would get
     nothing. The example has to show the arguments."""
     env = (TEMPLATES / "campaign.env.example").read_text()
-    line = [ln for ln in env.splitlines() if "prepare_target_msa.py" in ln]
+    line = [ln for ln in env.splitlines()
+            if "prepare_target_msa.py" in ln and not ln.lstrip().startswith("#")]
     assert len(line) == 1, line
     assert "--pdb $TARGET_PDB" in line[0] and "--chain $TARGET_CHAIN" in line[0]
     assert line[0].strip().startswith('"'), "must be one quoted element, or the array splits it"
+
+
+def msa_cfg(path=None, backends=("esmfold2",), paths=None, result_type="protein_binder"):
+    consensus = {}
+    if path is not None:
+        consensus["target_msa"] = str(path)
+    if paths is not None:
+        consensus["target_msa_paths"] = [str(p) if p else None for p in paths]
+    return {"result_type": result_type,
+            "metric": {"consensus_backends": list(backends), "consensus_cfg": consensus}}
+
+
+def a3m(tmp_path, name="t.a3m", records=2):
+    p = tmp_path / name
+    p.write_text("".join(f">s{i}\nAAAA\n" for i in range(records)))
+    return p
+
+
+def test_a_named_target_msa_that_is_absent_fails(tmp_path):
+    """_load_msa raises FileNotFoundError deep in evaluate, on a run whose generation
+    already finished. The path is knowable at submit time."""
+    chk = preflight_module("chk_msa")
+    cfg = msa_cfg(tmp_path / "nope.a3m")
+    fails = chk.target_msa_failures(cfg, cfg["metric"])
+    assert len(fails) == 1 and "not there" in fails[0] and "TARGET_MSA" in fails[0], fails
+
+
+def test_a_truncated_target_msa_fails_on_depth(tmp_path):
+    """A prepare step killed mid-write leaves a file that exists. Folding needs two."""
+    chk = preflight_module("chk_msa_depth")
+    cfg = msa_cfg(a3m(tmp_path, records=1))
+    fails = chk.target_msa_failures(cfg, cfg["metric"])
+    assert len(fails) == 1 and "1 record(s)" in fails[0], fails
+    ok = msa_cfg(a3m(tmp_path, "good.a3m", records=2))
+    assert chk.target_msa_failures(ok, ok["metric"]) == []
+
+
+@pytest.mark.parametrize(
+    "cfg, why",
+    [
+        (msa_cfg(Path("/nope/x.a3m"), backends=()), "no backend reads it"),
+        (msa_cfg(Path("/nope/x.a3m"), result_type="ligand_binder"), "ligand skips consensus folding"),
+        (msa_cfg(None), "a campaign may fold with no alignment at all"),
+        (msa_cfg(None, paths=[None]), "null per chain is legal"),
+    ],
+)
+def test_configs_that_do_not_use_an_msa_are_not_gated(cfg, why):
+    assert cfg["metric"]["consensus_cfg"] is not None
+    chk = preflight_module("chk_msa_skip")
+    assert chk.target_msa_failures(cfg, cfg["metric"]) == [], why
+
+
+def test_every_entry_of_target_msa_paths_is_checked(tmp_path):
+    """One entry per chain, null where a chain has none -- so a list must be walked,
+    not just its first element."""
+    chk = preflight_module("chk_msa_multi")
+    cfg = msa_cfg(None, paths=[a3m(tmp_path, "a.a3m"), None, tmp_path / "gone.a3m"])
+    fails = chk.target_msa_failures(cfg, cfg["metric"])
+    assert len(fails) == 1 and "gone.a3m" in fails[0], fails
+
+
+def test_the_msa_gate_is_wired_into_the_script(tmp_path):
+    report, cfg = preflight_report(tmp_path, PRESENT)
+    body = msa_cfg(tmp_path / "missing.a3m")
+    body["metric"].update(compute_binder_metrics=False)
+    cfg.write_text(yaml.safe_dump(body))
+    r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1)
+    assert r.returncode == 1 and "target MSA that is not there" in r.stdout, r.stdout
+
+
+def test_one_variable_names_the_msa_for_both_sides():
+    """The whole point of TARGET_MSA: the step that writes the alignment and the config
+    that reads it must not be two conventions that agree by hand."""
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    assert re.search(r"^TARGET_MSA=", env, re.M), "campaign.env must define it"
+    step = [ln for ln in env.splitlines()
+            if "prepare_target_msa.py" in ln and not ln.lstrip().startswith("#")]
+    assert len(step) == 1 and "--out $TARGET_MSA" in step[0], step
+    runner = (TEMPLATES / "run_campaign.sh").read_text()
+    assert 'if [[ -n "${TARGET_MSA:-}" ]]; then export TARGET_MSA; fi' in runner, (
+        "must be exported, and only when set -- an empty export makes ${oc.env:TARGET_MSA} "
+        "resolve to '' instead of raising")
+
+
+def test_out_must_line_up_with_chain(tmp_path):
+    """Zipping a short --out list against --chain would write one chain's alignment to
+    another's path, and it would validate -- both are real alignments of real chains."""
+    r = run("prepare_target_msa.py", "--pdb", "x.pdb", "--chain", "A", "--chain", "B",
+            "--out", str(tmp_path / "a.a3m"))
+    assert r.returncode != 0 and "one --out per --chain" in r.stderr, r.stderr
 
 
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):

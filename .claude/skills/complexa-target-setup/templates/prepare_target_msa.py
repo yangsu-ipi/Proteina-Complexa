@@ -5,8 +5,14 @@ CAMPAIGN TEMPLATE -- copy into <campaign>/scripts/ unchanged and drive it from
 `PREPARE_STEPS` in campaign.env:
 
     PREPARE_STEPS=(
-      "scripts/prepare_target_msa.py --pdb $TARGET_PDB --chain $TARGET_CHAIN --out-dir data"
+      "scripts/prepare_target_msa.py --pdb $TARGET_PDB --chain $TARGET_CHAIN --out $TARGET_MSA"
     )
+
+`--out $TARGET_MSA` is the point: campaign.env defines TARGET_MSA once, run_campaign.sh
+exports it, and pipeline.yaml reads `${oc.env:TARGET_MSA}`. The file this writes and the
+file folding opens are then the same string by construction, and check_preflight.py gates
+on it. Written by convention into two places instead, they drift, and the run dies at
+evaluate time with FileNotFoundError.
 
 Only the *target* gets an MSA. The binder never does -- `consensus_folding.py:163`
 passes `msa=None` for it unconditionally, because a de novo miniprotein has no
@@ -177,7 +183,12 @@ def main() -> int:
     p.add_argument("--pdb", required=True, help="Target PDB, the same file the config points at")
     p.add_argument("--chain", action="append", required=True, metavar="ID",
                    help="Target chain; repeat, IN THE ORDER the target's chains are folded")
-    p.add_argument("--out-dir", type=Path, default=Path("data"))
+    p.add_argument("--out", action="append", type=Path, metavar="PATH",
+                   help="Exact output path, one per --chain and in the same order. Prefer this "
+                        "over --out-dir: it is what lets campaign.env name the file once, so "
+                        "pipeline.yaml's target_msa and this step cannot drift apart")
+    p.add_argument("--out-dir", type=Path, default=Path("data"),
+                   help="Used only when --out is absent; writes <out-dir>/<pdb stem>_<chain>.a3m")
     p.add_argument("--host-url", default=DEFAULT_HOST)
     p.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                    help="ColabFold asks for 'tool/version contact@email' and warns without one")
@@ -187,8 +198,14 @@ def main() -> int:
     p.add_argument("--force", action="store_true", help="Refetch even if a valid alignment exists")
     args = p.parse_args()
 
+    if args.out and len(args.out) != len(args.chain):
+        # Silently zipping these would write chain B's alignment to chain A's path,
+        # and the result validates -- both are real alignments of real chains.
+        p.error(f"--out given {len(args.out)} time(s) for {len(args.chain)} chain(s); "
+                "pass one --out per --chain, in the same order")
     stem = Path(args.pdb).stem
-    written = [prepare_one(args.pdb, c, args.out_dir / f"{stem}_{c}.a3m", args) for c in args.chain]
+    outs = args.out or [args.out_dir / f"{stem}_{c}.a3m" for c in args.chain]
+    written = [prepare_one(args.pdb, c, o, args) for c, o in zip(args.chain, outs, strict=True)]
 
     # Printed to be pasted, like check_target_pdb.py's target_input. The plural form
     # is not optional for a multi-chain target: target_msa_paths takes one entry per

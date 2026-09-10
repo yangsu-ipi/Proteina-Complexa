@@ -17,6 +17,7 @@ What was hardcoded in the campaign this came from, and is now derived or passed:
   * ESMC/ESMFold2 imports -- checked only when the config asks for them
   * hotspot resolution -- read from the target entry the config actually selects,
                           and checked against the PDB it actually points at
+  * the target MSA     -- present, and deep enough to load, when the config names one
 
 A campaign that uses plain ESMFold and colabdesign passes no extra repos and gets
 no ESMFold2 import check, which the original could not express.
@@ -178,6 +179,57 @@ def hotspot_failures(cfg: dict, read=ca_ids_from_pdb) -> list[str]:
     return []
 
 
+def target_msa_failures(cfg: dict, metric: dict) -> list[str]:
+    """Fail a config that names a target MSA which is not there.
+
+    ``_load_msa`` raises ``FileNotFoundError: target MSA not found`` when folding
+    first reaches it -- per design, deep into evaluate, on a run whose generation
+    already finished. The path is knowable at submit time, so this is knowable at
+    submit time.
+
+    Gated on the backends actually being on, like every other check here: an
+    ``a3m`` named by a config whose ``consensus_backends`` is empty is never
+    opened, and failing that campaign would be failing a correct one. Ligand
+    targets skip consensus folding entirely -- there is no target sequence to fold
+    against -- so they skip this too.
+
+    Existence and a depth of at least two records, which is what the loader
+    demands (`consensus_folding.py:329`) and all that can be checked without
+    parsing the alignment. Whether the query MATCHES the chain is settled where
+    the alignment is written: prepare_target_msa.py validates through the
+    pipeline's own ``_target_msas`` before it returns. Re-parsing a 16k-sequence
+    a3m here to re-derive that would cost real time on every stage of every run.
+    """
+    if not (metric.get("consensus_backends") or []):
+        return []
+    if "ligand" in str(cfg.get("result_type", "")):
+        return []
+    consensus = metric.get("consensus_cfg") or {}
+    paths = consensus.get("target_msa_paths")
+    if paths is None:
+        single = consensus.get("target_msa")
+        paths = [single] if single else []
+    failures = []
+    for path in paths:
+        if not path:  # null is legal: that chain simply has no alignment
+            continue
+        msa = Path(path)
+        if not msa.is_file():
+            failures.append(
+                f"consensus_cfg names a target MSA that is not there: {path} -- "
+                "prepare_target_msa.py writes it, and campaign.env's TARGET_MSA is what "
+                "keeps the two paths the same string"
+            )
+            continue
+        # Cheap depth probe. A prepare step killed mid-write, or a path pointing at
+        # something that is not an alignment, both land here rather than at evaluate.
+        with msa.open(encoding="utf-8", errors="replace") as handle:
+            records = sum(1 for line in handle if line.startswith(">"))
+        if records < 2:
+            failures.append(f"target MSA {path} holds {records} record(s); folding needs depth >= 2")
+    return failures
+
+
 def hf_repo_present(root: Path, repo: str) -> bool:
     d=root/("models--"+repo.replace("/","--"))
     return d.is_dir() and any((d/"snapshots").glob("*"))
@@ -212,6 +264,7 @@ def main() -> int:
     # and it would, because the extension is imported inside the functions that
     # use it rather than at module scope, so nothing earlier trips over it.
     failures += hotspot_failures(cfg)
+    failures += target_msa_failures(cfg, metric)
     if needs_protein_interface(cfg, metric):
         try:
             from importlib.metadata import version

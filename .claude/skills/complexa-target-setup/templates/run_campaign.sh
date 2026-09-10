@@ -58,6 +58,12 @@ esac
 
 [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "run inside a Slurm allocation" >&2; exit 2; }
 export COMPLEXA_REPO CAMPAIGN_DIR
+# Only when campaign.env set it. An unconditional `export TARGET_MSA` would create
+# it EMPTY, and ${oc.env:TARGET_MSA} would then resolve to "" instead of raising --
+# turning a missing value into a config that silently folds with no alignment. The
+# no-default oc.env guard below is what reports it, and it can only do that if the
+# variable is genuinely absent.
+if [[ -n "${TARGET_MSA:-}" ]]; then export TARGET_MSA; fi
 # Cleared before AND after sourcing env.sh: env.sh sets them, and an unreachable
 # mirror surfaces as "Error locating target ...collate_fn", which names neither.
 export CCD_MIRROR_PATH="" PDB_MIRROR_PATH=""
