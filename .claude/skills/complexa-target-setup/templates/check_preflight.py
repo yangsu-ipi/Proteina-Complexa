@@ -141,7 +141,7 @@ def hotspot_failures(cfg: dict, read=ca_ids_from_pdb) -> list[str]:
     file numbered from 18 rather than 1, or a .cif read as label_seq_id all
     yield an all-False mask, and the run then completes and designs something
     with no epitope guidance at all. ``complexa validate target`` does not catch
-    it either -- it never opens the PDB (`cli/validate.py:379-503`).
+    it either -- it never opens the PDB (`cli/validate.py:377-499`).
     """
     want = target_hotspots(cfg)
     if want is None:
