@@ -19,6 +19,8 @@ benefit.
     check_preflight.py    TEMPLATE, verbatim
     verify_run_outputs.py TEMPLATE, verbatim
     refresh_checksums.py  TEMPLATE, verbatim
+    prepare_target_msa.py TEMPLATE, verbatim -- target MSA from the ColabFold
+                          public server; needs ColabFold only when it RUNS
     validate_resolved_config.py   authored: asserts the config resolves to the intended run
     capture_metadata.py           authored: run provenance
     prepare_<target>.py           authored: target-specific PDB prep

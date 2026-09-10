@@ -14,6 +14,7 @@ the CBLN1 campaign:
   * a verifier that assumed exactly two shards and a magic retained-count of 8
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -1277,6 +1278,121 @@ def test_the_hotspot_gate_is_wired_into_the_script(tmp_path):
     cfg.write_text(yaml.safe_dump(body))
     r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1)
     assert r.returncode == 1 and "target PDB not found" in r.stdout, r.stdout
+
+
+def msa_module(name="msa_mod"):
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(name, TEMPLATES / "prepare_target_msa.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_msa_template_imports_nothing_heavy():
+    """The point of the template. A campaign package is assembled where ColabFold,
+    esm and proteinfoundation are usually all absent, so importing it and reading
+    --help must work with the standard library alone."""
+    import ast
+
+    tree = ast.parse((TEMPLATES / "prepare_target_msa.py").read_text())
+    top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    names = {n.module.split(".")[0] if isinstance(n, ast.ImportFrom) else a.name.split(".")[0]
+             for n in top for a in (n.names if isinstance(n, ast.Import) else [None]) or [None]}
+    assert names <= {"__future__", "argparse", "hashlib", "json", "sys", "datetime", "pathlib"}, names
+    r = run("prepare_target_msa.py", "--help")
+    assert r.returncode == 0 and "--host-url" in r.stdout
+
+
+def test_a_deferred_dependency_is_named_not_traced(tmp_path):
+    """A missing ColabFold must read as an instruction, not an ImportError."""
+    chk = msa_module()
+    exc = chk.missing("colabfold", "fetching an MSA", "pip install colabfold")
+    assert "colabfold" in str(exc) and "pip install colabfold" in str(exc)
+    assert "built on a machine that has neither" in str(exc)
+
+
+def test_the_public_server_is_queried_once_not_once_per_stage(tmp_path, monkeypatch):
+    """PREPARE_STEPS runs before every stage, so a campaign that fetched on each
+    would hit a shared free service four times per run."""
+    chk = msa_module("msa_skip")
+    out = tmp_path / "t_A.a3m"
+    out.write_text(">q\nAAA\n>h\nAAB\n")
+    calls = []
+    monkeypatch.setattr(chk, "target_sequence", lambda pdb, chain: "AAA")
+    monkeypatch.setattr(chk, "validate", lambda p, s, m: type("M", (), {"depth": 2})())
+    monkeypatch.setattr(chk, "fetch_a3m", lambda *a, **k: calls.append(a) or ">q\nAAA\n")
+    args = argparse.Namespace(force=False, max_sequences=16384, host_url="h", user_agent="u", no_env=False)
+    chk.prepare_one("t.pdb", "A", out, args)
+    assert calls == [], "a valid alignment already on disk must not be refetched"
+
+
+def test_an_alignment_that_no_longer_matches_the_target_is_refetched(tmp_path, monkeypatch):
+    """The case that matters: someone re-cropped the target PDB. The stale a3m is
+    for the old sequence, and evaluation would reject it hours later."""
+    chk = msa_module("msa_stale")
+    out = tmp_path / "t_A.a3m"
+    out.write_text(">q\nAAA\n")
+    calls = []
+    monkeypatch.setattr(chk, "target_sequence", lambda pdb, chain: "CCC")
+    monkeypatch.setattr(chk, "write_provenance", lambda *a, **k: None)
+
+    def validate(path, seq, maxn):
+        if path.read_text().split("\n")[1] != seq:
+            raise ValueError("query does not match target chain 0")
+        return type("M", (), {"depth": 2})()
+
+    monkeypatch.setattr(chk, "validate", validate)
+    monkeypatch.setattr(chk, "fetch_a3m", lambda *a, **k: calls.append(1) or ">q\nCCC\n>h\nCCG\n")
+    chk.prepare_one("t.pdb", "A", out, argparse.Namespace(
+        force=False, max_sequences=16384, host_url="h", user_agent="u", no_env=False))
+    assert len(calls) == 1 and out.read_text().startswith(">q\nCCC")
+
+
+def test_what_was_written_is_what_gets_validated(tmp_path, monkeypatch):
+    """A short write or a server answering with something else must fail here, not
+    at evaluate time."""
+    chk = msa_module("msa_written")
+    out = tmp_path / "t_A.a3m"
+    seen = {}
+    monkeypatch.setattr(chk, "target_sequence", lambda pdb, chain: "AAA")
+    monkeypatch.setattr(chk, "fetch_a3m", lambda *a, **k: ">q\nAAA\n>h\nAAB\n")
+    monkeypatch.setattr(chk, "write_provenance", lambda *a, **k: None)
+
+    def validate(path, seq, maxn):
+        seen["from_disk"] = Path(path).read_text()
+        return type("M", (), {"depth": 2})()
+
+    monkeypatch.setattr(chk, "validate", validate)
+    chk.prepare_one("t.pdb", "A", out, argparse.Namespace(
+        force=False, max_sequences=16384, host_url="h", user_agent="u", no_env=False))
+    assert seen["from_disk"] == ">q\nAAA\n>h\nAAB\n"
+
+
+def test_multi_chain_prints_the_plural_config_key(tmp_path, monkeypatch, capsys):
+    """target_msa_paths takes one entry per target chain or it raises with the
+    counts, so the single-chain shorthand is wrong for a two-chain target."""
+    chk = msa_module("msa_multi")
+    monkeypatch.setattr(chk, "prepare_one", lambda pdb, c, out, args: out)
+    monkeypatch.setattr(sys, "argv", ["p", "--pdb", "x/tgt.pdb", "--chain", "A", "--chain", "B",
+                                      "--out-dir", str(tmp_path)])
+    chk.main()
+    printed = capsys.readouterr().out
+    assert "target_msa_paths: [" in printed and "tgt_A.a3m" in printed and "tgt_B.a3m" in printed
+    assert "target_msa:" not in printed
+
+
+def test_campaign_env_passes_the_target_to_the_step():
+    """PREPARE_STEPS entries are word-split, and nothing in campaign.env is
+    exported -- a step that expected $TARGET_PDB from the environment would get
+    nothing. The example has to show the arguments."""
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    line = [ln for ln in env.splitlines() if "prepare_target_msa.py" in ln]
+    assert len(line) == 1, line
+    assert "--pdb $TARGET_PDB" in line[0] and "--chain $TARGET_CHAIN" in line[0]
+    assert line[0].strip().startswith('"'), "must be one quoted element, or the array splits it"
 
 
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
