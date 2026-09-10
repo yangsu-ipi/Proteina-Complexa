@@ -1590,6 +1590,44 @@ def test_reaching_the_package_by_symlink_is_not_a_mismatch(tmp_path):
     assert "is not where these scripts live" not in r.stderr, r.stderr
 
 
+def required_columns():
+    """REQUIRE_COLUMNS as campaign.env.example declares it."""
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    body = re.search(r"^REQUIRE_COLUMNS=\((.*?)^\)", env, re.M | re.S)
+    assert body, "campaign.env.example must declare REQUIRE_COLUMNS"
+    return [ln.strip() for ln in body.group(1).splitlines()
+            if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_every_required_column_is_a_current_name():
+    """The columns a campaign verifies against are written by hand, and the ones
+    that look most plausible are the pre-migration ones: `self_apo_scRMSD_ca_
+    esmfold2` and `self_esmfold2_i_pAE` were both real, and both now match
+    nothing. verify_run_outputs.py runs LAST, so a stale name here is discovered
+    after the whole run has finished.
+
+    rename() is idempotent on current names, so a name that changes under it is
+    one the pipeline no longer emits."""
+    rename = pytest.importorskip(
+        "proteinfoundation.metrics.column_names", reason="needs the complexa package"
+    ).rename
+    for column in required_columns():
+        for backend in ("esmfold2", "af2"):
+            assert rename(column, backend) == column, (
+                f"{column!r} is not a current column name: the slot scheme renders it "
+                f"{rename(column, backend)!r} (metrics/column_names.py)"
+            )
+
+
+def test_the_required_columns_still_name_what_the_campaign_uses():
+    """A guard on staleness is not a guard on relevance. This campaign folds with
+    esmfold2 and redesigns with soluble MPNN, so the list has to mention both --
+    an empty or unrelated list would pass the rename check trivially."""
+    columns = required_columns()
+    assert any("esmfold2" in c for c in columns), columns
+    assert any("redesign" in c for c in columns), columns
+
+
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
     report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
     out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout

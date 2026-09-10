@@ -73,8 +73,9 @@ metric:
     # cuda: true
 ```
 
-Emits `{seq}_esmfold2_{i_pAE,i_pTM,pTM,pLDDT}` (+ `_all`) and
-`{seq}_esmfold2_pdb_path`. **Advisory: gates nothing**, enforced at runtime by
+Emits `{seq}_complex_esmfold2_{i_pAE,i_pTM,pTM,pLDDT}` (+ `_all`) and
+`{seq}_complex_esmfold2_pdb_path` — the backend is a slot, not an infix
+(`metrics/column_names.py`); `{seq}_esmfold2_i_pAE` is the pre-migration name. **Advisory: gates nothing**, enforced at runtime by
 `assert_columns_are_advisory`, which raises if an emitted name collides with a
 gated one. Deliberately not named `*_complex_*` for that reason.
 
