@@ -27,7 +27,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 - Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:107-153` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
-- **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and the **fourth** protein-binder success criterion: `apo scRMSD_ca < 2.0`. A design must now fold as designed both with and without its target.
+- **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and one of the **six** protein-binder success criteria: `apo scRMSD_ca < 2.0`. A design must fold as designed both with and without its target. (It was the fourth of four when apo folding landed; placement added two more — see the full list under "What analyze reports".)
 - **ESMC** for pseudo-perplexity / log-likelihood, and **ESMFold2** for advisory complex refolding (optionally with a target MSA) or for apo folding. All three need Biohub's transformers fork plus the source-only `esm` package — see `reference/esm_esmfold2.md` for the exact keys and the three traps that silently disable gating or select the worst sequences.
 - For motif inputs: motif RMSD (CA + all-atom), motif-region designability/codesignability, sequence recovery.
 - Aggregate into per-PDB CSVs plus pass-rate summaries using the default thresholds for the `result_type`.
@@ -67,7 +67,7 @@ complexa analysis configs/evaluate_from_pdb_dir.yaml \
     ++run_name=eval_pdl1_af2
 ```
 
-Use this when the user's PDBs are protein-binder designs (multi-chain, binder is the last chain) or third-party outputs from BindCraft / AlphaProteo / RFdiffusion. Pulls thresholds for `protein_binder` (`i_pAE * 31 ≤ 7.0`, `pLDDT ≥ 0.9`, `scRMSD_ca < 1.5 Å`).
+Use this when the user's PDBs are protein-binder designs (multi-chain, binder is the last chain) or third-party outputs from BindCraft / AlphaProteo / RFdiffusion. Pulls all **six** `protein_binder` thresholds (`i_pAE * 31 ≤ 7.0`, `binder pLDDT ≥ 0.9`, `binder scRMSD_ca < 1.5 Å`, `apo scRMSD_ca < 2.0 Å`, `complex scRMSD_ca < 2.0 Å`, `binder scRMSD_target_aligned_ca < 2.0 Å`) — quoting only the first three overreports the pass rate.
 
 > **Defect in the shipped config — read before running the command above.**
 > `configs/evaluate_from_pdb_dir.yaml:22` composes `defaults: - generation/targets_dict@dataset`,
@@ -241,7 +241,7 @@ suffix (`evaluate.py:785-787`; `analyze.py:3072-3074` does the same for `results
 Summarize to the user:
 
 - Per-PDB row count and number of successful designs vs total.
-- Default-threshold pass rate by `result_type` (for `protein_binder`, **six** criteria: `i_pAE*31 <= 7.0 AND pLDDT >= 0.9 AND binder scRMSD_ca < 1.5 AND apo scRMSD_ca < 2.0 AND complex scRMSD_ca < 2.0 AND binder scRMSD_target_aligned_ca < 2.0`). The last two gate *placement* — a binder can fold correctly and sit metres from its designed interface, which binder-aligned RMSD cannot see. Measured on 340 designs: 89 pass with a native sequence, 59 with a redesign.
+- Default-threshold pass rate by `result_type` (for `protein_binder`, **six** criteria: `i_pAE*31 <= 7.0 AND binder pLDDT >= 0.9 AND binder scRMSD_ca < 1.5 AND apo scRMSD_ca < 2.0 AND complex scRMSD_ca < 2.0 AND binder scRMSD_target_aligned_ca < 2.0`). The last two gate *placement* — a binder can fold correctly and sit metres from its designed interface, which binder-aligned RMSD cannot see. Measured on 340 designs: 89 pass with a native sequence, 59 with a redesign.
 - Top 5 designs by primary metric (`i_pAE` for protein, `min_ipAE` for ligand, `motif_rmsd_pred_all` for motif binders).
 
 ## Step 6: Emit manifest

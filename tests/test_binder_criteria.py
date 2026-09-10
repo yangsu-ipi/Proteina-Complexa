@@ -9,6 +9,8 @@ unanswered".
 """
 
 import math
+import pathlib
+import re
 
 import pytest
 
@@ -523,3 +525,45 @@ def test_a_scalar_column_is_not_read_as_its_digits():
 
     assert as_redesign_list(np.float64(0.5)) == [0.5]
     assert as_redesign_list(np.array([0.5, 0.6])) == [0.5, 0.6]
+
+# ------------------------------------------------- the docs' count of the gates
+
+SKILL_DOCS = pathlib.Path(__file__).resolve().parents[1] / ".claude/skills"
+NUMBER_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
+
+
+def test_the_skill_docs_state_the_real_number_of_gates():
+    """A count in prose drifts every time a criterion is added, and it has drifted
+    twice: placement added `complex_scRMSD_ca` and
+    `binder_scRMSD_target_aligned_ca`, taking the set from four to six, and one
+    skill ended up saying three in one section and six in another.
+
+    The count matters because it is load-bearing. Recomputing a pass rate from the
+    first three overreports it -- measured, 97 designs against 89 -- so a reader who
+    trusts a stale count reports a better campaign than they ran.
+    """
+    real = len(DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    pattern = re.compile(
+        r"\*{0,2}(" + "|".join(NUMBER_WORDS) + r")\*{0,2}\s+"
+        r"(?:protein-binder\s+)?(?:success\s+)?(?:criteria|gates|thresholds|defaults)",
+        re.I,
+    )
+    wrong = []
+    for doc in sorted(SKILL_DOCS.rglob("*.md")):
+        text = doc.read_text()
+        if "DEFAULT_PROTEIN_BINDER_THRESHOLDS" not in text and "success_thresholds" not in text:
+            continue
+        for match in pattern.finditer(text):
+            said = NUMBER_WORDS[match.group(1).lower()]
+            if said != real:
+                line = text[: match.start()].count("\n") + 1
+                wrong.append(f"{doc.relative_to(SKILL_DOCS)}:{line} says {said}, code has {real}")
+    assert not wrong, "stale gate counts:\n  " + "\n  ".join(wrong)
+
+
+def test_the_count_guard_would_catch_a_stale_number():
+    """A guard nobody has seen fail is a guard nobody should trust."""
+    real = len(DEFAULT_PROTEIN_BINDER_THRESHOLDS)
+    pattern = re.compile(r"\*{0,2}(" + "|".join(NUMBER_WORDS) + r")\*{0,2}\s+criteria", re.I)
+    match = pattern.search("the **four** criteria are")
+    assert match and NUMBER_WORDS[match.group(1).lower()] == 4 != real

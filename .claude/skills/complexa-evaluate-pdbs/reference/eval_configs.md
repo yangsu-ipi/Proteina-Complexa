@@ -79,7 +79,7 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 - `aggregation.analysis_modes` — default `[binder, monomer]` for binder result types.
 - `aggregation.success_thresholds` — `null` (defaults) or a dict of `{metric: {threshold, op, scale, column_prefix}}` entries.
 - Built-in defaults:
-  - `protein_binder`: six criteria — `i_pAE * 31 <= 7.0`, `pLDDT >= 0.9`,
+  - `protein_binder`: six criteria — `i_pAE * 31 <= 7.0`, `binder pLDDT >= 0.9`,
     `binder scRMSD_ca < 1.5`, `apo scRMSD_ca < 2.0`, `complex scRMSD_ca < 2.0`,
     `binder scRMSD_target_aligned_ca < 2.0`. The apo one needs
     `metric.compute_apo_metrics`, on by default; see `esm_esmfold2.md` for why turning
@@ -185,7 +185,9 @@ the results. The command above requests `sequence_types=[self,mpnn_fixed]`, so t
 (`binder_analysis_utils.py:249-273`, which routes the `complex` and `binder` prefixes through `rename()` and so carries a backend slot: `self_complex_af2_i_pAE_all`), so for
 `mpnn_fixed` the criteria are:
 
-`mpnn_fixed_complex_i_pAE_all * 31 <= 7.0 AND mpnn_fixed_complex_pLDDT_all >= 0.9 AND mpnn_fixed_binder_scRMSD_ca_all < 1.5`
+`mpnn_fixed_complex_af2_i_pAE_all * 31 <= 7.0 AND mpnn_fixed_complex_af2_binder_pLDDT_all >= 0.9 AND mpnn_fixed_complex_af2_binder_scRMSD_ca_all < 1.5 AND mpnn_fixed_apo_esmfold2_binder_scRMSD_ca_all < 2.0 AND mpnn_fixed_complex_af2_scRMSD_ca_all < 2.0 AND mpnn_fixed_complex_af2_binder_scRMSD_target_aligned_ca_all < 2.0`
+
+All **six**, and every column carries the backend slot. The three-criterion form this used to give named `mpnn_fixed_complex_pLDDT_all` and `mpnn_fixed_binder_scRMSD_ca_all`, neither of which exists — checked against a real combined CSV, where all six above are present and all three of those are absent.
 
 ### Example B — AME PDB directory, RF3 refold (motif ligand binder)
 

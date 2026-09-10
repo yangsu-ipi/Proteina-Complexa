@@ -273,7 +273,7 @@ default) is in [reference/overrides.md](reference/overrides.md).
 | `++generation.filter.filter_samples_limit=500` | `1000` | Top-N samples to keep after filtering |
 | `++metric.binder_folding_method=rf3_latest` | `colabdesign` (binder), `rf3_latest` (ligand/AME) | Evaluation refold backend — only `colabdesign` or an `rf3*` name is accepted |
 | `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:58-59` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
-| `aggregation.success_thresholds` (full dict, see below) | `i_pAE*31<=7.0`, `pLDDT>=0.9`, `scRMSD_ca<1.5` (protein binder) | Loosen / tighten success criteria |
+| `aggregation.success_thresholds` (full dict, see below) | six for a protein binder: `i_pAE*31<=7.0`, `binder pLDDT>=0.9`, `binder scRMSD_ca<1.5`, `apo scRMSD_ca<2.0`, `complex scRMSD_ca<2.0`, `binder scRMSD_target_aligned_ca<2.0` | Loosen / tighten success criteria |
 
 > **Never override `success_thresholds` partially.** A partial override replaces
 > the whole dict, silently dropping the other criteria, and the reported success
