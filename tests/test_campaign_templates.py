@@ -1109,6 +1109,176 @@ def test_a_protein_binder_run_needs_the_engine_whatever_the_metric_flags_say():
     assert not chk.needs_protein_interface({"result_type": "monomer", "metric": monomer}, monomer)
 
 
+def preflight_module(name="chk_hs"):
+    """The template imported as a module, so the judgement calls can be read directly."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(name, TEMPLATES / "check_preflight.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def binder_cfg(tmp_path, hotspots, target_input="A58-193", task="MINE", **entry):
+    """A resolved config shaped like the one validate_resolved_config.py writes."""
+    pdb = tmp_path / "target.pdb"
+    pdb.write_text("ATOM\n")
+    e = {"target_path": str(pdb), "target_input": target_input, "hotspot_residues": hotspots}
+    e.update(entry)
+    return {
+        "result_type": "protein_binder",
+        "metric": {},
+        "generation": {"task_name": task, "target_dict_cfg": {"33_TrkA": {"hotspot_residues": ["X294"]}, task: e}},
+    }
+
+
+def test_hotspots_are_checked_against_the_entry_task_name_selects(tmp_path):
+    """An unpinned task_name inheriting 33_TrkA is a documented way to get a clean
+    run against the wrong target. Scanning the dict instead of reading task_name
+    would check somebody else's hotspots and pass."""
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70", "A71"])
+    assert chk.target_hotspots(cfg)[2] == ["A70", "A71"]
+    cfg["generation"]["task_name"] = "33_TrkA"
+    assert chk.target_hotspots(cfg)[2] == ["X294"]
+
+
+@pytest.mark.parametrize(
+    "cfg_mod, why",
+    [
+        (lambda c: c.pop("generation"), "a monomer run declares no target"),
+        (lambda c: c.update(result_type="ligand_binder"), "the ligand path never reads hotspots"),
+        (lambda c: c["generation"]["target_dict_cfg"]["MINE"].update(ligand="FAD"), "ligand entry"),
+        (lambda c: c["generation"]["target_dict_cfg"]["MINE"].update(hotspot_residues=[]), "[] means no focus"),
+        (lambda c: c["generation"]["target_dict_cfg"]["MINE"].update(hotspot_residues=[None]), "ligand entries ship [null]"),
+    ],
+)
+def test_campaigns_that_do_not_use_hotspots_are_not_gated_on_them(tmp_path, cfg_mod, why):
+    """Every skip here is a real campaign shape. A gate that fires on these would
+    be worse than no gate: it fails runs that are correct."""
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70"])
+    cfg_mod(cfg)
+    assert chk.target_hotspots(cfg) is None, why
+    assert chk.hotspot_failures(cfg) == [], why
+
+
+def test_an_unresolvable_hotspot_fails_and_names_it(tmp_path):
+    """The whole point. Generation would match no residue, warn about nothing, and
+    design against no epitope for the length of the campaign."""
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70", "B999"])
+    fails = chk.hotspot_failures(cfg, read=lambda path, spec: {"A70", "A71"})
+    assert len(fails) == 1 and "B999" in fails[0] and "A70" not in fails[0].split(":")[-1], fails
+
+
+def test_hotspots_that_all_resolve_pass(tmp_path):
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70", "A71"])
+    assert chk.hotspot_failures(cfg, read=lambda path, spec: {"A70", "A71", "A72"}) == []
+
+
+def test_the_contig_is_handed_to_the_reader_not_re_parsed_here(tmp_path):
+    """Generation masks on target_input before matching, so a hotspot outside it is
+    dropped. The reader gets the spec; nothing in this template re-implements it."""
+    chk = preflight_module()
+    seen = {}
+
+    def reader(path, spec):
+        seen["spec"] = spec
+        return {"A70"}
+
+    chk.hotspot_failures(binder_cfg(tmp_path, ["A70"], target_input="A58-193"), read=reader)
+    assert seen["spec"] == "A58-193"
+
+
+def test_declared_hotspots_with_no_target_input_fail(tmp_path):
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70"], target_input=None)
+    assert "target_input is unset" in chk.hotspot_failures(cfg)[0]
+
+
+def test_a_target_pdb_that_is_not_there_fails(tmp_path):
+    chk = preflight_module()
+    cfg = binder_cfg(tmp_path, ["A70"], target_path=str(tmp_path / "gone.pdb"))
+    assert "target PDB not found" in chk.hotspot_failures(cfg)[0]
+
+
+BUNDLED_TARGET = Path(__file__).resolve().parents[1] / "assets/target_data/bindcraft_targets/PD-L1.pdb"
+
+
+def has_atomworks():
+    import importlib.util
+
+    return importlib.util.find_spec("atomworks") is not None
+
+
+needs_env = pytest.mark.skipif(
+    not has_atomworks() or not BUNDLED_TARGET.is_file(),
+    reason="the real reader needs atomworks and the bundled targets",
+)
+
+
+@needs_env
+def test_the_reader_selects_what_generation_selects():
+    """Pinned against a bundled target whose config ships its own hotspots:
+    02_PDL1 is A1-115 with A37/A39/A49/A98, so the reader agreeing with it is
+    the same claim as generation resolving them."""
+    chk = preflight_module("chk_real")
+    ids = chk.ca_ids_from_pdb(str(BUNDLED_TARGET), "A1-115")
+    assert {"A37", "A39", "A49", "A98"} <= ids
+    # The mask comes first, so the contig -- not the chain -- bounds what a
+    # hotspot can address. check_target_pdb.py matches over the whole chain and
+    # would call A115 resolved here.
+    narrowed = chk.ca_ids_from_pdb(str(BUNDLED_TARGET), "A5-100")
+    assert narrowed == {f"A{i}" for i in range(5, 101)}
+    assert "A115" in ids and "A115" not in narrowed
+
+
+@needs_env
+def test_a_contig_that_does_not_fit_the_file_is_reported_not_swallowed(tmp_path):
+    """get_mask raises on the first absent residue rather than returning a short
+    mask, and generation uses the same selector. Reporting it here turns an
+    exception that lands after the checkpoint loads into one that lands now."""
+    chk = preflight_module("chk_real2")
+    cfg = binder_cfg(tmp_path, ["A37"], target_input="A1-116", target_path=str(BUNDLED_TARGET))
+    fails = chk.hotspot_failures(cfg)
+    assert len(fails) == 1 and "cannot apply target_input A1-116" in fails[0], fails
+    assert "A/*/116" in fails[0], "the failure should name the residue that is missing"
+
+
+@needs_env
+def test_a_hotspot_outside_a_valid_contig_is_caught(tmp_path):
+    """The silent case that survives every other check: the contig fits, the file
+    is fine, and the hotspot simply is not in the selection."""
+    chk = preflight_module("chk_real3")
+    cfg = binder_cfg(tmp_path, ["A37", "A115"], target_input="A5-100", target_path=str(BUNDLED_TARGET))
+    fails = chk.hotspot_failures(cfg)
+    assert len(fails) == 1 and "A115" in fails[0] and "no epitope" in fails[0], fails
+
+
+def test_an_unreadable_target_fails_rather_than_passing_quietly(tmp_path):
+    """A parse error must not read as "no misses"."""
+    chk = preflight_module()
+
+    def boom(path, spec):
+        raise ValueError("bad contig")
+
+    fails = chk.hotspot_failures(binder_cfg(tmp_path, ["A70"]), read=boom)
+    assert "cannot apply target_input" in fails[0] and "bad contig" in fails[0]
+
+
+def test_the_hotspot_gate_is_wired_into_the_script(tmp_path):
+    """The functions above are only worth anything if main() calls them."""
+    report, cfg = preflight_report(tmp_path, PRESENT)
+    body = binder_cfg(tmp_path, ["A70"], target_path=str(tmp_path / "gone.pdb"))
+    cfg.write_text(yaml.safe_dump(body))
+    r = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1)
+    assert r.returncode == 1 and "target PDB not found" in r.stdout, r.stdout
+
+
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
     report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
     out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout

@@ -15,6 +15,8 @@ What was hardcoded in the campaign this came from, and is now derived or passed:
                           template its own stale copy of someone else's constant
   * the VRAM floor     -- `--min-vram-gb`, default 40
   * ESMC/ESMFold2 imports -- checked only when the config asks for them
+  * hotspot resolution -- read from the target entry the config actually selects,
+                          and checked against the PDB it actually points at
 
 A campaign that uses plain ESMFold and colabdesign passes no extra repos and gets
 no ESMFold2 import check, which the original could not express.
@@ -69,6 +71,113 @@ def needs_protein_interface(cfg: dict, metric: dict) -> bool:
     return "BioinformaticsRewardModel" in json.dumps(cfg, default=str)
 
 
+def target_hotspots(cfg: dict) -> tuple[str, str, list[str]] | None:
+    """The (target_path, target_input, hotspots) this run will actually use, or None.
+
+    None means nothing here warrants the check, and every reason for it is a real
+    campaign shape rather than a defensive crouch. A monomer run declares no
+    target. A ligand target never reads hotspots -- ``hotspot_residues`` is
+    present on all four live ligand entries as ``[null]`` and only
+    ``binder_generate.yaml:35`` interpolates it, which is the protein path. And an
+    empty hotspot list is legal: ``13_BBF14`` and ``14_CrSAS6`` ship that way, and
+    it means "no epitope focus", not "unset".
+
+    The entry is looked up through ``task_name`` rather than by scanning
+    ``target_dict_cfg``, because the dict holds all 44 shared targets plus this
+    campaign's own, and checking the wrong one is exactly the failure this gate
+    exists to catch -- an unpinned ``task_name`` inheriting ``33_TrkA`` produces a
+    clean run against the wrong target.
+    """
+    gen = cfg.get("generation") or {}
+    entry = (gen.get("target_dict_cfg") or {}).get(gen.get("task_name")) or {}
+    if not entry or entry.get("ligand") is not None or "ligand" in str(cfg.get("result_type", "")):
+        return None
+    wanted = [str(h) for h in (entry.get("hotspot_residues") or []) if h is not None]
+    if not wanted:
+        return None
+    return entry.get("target_path"), entry.get("target_input"), wanted
+
+
+def ca_ids_from_pdb(path: str, spec: str) -> set[str]:
+    """The residue ids a hotspot can address, read the way generation reads them.
+
+    Not a second implementation of anything: ``from_contig`` is the pipeline's own
+    contig parser (`pdb_utils.py:554`), so a grammar this cannot parse is one
+    generation cannot parse either, and a numbering convention it disagrees with
+    cannot exist.
+
+    Masking BEFORE collecting the CAs is what makes this stricter than
+    ``check_target_pdb.py``, which matches over the whole chain. Generation masks
+    on the contig first (`pdb_utils.py:556`) and only then matches, so a hotspot
+    that sits in the chain but outside ``target_input`` is silently dropped --
+    and that script would call it resolved.
+
+    ``get_mask`` is strict in a way worth knowing: it raises
+    ``ValueError: No atoms found for selection: A/*/116`` on the FIRST residue of
+    the contig that the file does not contain, rather than returning a shorter
+    mask. Measured on atomworks 2.2.1 against ``PD-L1.pdb`` (chain A, 1-115):
+    ``A1-115`` gives 115 CAs, ``A1-116`` and ``B1-115`` both raise. So a contig
+    that does not fit its file is a hard error in generation too, not a quiet
+    truncation -- the caller reports it rather than treating it as "no misses".
+    """
+    from atomworks.io.utils.io_utils import load_any
+    from atomworks.io.utils.selection import AtomSelectionStack
+
+    struct = load_any(path, model=1)
+    # load_any hands back a stack for some formats; generation takes model 1.
+    if getattr(struct, "ndim", 1) > 1 or struct.__class__.__name__.endswith("Stack"):
+        struct = struct[0]
+    struct = struct[AtomSelectionStack.from_contig(spec).get_mask(struct)]
+    ca = struct[struct.atom_name == "CA"]
+    return {f"{a.chain_id}{a.res_id}" for a in ca}
+
+
+def hotspot_failures(cfg: dict, read=ca_ids_from_pdb) -> list[str]:
+    """Fail a campaign whose hotspots will not resolve, before it spends a GPU.
+
+    This is the one input-structure fault that costs a whole campaign without
+    producing a single error. Hotspots are matched as ``f"{chain_id}{res_id}"``
+    and misses are silent (`pdb_utils.py:571-575`): a wrong chain letter, a
+    file numbered from 18 rather than 1, or a .cif read as label_seq_id all
+    yield an all-False mask, and the run then completes and designs something
+    with no epitope guidance at all. ``complexa validate target`` does not catch
+    it either -- it never opens the PDB (`cli/validate.py:379-503`).
+    """
+    want = target_hotspots(cfg)
+    if want is None:
+        return []
+    path, spec, wanted = want
+    if not path:
+        # source + target_filename would make this guess a file extension, and a
+        # wrong guess is a false failure. Loud, so an unchecked campaign is not
+        # mistaken for a checked one.
+        print("  SKIP hotspots: target entry has no target_path")
+        return []
+    if not spec:
+        return [f"{len(wanted)} hotspot(s) declared but target_input is unset; generation masks on "
+                "the contig before matching, so none of them can resolve"]
+    pdb = Path(path)
+    if not pdb.is_file() and not pdb.is_absolute():
+        pdb = Path(os.environ.get("COMPLEXA_REPO", "")) / path
+    if not pdb.is_file():
+        return [f"target PDB not found: {path}"]
+    try:
+        ids = read(str(pdb), spec)
+    except Exception as exc:
+        # Most often the contig naming a residue the file does not have, which
+        # `get_mask` raises on. Generation masks with the same selector, so this
+        # is that run's own exception, arriving before the checkpoint loads
+        # instead of after.
+        return [f"cannot apply target_input {spec} to {pdb}: {type(exc).__name__}: {exc} -- "
+                "generation masks with the same selector (`pdb_utils.py:555`) and would raise too"]
+    miss = [h for h in wanted if h not in ids]
+    if miss:
+        return [f"hotspot(s) absent from {pdb} under target_input {spec}: {miss} -- matched as "
+                "chain+res_id strings with no warning, so this run would design against no epitope"]
+    print(f"  {len(wanted)} hotspot(s) resolve in {pdb.name} under {spec}")
+    return []
+
+
 def hf_repo_present(root: Path, repo: str) -> bool:
     d=root/("models--"+repo.replace("/","--"))
     return d.is_dir() and any((d/"snapshots").glob("*"))
@@ -102,6 +211,7 @@ def main() -> int:
     # wheel that resolves but will not load fails here rather than hours in --
     # and it would, because the extension is imported inside the functions that
     # use it rather than at module scope, so nothing earlier trips over it.
+    failures += hotspot_failures(cfg)
     if needs_protein_interface(cfg, metric):
         try:
             from importlib.metadata import version
