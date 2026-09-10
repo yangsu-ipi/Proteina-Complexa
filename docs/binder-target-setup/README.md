@@ -22,7 +22,7 @@ wanted. In rough order of how much time they cost:
 | Defined your target but didn't pin `generation.task_name` | a clean run against **TrkA** — the inherited default target — with yours loaded but unused | an error, or at least a warning |
 | `CCD_MIRROR_PATH` points at a directory that isn't there | `Error locating target '…gen_dataset.collate_fn'` six seconds into generation | a message naming the missing directory |
 | Hotspot IDs don't match the PDB's numbering | all hotspots dropped, design proceeds with no epitope guidance | an error naming the unmatched residue |
-| `target_input` range doesn't match the file's numbering | target silently truncated, or empty | an error, or at least a count |
+| `target_input` range doesn't match the file's numbering | raises `No atoms found for selection: A/*/116` — but inside generation, not at config time | the same error before the job starts, which `check_preflight.py` now gives you |
 | Shadow `targets_dict.yaml` filename is off by a character | falls back to the shared 44-target dict and its relative paths | file-not-found |
 | Heteroatoms sit inside your contig range | waters and ions encoded as protein residues | a warning |
 | Target dir lives inside the repo | `*.pdb` is git-ignored, so the structure is silently untracked | the file being added |

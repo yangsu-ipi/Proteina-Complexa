@@ -302,7 +302,6 @@ None of these raise. Each produces a run that completes and writes PDBs.
 |---|---|---|
 | **Run designs against a target you never asked for** | `generation.task_name` not pinned, so it inherits `33_TrkA` (`binder_generate.yaml:16`) — which *exists* in the shared 44, so nothing errors | generate log: `task_name` and `pdb_path`. Verified silent: yields `1www_cropped.pdb`, chain X, hotspots `X294 X296 X333` |
 | Designs ignore your epitope | hotspot IDs don't match the file's numbering; mask is all-False (`pdb_utils.py:571-575`) | `check_target_pdb.py`; require the missing list to be empty |
-| Target smaller than expected, or zero residues | `target_input` range doesn't match author numbering; `from_contig` selects literal `res_id`s | derive `target_input` from the file, not from an example |
 | Hotspots match the wrong residue | `.cif` gives `label_seq_id`, `.pdb` gives author numbering (`io_utils.py:290`) | re-derive hotspots from the exact file you feed in |
 | Waters / ions encoded as protein | `from_contig` filters on `(chain_id, res_id)` only (`selection.py:482-493`) | `check_target_pdb.py` reports in-range hetero residues |
 | Shared 44 targets used despite a shadow file | shadow directory or filename is off; both are hardcoded (`binder_generate.yaml:8`). Silent when your `task_name` is one of the shipped 44; raises for a new name | generate log: `'target_dict_cfg': '<filtered: N entries>'` — `1` = took, `44` = did not |
@@ -312,6 +311,13 @@ None of these raise. Each produces a run that completes and writes PDBs.
 | `import atomworks` fails but the build passed | `env/build_uv_env.sh:174` swallows the failure with `\|\| echo` | re-run the install without `\|\|` and read the error |
 | Preflight says paths missing, but `env.sh` reported success | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a`, or regenerate with `complexa init <runtime> --force` |
 | `missing checkpoint` with a path ending `checkpoints/` | existing `.env` still says `checkpoints/`; downloaders write `ckpts/` | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts` |
+
+A neighbouring failure is deliberately **not** in this list, because it is not silent: a
+`target_input` range that does not match the file's numbering raises `ValueError: No atoms
+found for selection: A/*/116` on the first residue it cannot find, at
+`datasets/gen_dataset.py:513`. An offset start, a wrong chain letter, and a range crossing
+an unresolved gap all land there. Hotspots that do not match are the silent half — that is
+the row above. Measurements in [`pdb-prep.md`](pdb-prep.md).
 | `missing community model path: ESM_DIR` | ESM2 not downloaded — real asset gap, and `compute_esm_metrics` defaults true | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `validate design`: no `.env` in cwd + missing `$DATA_PATH/target_data` | two checks that assumed the repo was cwd — **fixed**; `validate_env` now keys on variables and `target_data` is only required by the fallback branch | update the repo; on older installs use a stub `.env` + `mkdir -p` (not a symlink — it carries secrets) |
 | `env.sh` sourced with no error but nothing is set | sourced from zsh/dash — `${BASH_SOURCE[0]}` is empty, so `.env` was looked for in cwd | source it from bash |

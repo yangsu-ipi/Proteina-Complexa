@@ -10,7 +10,7 @@ download carries that cleaning does not address.
 | Pipeline | Verdict |
 |---|---|
 | **AME / enzyme** | **Yes** — documented checklist, malformed input causes silent evaluation errors |
-| **Protein binder** | **Situationally** — the contig crops for you, but heteroatoms and numbering can still corrupt the target |
+| **Protein binder** | **Situationally** — the contig crops for you, but in-range heteroatoms corrupt the target and hotspot numbering fails silently |
 | **Ligand binder** | **Structurally** — the PDB must contain only the ligand; this is a task property, not cleanliness |
 
 ## AME — the documented checklist
@@ -68,13 +68,41 @@ where cleaning a binder target is genuinely load-bearing.
 
 ### Residue numbering — and cleaning does not fix it
 
-`target_input` selects **literal** `res_id` values. Raw entries frequently do not start at
-1 — construct numbering, mature-protein numbering, a disordered N-terminus. If chain A
-runs 18–132, `A1-115` silently gives you 18–115 and drops 17 residues. If it runs
-1001–1115, you get an **empty selection**. `get_mask` returns a plain boolean array; there
-is no warning for a selection that matched nothing.
+`target_input` selects **literal** `res_id` values, and **every residue in the range must
+be present**. `AtomSelectionStack.from_contig(...).get_mask(...)`
+(`src/proteinfoundation/utils/pdb_utils.py:554-555`) raises on the first one that is not:
 
-Hotspots are matched as raw strings, and misses are silent
+```
+ValueError: No atoms found for selection: A/*/116
+```
+
+Measured on atomworks 2.2.1 against the bundled targets:
+
+| File | Chain holds | `target_input` | Result |
+|---|---|---|---|
+| `PD-L1.pdb` | A 1–115 | `A1-115` | 115 residues — the shipped `02_PDL1` value |
+| `PD-L1.pdb` | A 1–115 | `A1-116` | raises at `A/*/116` |
+| `PD-L1.pdb` | A 1–115 | `B1-115` | raises at `B/*/1` |
+| `3di3_cropped.pdb` | B 17–209 | `B1-209` | raises at `B/*/1` |
+| `sCas9_cropped.pdb` | A 96–446, 131 unresolved | `A96-446` | raises at `A/*/175` |
+| `sCas9_cropped.pdb` | ″ | `A96-174,A306-446` | 220 residues — the shipped `24_SpCas9` value |
+
+So an offset start (`3di3_cropped` begins at 17, not 1), a wrong chain letter, or a range
+crossing an unresolved gap is a **hard failure**, not a silent truncation. This is the
+good case: it cannot be mistaken for success.
+
+It is also why several bundled entries carry multi-segment contigs. `24_SpCas9` is
+`A96-174,A306-446` because residues 175–305 are absent from the file, and no single span
+can cross them.
+
+The catch is *where* it fails: inside generation's target reader
+(`src/proteinfoundation/datasets/gen_dataset.py:513`), not at config time —
+and `complexa validate target` will not reach it, because it never opens the PDB.
+`check_preflight.py` applies the same selector before the job starts, so a campaign run
+through it fails in seconds instead.
+
+**Hotspots are the failure that stays silent.** They are matched as raw strings against the
+CAs of the *already-contig-masked* structure, and misses are quiet
 (`src/proteinfoundation/utils/pdb_utils.py:571-575`):
 
 ```python
@@ -85,8 +113,12 @@ if target_hotspots is not None:
             target_hotspots_mask[idx] = True
 ```
 
-No warning, no error. Wrong numbering, wrong chain letter, or insertion codes → all-False
-mask → the run completes and designs something, with no epitope guidance. See also
+No warning, no error → the run completes and designs something, with no epitope guidance.
+Three cases survive the contig check above and land here: a hotspot **outside**
+`target_input` (the mask is applied first, so `A115` is unaddressable under `A5-100` even
+though the file has it), a hotspot naming a chain the contig does not cover, and hotspots
+read in a different numbering from the file — off the RCSB page, a paper, or the `.cif` of
+the same entry. Insertion codes land here too. See also
 "Hotspot residue not in target PDB" and "Chain-ID mismatch between target PDB and
 target_input" in `.claude/skills/complexa-design/reference/troubleshooting.md`.
 
@@ -159,8 +191,11 @@ It prints the derived `target_input`, the residue gaps, and matched/missing hots
 exits non-zero if any hotspot is unmatched. Paste the printed `target_input` straight into
 your config and require the missing list to be empty.
 
-Gaps are reported but are not fatal — missing atoms are handled by the encoding mask. A
-hotspot *inside* a gap cannot be flagged, though, so check that pairing yourself.
+Gaps matter more than that output suggests. A gap is only harmless if `target_input`
+**avoids** it — which is what a multi-segment contig is for; a range crossing one raises
+(table above). Absent side-chain atoms *within* a residue that is present are a different
+thing, and those the encoding mask does handle. A hotspot inside a gap has no CA, so it
+appears in the missing list like any other unmatched hotspot.
 
 `--write-clean` writes the heteroatom-stripped structure **without renumbering**, so the
 printed values stay valid for it. If you point the config at the cleaned file, use the
