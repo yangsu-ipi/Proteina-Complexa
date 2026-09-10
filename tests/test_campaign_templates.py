@@ -1683,10 +1683,10 @@ def test_hf_home_is_exported_only_when_set(tmp_path):
     "" does not. Same reasoning as TARGET_MSA."""
     root = package(tmp_path)
     script = (
-        'source "%s/campaign.env"\n'
+        f'source "{root}/campaign.env"\n'
         'if [[ -n "${HF_HOME:-}" ]]; then export HF_HOME; fi\n'
         'env | grep -c "^HF_HOME=" || true\n'
-    ) % root
+    )
     with_default = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                   cwd="/", env={k: v for k, v in os.environ.items() if k != "HF_HOME"})
     assert with_default.stdout.strip() == "1", "campaign.env's default should be exported"
