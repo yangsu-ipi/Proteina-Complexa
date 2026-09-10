@@ -139,14 +139,61 @@ if bad:
     print("FAILED:", *bad, sep="\n  "); sys.exit(1)
 PYEOF
 
-# [6c] AF2 params for the reward model — PUBLIC (Google storage, no key). Needs the MULTIMER set
-#   (2022-12-06) for binder-complex folding; our older 2021 monomer store is NOT sufficient.
+# [6c] Community-model weights — both PUBLIC, no key. AF2 params for the reward model, and
+#   the MPNN weights the redesign step inverse-folds with.
+#   AF2 needs the MULTIMER set (2022-12-06) for binder-complex folding; our older 2021
+#   monomer store is NOT sufficient.
 AF2="$REPO/community_models/ckpts/AF2"; mkdir -p "$AF2/params"
 if [ ! -f "$AF2/params/params_model_1_multimer_v3.npz" ]; then
   wget -qO "$AF2/af2.tar" "https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar"
   tar -xf "$AF2/af2.tar" -C "$AF2/params" && rm -f "$AF2/af2.tar"
 fi
 echo "  AF2 params: $(ls "$AF2/params" | grep -c npz) npz (set AF2_DIR=$AF2 in .env)"
+
+# MPNN weights (files.ipd.uw.edu). The binder pipeline's redesign step needs these and
+#   nothing here fetched them: a build_blackwell-only install had no
+#   community_models/LigandMPNN/model_params at all, so a campaign reached
+#   `missing soluble ProteinMPNN checkpoint` -- after generation had finished.
+#   `complexa download --ligandmpnn` does it, but that wants a working .env, which is a
+#   later step than this one and not one this script performs.
+#
+#   Through the vendored get_model_params.sh rather than a list of URLs here: the URLs are
+#   upstream's, and a second copy of them is a second thing to go stale. It fetches all 15
+#   (118 MB) when only two are named in code -- ligandmpnn_v_32_010_25.pt at
+#   inverse_folding_models.py:413 and solublempnn_v_48_020.pt at :526 -- so the guard is on
+#   those two, which are what a run actually opens.
+MPNN="$REPO/community_models/LigandMPNN/model_params"
+if [ ! -f "$MPNN/solublempnn_v_48_020.pt" ] || [ ! -f "$MPNN/ligandmpnn_v_32_010_25.pt" ]; then
+  ( cd "$REPO/community_models/LigandMPNN" && bash get_model_params.sh ./model_params )
+fi
+# get_model_params.sh is `wget -q -O` with no error check, so a network failure leaves a
+#   truncated or empty file in place. That matters because the other downloader's skip test
+#   is "exists and is non-empty" (complexa-setup/reference/downloads.md), which would read a
+#   partial checkpoint as installed forever. Both files are torch zip archives -- measured,
+#   they start `PK` -- so reading the central directory proves a complete one.
+"$PY" - "$MPNN" <<'MPNNEOF'
+import sys
+import zipfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+bad = []
+for name in ("solublempnn_v_48_020.pt", "ligandmpnn_v_32_010_25.pt"):
+    path = root / name
+    if not path.is_file():
+        bad.append(f"{name} missing")
+        continue
+    try:
+        zipfile.ZipFile(path).namelist()
+    except Exception as exc:
+        bad.append(f"{name} is not a complete archive ({type(exc).__name__}); delete it and re-run")
+if bad:
+    print("FAILED:", *bad, sep="\n  ")
+    sys.exit(1)
+weights = sorted(root.glob("*.pt"))
+size = sum(p.stat().st_size for p in weights) / 2**20
+print(f"  MPNN weights: {len(weights)} .pt, {size:.0f} MiB in {root}")
+MPNNEOF
 
 # [6d] External tools for the analyze stage's diversity metrics (foldseek + mmseqs, via bioconda).
 #   Point FOLDSEEK_EXEC / MMSEQS_EXEC (or the UV_* vars in .env) at these. Without them the pipeline
@@ -400,9 +447,10 @@ cat <<EOF
 === Proteina-Complexa (Blackwell) env + checkpoints ready.
   Checkpoints (PUBLIC NGC, no key) are in $CK; the binder pipeline config points ckpt_path there.
   A FULL binder-design run (complexa design configs/search_binder_local_pipeline.yaml) additionally
-  needs: a target spec, the community reward/refolding models (ESM2 via a free HF token, AF2/RF3/Boltz2),
-  and external tools (foldseek/mmseqs/dssp). See docs/INFERENCE.md. Generation-only uses just the
-  checkpoints above.
+  needs: a target spec, ESM2 (free HF token), and RF3/Boltz2 if you refold with those. AF2 params and
+  MPNN weights are installed at [6c], foldseek/mmseqs at [6d]. No dssp: DSSP_EXEC is referenced
+  nowhere in src/ or configs/, and secondary structure comes from mdtraj (metrics/structure_ss.py).
+  See docs/INFERENCE.md. Generation-only uses just the checkpoints above.
   ESMC/ESMFold2 are installed by default ([6e]), so this env is on Biohub's transformers fork.
   Their WEIGHTS are gated and are not fetched here -- set HF_TOKEN and accept the licences before
   using metric.consensus_backends=[esmfold2] or apo_folding_models=[esmfold2]. Build without them
