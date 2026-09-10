@@ -214,6 +214,12 @@ def target_msa_failures(cfg: dict, metric: dict) -> list[str]:
         if not path:  # null is legal: that chain simply has no alignment
             continue
         msa = Path(path)
+        # pipeline.yaml is meant to compose ${oc.env:CAMPAIGN_DIR}/${oc.env:TARGET_MSA},
+        # so this is normally absolute. A config that names the package-relative form
+        # directly still works when the runner calls this from CAMPAIGN_DIR, and the
+        # fallback covers being called from anywhere else.
+        if not msa.is_file() and not msa.is_absolute():
+            msa = Path(os.environ.get("CAMPAIGN_DIR", "")) / path
         if not msa.is_file():
             failures.append(
                 f"consensus_cfg names a target MSA that is not there: {path} -- "

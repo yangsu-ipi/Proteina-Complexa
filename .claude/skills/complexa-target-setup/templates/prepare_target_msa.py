@@ -9,10 +9,16 @@ CAMPAIGN TEMPLATE -- copy into <campaign>/scripts/ unchanged and drive it from
     )
 
 `--out $TARGET_MSA` is the point: campaign.env defines TARGET_MSA once, run_campaign.sh
-exports it, and pipeline.yaml reads `${oc.env:TARGET_MSA}`. The file this writes and the
-file folding opens are then the same string by construction, and check_preflight.py gates
-on it. Written by convention into two places instead, they drift, and the run dies at
-evaluate time with FileNotFoundError.
+exports it, and pipeline.yaml reads it back as
+`${oc.env:CAMPAIGN_DIR}/${oc.env:TARGET_MSA}`. The file this writes and the file folding
+opens are then the same string by construction, and check_preflight.py gates on it.
+Written by convention into two places instead, they drift, and the run dies at evaluate
+time with FileNotFoundError.
+
+TARGET_MSA is package-relative, so an --out arrives relative to the campaign package and
+resolves against the cwd run_campaign.sh already cds to. That keeps the package portable;
+the work directory below lands beside the alignment, inside the package, for the same
+reason.
 
 Only the *target* gets an MSA. The binder never does -- `consensus_folding.py:163`
 passes `msa=None` for it unconditionally, because a de novo miniprotein has no

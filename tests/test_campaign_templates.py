@@ -1486,6 +1486,40 @@ def test_out_must_line_up_with_chain(tmp_path):
     assert r.returncode != 0 and "one --out per --chain" in r.stderr, r.stderr
 
 
+def test_nothing_inside_the_package_names_its_own_location():
+    """Portability. A campaign package must copy to another machine unedited, so every
+    path that points INTO the package is relative to it. The only absolute values are
+    the three machine locations, and each is overridable from the environment."""
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    assign = dict(
+        re.findall(r"^([A-Z_][A-Z0-9_]*)=(.*)$", env, re.M)
+    )
+    machine = {"CAMPAIGN_DIR", "COMPLEXA_REPO", "CONDA_SH"}
+    for name, raw in assign.items():
+        value = raw.split("#")[0].strip().strip('"').strip("'")
+        absolute = value.startswith("/") or value.startswith("$CAMPAIGN_DIR")
+        if name in machine:
+            assert value.startswith("${" + name + ":-"), f"{name} must stay overridable: {raw}"
+            continue
+        assert not absolute, f"{name} points into the package and must be relative to it: {raw}"
+
+
+def test_the_msa_gate_resolves_a_package_relative_path(tmp_path, monkeypatch):
+    """TARGET_MSA is package-relative, and pipeline.yaml is meant to compose the absolute
+    form -- but a config that names the relative one directly must still gate correctly."""
+    chk = preflight_module("chk_msa_rel")
+    pkg = tmp_path / "campaign"
+    (pkg / "data" / "msa").mkdir(parents=True)
+    rel = "data/msa/t.a3m"
+    (pkg / rel).write_text(">a\nAAAA\n>b\nAAAG\n")
+    cfg = msa_cfg(rel)
+    monkeypatch.chdir(tmp_path)                      # called from somewhere else entirely
+    monkeypatch.setenv("CAMPAIGN_DIR", str(pkg))
+    assert chk.target_msa_failures(cfg, cfg["metric"]) == []
+    monkeypatch.delenv("CAMPAIGN_DIR")
+    assert chk.target_msa_failures(cfg, cfg["metric"]), "with no anchor it must fail, not pass"
+
+
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
     report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
     out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout

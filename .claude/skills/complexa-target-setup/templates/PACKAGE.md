@@ -65,14 +65,17 @@ and campaign post-processing may group them further (`pre_filter_shard_trim/`,
 | `CAMPAIGN_DIR` | the package root — **use this in `pipeline.yaml`**, not a campaign-specific name |
 | `COMPLEXA_REPO` | the Complexa checkout |
 | `COMMUNITY_MODELS_PATH` | community models, also symlinked into the package |
-| `TARGET_MSA` | **only when campaign.env sets it** — the target alignment's path |
+| `TARGET_MSA` | **only when campaign.env sets it** — the target alignment, package-relative |
 | everything from `env.sh` | `CKPT_PATH`, `DATA_PATH`, … |
 
-`TARGET_MSA` is exported conditionally on purpose. `prepare_target_msa.py --out
+`TARGET_MSA` is package-relative and exported conditionally. `prepare_target_msa.py --out
 $TARGET_MSA` writes that file and `pipeline.yaml` reads it back as
-`${oc.env:TARGET_MSA}`, so the alignment retrieved and the alignment folded against are
-the same string rather than two conventions that agree until someone renames one;
-`check_preflight.py` then gates on it existing. A campaign with no MSA leaves the
+`${oc.env:CAMPAIGN_DIR}/${oc.env:TARGET_MSA}`, so the alignment retrieved and the
+alignment folded against are the same string rather than two conventions that agree until
+someone renames one; `check_preflight.py` then gates on it existing. Relative here and
+absolute there is the same split `TARGET_PDB` already uses: **nothing inside the package
+names its own location**, so the package copies to another machine unedited, while the
+resolved config still carries absolute paths and does not depend on anyone's cwd. A campaign with no MSA leaves the
 variable unset, and the runner exports nothing — an unconditional export would create it
 EMPTY, and `${oc.env:TARGET_MSA}` would resolve to `""` instead of raising, which is a
 config that folds with no alignment and says nothing.
