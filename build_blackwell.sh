@@ -37,8 +37,8 @@ fi
 # [0b] conda-forge layer, placed before any pip so the two never fight over site-packages.
 #   freesasa is a compiled Python extension and PyPI ships NO linux wheel for it, so pip would
 #   compile the sdist on every build; conda-forge has a prebuilt linux-64 py3.12 binary. It has to
-#   land before [5], because pyproject.toml declares freesasa and `pip install -e .` would
-#   otherwise build it from source before conda ever got a turn.
+#   land before [5], because pyproject.toml declares freesasa and the editable install there
+#   would otherwise build it from source before conda ever got a turn.
 #   It belongs here and not in [6e]: utils/pr_alternative_utils.py uses it for the SASA
 #   bioinformatics metrics, which have nothing to do with ESMFold2. It used to ride along in [6e]'s
 #   pip line, so WITH_ESMFOLD2=0 silently dropped it -- silently because that import has a
@@ -58,7 +58,13 @@ fi
 "$PIP" install graphein==1.7.7 --no-deps
 "$PIP" install "atomworks[ml,openbabel,dev]"
 # [5] the package (editable) — pulls proteinfoundation + downgrades biotite/scipy/numpy (see [6]):
-( cd "$REPO" && "$PIP" install -e . )
+#   WITH the dev extra (ruff, pytest, ipdb). Not developer convenience: the guards that keep the
+#   campaign templates honest ARE the test suite, so a box that runs campaigns needs to be able to
+#   run them, at the versions pyproject declares. A box built before this carried ruff 0.8.3 --
+#   below the >=0.15.0 floor -- and linted the templates with a years-older ruleset while reporting
+#   success. The extra adds nothing heavy: measured on that box, `-e ".[dev]"` over `-e "."` is
+#   ipdb alone, since ipython is already here via [6e].
+( cd "$REPO" && "$PIP" install -e ".[dev]" )
 # [6] RECONCILE (order-sensitive, do LAST). Each line repairs something [5] broke:
 #   biotite  atomworks needs >=1.4; 1.6.0 adds the ligand support the pipeline uses. atomworks pins
 #            ==1.4.0 exactly, so pip warns here -- deliberate.
