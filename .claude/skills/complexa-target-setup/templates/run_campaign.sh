@@ -79,6 +79,10 @@ export COMPLEXA_REPO CAMPAIGN_DIR
 # no-default oc.env guard below is what reports it, and it can only do that if the
 # variable is genuinely absent.
 if [[ -n "${TARGET_MSA:-}" ]]; then export TARGET_MSA; fi
+# Same shape, same reason: exporting it empty is worse than leaving it unset, since
+# huggingface_hub's own fallback is a working default and "" is not. env.sh is sourced
+# below and does not set HF_HOME, so this value survives.
+if [[ -n "${HF_HOME:-}" ]]; then export HF_HOME; fi
 # Cleared before AND after sourcing env.sh: env.sh sets them, and an unreachable
 # mirror surfaces as "Error locating target ...collate_fn", which names neither.
 export CCD_MIRROR_PATH="" PDB_MIRROR_PATH=""

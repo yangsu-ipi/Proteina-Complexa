@@ -1668,6 +1668,35 @@ def test_the_runner_passes_the_disk_knob():
     assert re.search(r"^DISK_MB_PER_DESIGN=", env, re.M), "campaign.env must document it"
 
 
+def test_hf_home_is_pinned_and_exported():
+    """Nothing else records it. env.sh sets DOCKER_HF_HOME only, so an unset HF_HOME sends
+    check_preflight to ~/.cache/huggingface and it reports three ESMFold2/ESMC repos
+    missing -- which reads as a weights problem rather than an environment one."""
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    assert re.search(r'^HF_HOME="\$\{HF_HOME:-', env, re.M), "must be overridable, not hardcoded"
+    runner = (TEMPLATES / "run_campaign.sh").read_text()
+    assert 'if [[ -n "${HF_HOME:-}" ]]; then export HF_HOME; fi' in runner
+
+
+def test_hf_home_is_exported_only_when_set(tmp_path):
+    """An empty export is worse than none here: huggingface_hub's own fallback works and
+    "" does not. Same reasoning as TARGET_MSA."""
+    root = package(tmp_path)
+    script = (
+        'source "%s/campaign.env"\n'
+        'if [[ -n "${HF_HOME:-}" ]]; then export HF_HOME; fi\n'
+        'env | grep -c "^HF_HOME=" || true\n'
+    ) % root
+    with_default = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                  cwd="/", env={k: v for k, v in os.environ.items() if k != "HF_HOME"})
+    assert with_default.stdout.strip() == "1", "campaign.env's default should be exported"
+    stripped = subprocess.run(["bash", "-c", 'if [[ -n "${HF_HOME:-}" ]]; then export HF_HOME; fi\n'
+                                             'env | grep -c "^HF_HOME=" || true'],
+                              capture_output=True, text=True, cwd="/",
+                              env={k: v for k, v in os.environ.items() if k != "HF_HOME"})
+    assert stripped.stdout.strip() == "0", "with no value it must stay unset, not empty"
+
+
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
     report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
     out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
