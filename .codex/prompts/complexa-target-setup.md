@@ -37,7 +37,7 @@ mistake produces a run that completes and writes PDBs — just not the ones the 
 Do not report success on the basis of a clean exit. And do not present
 `complexa validate target` as a check that passed: it confirms the PDB *exists*, then
 echoes the config back without ever opening the file
-(`src/proteinfoundation/cli/validate.py:379-503`).
+(`src/proteinfoundation/cli/validate.py:377-501`).
 
 ## Step 1 — Preflight
 
@@ -76,7 +76,7 @@ find `.env` by walking up from their own module file.
 
 **conda installs use the `uv` label.** `complexa init` accepts only `uv` or `docker`
 (`cli_runner.py:1160-1166`), and nothing branches on the value of `COMPLEXA_INIT`
-(`cli_runner.py:2011` tests presence only). Point `UV_VENV` and the `UV_*` tool vars at the
+(`cli_runner.py:2009` tests presence only). Point `UV_VENV` and the `UV_*` tool vars at the
 conda prefix and use `uv`. Conda is not unsupported — just unlabelled.
 
 ## Step 2 — Fix the atomworks env vars
@@ -188,9 +188,9 @@ python3 .claude/skills/_shared/scripts/write_manifest.py \
 | Symptom | Cause | Fix |
 |---|---|---|
 | `missing required environment keys: ['LOCAL_CODE_PATH', …]` after `env.sh` succeeded | `.env` sourced without `set -a`; only `_TOOL_VARS` exported | `set -a; source env.sh; set +a` |
-| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:2004-2016`) | source `env.sh` from **bash** |
+| `Environment not initialized. Run: complexa init` | `COMPLEXA_INIT` unset (`cli_runner.py:2002-2014`) | source `env.sh` from **bash** |
 | `missing checkpoint` but the file exists; path ends `checkpoints/` | existing `.env` still says `checkpoints/`, downloaders write `ckpts/` (`download_startup.sh:239`); gate-only if the pipeline YAML sets `ckpt_path` absolutely | `LOCAL_CHECKPOINT_PATH=${LOCAL_CODE_PATH}/ckpts`, re-init |
-| `missing community model path: ESM_DIR` | ESM2 absent; not gate-only (`binder_evaluate.yaml:47`) | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
+| `missing community model path: ESM_DIR` | ESM2 absent; not gate-only (`binder_evaluate.yaml:73`) | `complexa download --esm2`, or `++metric.compute_esm_metrics=false` |
 | `Error locating target '…collate_fn'` | masked lazy-import failure, usually a bad `CCD_MIRROR_PATH` | `python -c "import proteinfoundation.datasets.gen_dataset"` or `HYDRA_FULL_ERROR=1` |
 | **Clean run, wrong target** (`1www_cropped.pdb`, chain X) | `task_name` unpinned → inherited `33_TrkA`, which exists in the shared 44 so nothing errors | pin it under `_self_`; check `task_name` + `pdb_path` in the log |
 | `InterpolationKeyError: …33_TrkA.source` | same omission, but with a *replaced* dict | pin it under `_self_` |

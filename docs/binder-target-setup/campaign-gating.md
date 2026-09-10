@@ -182,7 +182,7 @@ by a smoke test that had otherwise produced correct science:
 
 **1. `timing_*.csv` catches the analyze stage's own summary.** The evaluate stage writes one
 `timing_{job_id}.csv` per worker with `job_id,evaluation_time_s,nsamples,evals_run`
-(`evaluate.py:989-992`). The analyze stage then writes `timing_summary.csv` **into the same
+(`evaluate.py:990-993`). The analyze stage then writes `timing_summary.csv` **into the same
 directory** with a completely different schema — `eval_config,num_jobs,…,total_samples,…`,
 no `nsamples` column (`result_analysis/analysis.py:1765`). A `timing_*.csv` glob picks up
 both and `row["nsamples"]` raises `KeyError` on the summary row. Match the digits:
@@ -223,7 +223,7 @@ and assert `evaluated == M`. Two things break that:
 - The filter **deduplicates by sequence** (`filter.py:148-150`), so `top_samples_*.csv` can
   be smaller than the sample set for reasons that have nothing to do with filtering.
 - The entire pruning branch is guarded by `if len(combined_rewards) > filter_samples_limit`
-  (`filter.py:173`). Below the limit it logs `No filtering needed` and **leaves every sample
+  (`filter.py:199`). Below the limit it logs `No filtering needed` and **leaves every sample
   directory in place** — nothing is deleted, nothing is moved to `filtered_out_samples/`.
 
 So a smoke test generating 8 with `filter_samples_limit: 8` yields 8 generated, 6 rows in
@@ -248,7 +248,7 @@ the filter did what it was asked, and it doubles as the detector for the stale-d
 in the next section.
 
 **Know which of your numbers are independent.** The timing CSV's `nsamples` is
-`max(len(df))` over the result frames (`evaluate.py:962-964`) — the same frames the combined
+`max(len(df))` over the result frames (`evaluate.py:963-965`) — the same frames the combined
 CSV is written from. So `evaluated == combined` is a schema guard, not a cross-check; keep it,
 but do not mistake it for evidence that evaluation covered the run. The genuinely independent
 numbers are the generation reward rows, the on-disk directory count, and the result rows.
@@ -270,8 +270,8 @@ Within a stage there is no checkpointing, and two details make a naive retry of 
 actively dangerous:
 
 - **Nothing is persisted until sampling finishes.** `trainer.predict` returns every batch
-  prediction in memory (`generate.py:1608`); only afterwards does `save_predictions` write the
-  PDBs and `save_rewards_to_csv` write the rewards CSV (`:1442`, called at `:1525`/`:1550`, plain
+  prediction in memory (`generate.py:1646`); only afterwards does `save_predictions` write the
+  PDBs and `save_rewards_to_csv` write the rewards CSV (`:1480`, called at `:1563`/`:1588`, plain
   `to_csv`, no append). An interruption during sampling — the long part — therefore loses the
   entire shard and leaves no partial state to resume from. The same structure means peak memory
   scales with the design count rather than the batch size.
@@ -291,7 +291,7 @@ actively dangerous:
 
 This used to be unguarded. `generate.py` had an early-exit keyed on
 `results_{config_name}_{job_id}.csv`, a filename nothing in the codebase writes — evaluate
-writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:871-948`) — so
+writes the prefixed forms `binder_results_…`, `monomer_results_…` (`evaluate.py:872-949`) — so
 the guard was dead and generate always restarted from scratch.
 
 ### Do not guard a runner on the output directory existing
@@ -504,7 +504,7 @@ each individually, accepting it in either its original location or under
 Counting was the first design, and a real campaign broke it in both directions:
 
 - **Filter relocation reads as deletion.** `--samples 2` generated 16 designs, and
-  `filter_samples_limit: 2` moved 14 into `filtered_out_samples/` (`filter.py:207-226`). Two
+  `filter_samples_limit: 2` moved 14 into `filtered_out_samples/` (`filter.py:233-252`). Two
   live directories against a recorded 16 looked like data loss, so every shard regenerated —
   resume was inoperative in exactly the campaigns that filter, which is all of them.
 - **Accumulation defeats the other direction.** Directories pile up across reruns, so the live
@@ -561,7 +561,7 @@ python -m proteinfoundation.generate \
 inherit: the fan-out, and the `CUDA_VISIBLE_DEVICES = str(job_id)` pinning that would override
 SLURM's allocation. Nothing is lost — `generate.py` applies the atomworks patches and calls
 `load_dotenv()` at import, and `config_name` falls back to the `--config-name` stem
-(`generate.py:1457`), so `++base_config_name` is optional. Output lands in the task's own SLURM
+(`generate.py:1495`), so `++base_config_name` is optional. Output lands in the task's own SLURM
 log, which is what you wanted. One GPU per task comes from `--gres=gpu:1`; how many run at once
 is the array throttle (`%4`), not `gen_njobs`.
 
@@ -587,10 +587,10 @@ model loading repeatedly, hour-plus shards give resume little to save.
 **`eval_njobs` must equal `gen_njobs`, and the evaluate array must be the same size.** In
 `input_mode: generated` — what campaigns use — evaluation does not chunk by `njobs` at all:
 `split_by_job_generated(root, job_id)` selects directories whose names begin with
-`job_{job_id}_` (`evaluation/utils.py:279-287`). So evaluate shard *N* processes exactly what
+`job_{job_id}_` (`evaluation/utils.py:278-286`). So evaluate shard *N* processes exactly what
 generate shard *N* produced. Shard generation 32 ways and evaluate 4 ways and the designs from
 shards 4–31 are never evaluated; the only signal is one `No files assigned to job N/M` line per
-idle worker before it exits 0 (`evaluate.py:807-808`). The repo says the same thing in one line
+idle worker before it exits 0 (`evaluate.py:808-809`). The repo says the same thing in one line
 (`docs/INFERENCE.md:312`), and it becomes load-bearing the moment generation is sharded for
 resume rather than for throughput.
 
@@ -677,7 +677,7 @@ recompute once and are cached thereafter. The monomer track is unaffected: it fo
 sequences per call rather than looping per design, so it has no per-design artifact to key on.
 
 `filter` and `analyze` are safe to re-run. `filter` recomputes `keep_dirs` from paths that still
-exist (`filter.py:188-191`) and explicitly skips `filtered_out_samples/` when moving, so a second
+exist (`filter.py:214-217`) and explicitly skips `filtered_out_samples/` when moving, so a second
 pass is a no-op; `analyze` regenerates its aggregates and its timing reader is written for
 re-runs (`analysis.py:1671-1672`). `evaluate` has no skip logic at all — no result-existence
 check, no per-design fold cache — so it redoes every AF2 fold. That is the expensive leg to

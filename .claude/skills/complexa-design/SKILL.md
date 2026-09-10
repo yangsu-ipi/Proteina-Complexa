@@ -42,7 +42,7 @@ for those, including three failure modes that are silent.
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
 with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
-`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:105-151`);
+`colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:107-153`);
 pass-rate and diversity analysis per `result_type`.
 
 ## Step 1: Pre-flight
@@ -67,7 +67,7 @@ Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
 - `community_models.RF3_CKPT_PATH.exists` or `tools.rf3.exists` false -> ligand binder / AME default eval (`rf3_latest`) fails.
 
 `checkpoints` is keyed by full filename (`preflight.sh:135-150`); the AF2/RF3
-paths are under `community_models`, **not** `env` (`:203-205`).
+paths are under `community_models`, **not** `env` (`:215-217`).
 
 If a ckpt is missing, point at `complexa-setup` and have the user run
 `complexa download --complexa-<variant>` first.
@@ -211,8 +211,8 @@ ls ./evaluation_results/${CONFIG_STEM}_${TASK}_${RUN_NAME}/    # per-design CSV 
 ```
 
 The results dir is `./evaluation_results/{config_name}_{task_name}`
-(`evaluate.py:774`) with `_{run_name}` appended when `run_name` is set
-(`:784-785`) — it is never just `./evaluation_results/{run_name}`.
+(`evaluate.py:775`) with `_{run_name}` appended when `run_name` is set
+(`:785-786`) — it is never just `./evaluation_results/{run_name}`.
 
 Read the combined results CSV and summarize:
 ```bash
@@ -224,16 +224,16 @@ ls ./evaluation_results/*/diversity/res_div_foldseek_*.csv                # Fold
 ```
 
 The only combined CSV is `RAW_{result_type}_results_{config_name}_combined.csv`
-(`analyze.py:3065`); `binder_results_*_{job_id}.csv` (`evaluate.py:899`) is
+(`analyze.py:3189`); `binder_results_*_{job_id}.csv` (`evaluate.py:900`) is
 per-job and never `_combined`. By the time you look, `organize_results()`
-(`analyze.py:2813-2856`) has moved `res_filter_*` into `filter_results/`,
+(`analyze.py:2928-2971`) has moved `res_filter_*` into `filter_results/`,
 `res_div_*` into `diversity/`, `clusters_*` into `clusters/` (AME's
 `res_filter_motif_binder_*` into `motif_binder_metrics/`) — top-level globs
 match nothing.
 
 Pull the success rate from `res_filter_binder_pass_*.csv` (protein binder only
 — ligand writes `res_filter_ligand_pass_*`, AME `res_filter_motif_binder_pass_*`;
-`binder_analysis.py:697`), the per-design
+`binder_analysis.py:723`), the per-design
 metrics (interface pAE, pLDDT, scRMSD) from the combined CSV, and FoldSeek
 TM-score diversity from `res_div_foldseek_*.csv`. Report top-N designs by
 i_pAE (protein binder) or min_ipAE (ligand binder).
@@ -272,7 +272,7 @@ default) is in [reference/overrides.md](reference/overrides.md).
 | `++generation.dataloader.batch_size=8` | `16` (binder/ligand/AME) | Drop to 8 on a 40GB GPU |
 | `++generation.filter.filter_samples_limit=500` | `1000` | Top-N samples to keep after filtering |
 | `++metric.binder_folding_method=rf3_latest` | `colabdesign` (binder), `rf3_latest` (ligand/AME) | Evaluation refold backend — only `colabdesign` or an `rf3*` name is accepted |
-| `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:52-53` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
+| `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:58-59` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
 | `aggregation.success_thresholds` (full dict, see below) | `i_pAE*31<=7.0`, `pLDDT>=0.9`, `scRMSD_ca<1.5` (protein binder) | Loosen / tighten success criteria |
 
 > **Never override `success_thresholds` partially.** A partial override replaces

@@ -29,7 +29,7 @@ which raises `FileNotFoundError` from a module-level statement in
 `biotite`, `openfold`, and `torch` eagerly at module load, so those are all fine by the
 time you see this. `gen_dataset` is the **first lazily-imported module** in the run — it is
 pulled in only at `hydra.utils.instantiate(cfg_gen.dataloader)`
-(`src/proteinfoundation/generate.py:1581`) — and it drags in four modules nothing in
+(`src/proteinfoundation/generate.py:1619`) — and it drags in four modules nothing in
 `generate.py`'s eager graph touches:
 
 ```
@@ -127,7 +127,7 @@ functions). The destination is computed from the script's own location
 (`download_startup.sh:23-24` → `PROJECT_ROOT` → `cd`, then a relative `./ckpts`) and never
 from `.env`, so the two could not reconcile. The shipped configs side with the downloaders
 (`ckpt_path: ./ckpts`), as does `preflight.sh`'s own last-resort fallback
-(`preflight.sh:66`, `$LOCAL_CODE_PATH/ckpts`) — `.env_example` was the lone dissenter.
+(`preflight.sh:68`, `$LOCAL_CODE_PATH/ckpts`) — `.env_example` was the lone dissenter.
 
 The default is now `${LOCAL_CODE_PATH}/ckpts`, so fresh installs are correct. **An existing
 `.env` is not updated by that change** — fix it by hand, then regenerate `env.sh`:
@@ -170,7 +170,7 @@ so the next preflight tells the truth.
 …alongside passes for the checkpoints, `DATA_PATH`, the target PDB, and Foldseek.
 
 **Cause (fixed — update the repo).** Two checks asked the wrong question.
-`complexa validate design` fans out to all three sub-validators (`validate.py:794-823`:
+`complexa validate design` fans out to all three sub-validators (`validate.py:791-820`:
 `validate_env()`, `validate_generate()`, `validate_evaluate()`), and two of them assumed
 the repo was the working directory:
 
@@ -222,7 +222,7 @@ only affect the `bioinformatics` interface metrics, which are off by default.
 `complexa download --esm2` writes (`download_startup.sh:371`) — so this is a missing asset,
 not a path mismatch. Unlike the checkpoints above, it is **not** gate-only: the binder
 evaluate config sets `compute_esm_metrics: true`
-(`configs/pipeline/binder/binder_evaluate.yaml:47`).
+(`configs/pipeline/binder/binder_evaluate.yaml:73`).
 
 **Do not just `mkdir` the directory.** `_resolve_esm_dir` tests only `os.path.isdir`
 (`evaluation/esm_eval.py:538-543`), so an empty directory resolves, becomes the *first*
@@ -244,7 +244,7 @@ cd "$COMPLEXA_REPO" && complexa download --esm2      # HF_TOKEN if rate-limited
 before they could be forwarded — even though the script has always accepted them (the
 handler passes `sys.argv[2:]` verbatim). All five are now declared. If you hit
 `unrecognized arguments: --esm2`, either update the repo or bypass the wrapper:
-`complexa-download --esm2` (`pyproject.toml:73`, forwards `sys.argv[1:]`) or
+`complexa-download --esm2` (`pyproject.toml:88`, forwards `sys.argv[1:]`) or
 `bash env/download_startup.sh --esm2`.
 
 or skip the metric for this run:

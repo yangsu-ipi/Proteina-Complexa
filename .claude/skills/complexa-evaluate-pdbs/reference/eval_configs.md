@@ -12,8 +12,8 @@ Companion to `SKILL.md`. Every `evaluate_*_from_pdb_dir.yaml` and its paired `an
 | Motif protein binder   | `configs/example/evaluate_motif_binder.yaml` (no `_from_pdb_dir` variant; set `input_mode=pdb_dir`) | `configs/analyze_motif_binder.yaml` | `motif_protein_binder` | `colabdesign`, `rf3_latest` | `protein_mpnn` / `soluble_mpnn` |
 
 Notes:
-- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:105-151` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`).
-- The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:2922`, `validate_config` at `:391-410`).
+- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:107-153` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`).
+- The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:3037`, `validate_config` at `:393-412`).
 - The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:200`), `analysis_modes: [binder]` (`:207`).
 - There is no shipped `evaluate_motif_protein_binder_from_pdb_dir.yaml`; reuse `configs/example/evaluate_motif_binder.yaml` with `++input_mode=pdb_dir ++sample_storage_path=<dir> ++result_type=motif_protein_binder`. That config composes `- /design_tasks/ame_dict_v2@dataset` (`:24`), so `dataset.task_name` must be a key in `configs/design_tasks/ame_dict_v2.yaml` unless you point it at your own dict — see the `motif_target_dict_cfg` note in §2.
 
@@ -28,7 +28,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
 - `protein_type: binder` (one config handles both protein and ligand binders).
 - `input_mode: pdb_dir` (already set; never override back to `generated`).
 - `defaults: - generation/targets_dict@dataset` (`:22`) — **broken as shipped.** `configs/generation/targets_dict.yaml` does not exist (`configs/generation/` holds `base_gen_data.yaml`, `validation.yaml`, `validation_local_latents.yaml`), so Hydra cannot compose this config at all. The real dicts live at `configs/targets/targets_dict.yaml` and `configs/targets/ligand_targets_dict.yaml`; `configs/evaluate.yaml:31` composes the first correctly with `- /targets/targets_dict@dataset`.
-  - There is also **no dispatch between the two dicts by task name.** `get_target_info` (`binder_eval_utils.py:240-254`) looks `dataset.task_name` up in whatever `dataset.target_dict_cfg` Hydra composed and raises `target_task_name <name> not found in target_dict_cfg` otherwise. A ligand task such as `39_7V11_LIGAND` (in `ligand_targets_dict.yaml:2`) is not reachable from a config that composed `targets_dict.yaml`.
+  - There is also **no dispatch between the two dicts by task name.** `get_target_info` (`binder_eval_utils.py:262-276`) looks `dataset.task_name` up in whatever `dataset.target_dict_cfg` Hydra composed and raises `target_task_name <name> not found in target_dict_cfg` otherwise. A ligand task such as `39_7V11_LIGAND` (in `ligand_targets_dict.yaml:2`) is not reachable from a config that composed `targets_dict.yaml`.
   - Workarounds: for protein targets use `configs/evaluate.yaml` with `++input_mode=pdb_dir ++result_type=protein_binder`; for ligand targets copy this config and set the defaults entry to `- /targets/ligand_targets_dict@dataset`. The group name is fixed by the defaults list, so it cannot be redirected from the CLI.
 - Required `dataset.*`:
   - `dataset.task_name` — target key (e.g. `02_PDL1`, `39_7V11_LIGAND`).
@@ -47,7 +47,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
   - `keep_folding_outputs` — keep refolded PDBs.
 - File walk control:
   - `ignore_generated_pdb_suffix: "_binder.pdb"` (default) — drop intermediate binder-only PDBs from the walk.
-  - `file_limit` — **not a field of this config.** It ships in the AME/motif variants only (`evaluate_ame_from_pdb_dir.yaml:41`, `evaluate_motif_from_pdb_dir.yaml:51`). It is still usable here because `evaluate.py:811` reads it with `cfg.get("file_limit", None)`, so `++file_limit=N` works (`++` creates the key).
+  - `file_limit` — **not a field of this config.** It ships in the AME/motif variants only (`evaluate_ame_from_pdb_dir.yaml:41`, `evaluate_motif_from_pdb_dir.yaml:51`). It is still usable here because `evaluate.py:812` reads it with `cfg.get("file_limit", None)`, so `++file_limit=N` works (`++` creates the key).
 - `result_type` is set inline (`ligand_binder` or `protein_binder`) and propagates to the paired analyze step.
 
 ### `evaluate_ame_from_pdb_dir.yaml`
@@ -96,7 +96,7 @@ These ship for completeness; the `from_pdb_dir` variants are derived from them w
 ### `analyze_motif_binder.yaml`
 
 - `result_type: motif_protein_binder` (default in the YAML) or `motif_ligand_binder` (override on CLI).
-- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3094-3104`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
+- `aggregation.analysis_modes` — for `motif_protein_binder` / `motif_ligand_binder` the code default is **`["motif_binder"]` only** (`analyze.py:3218-3228`); `[binder, monomer]` is the default for `protein_binder` / `ligand_binder`. The `[motif_binder, binder, monomer]` claim in this file's own header comment and in `configs/analyze_motif_binder.yaml:12` is stale. Add `binder` / `monomer` explicitly if you want them.
 - `aggregation.motif_binder_success_thresholds`:
   - **`motif_protein_binder` defaults** — binder: `i_pAE*31 <= 7.0`, `pLDDT >= 0.8`, `scRMSD_ca < 2.0`; motif: `motif_rmsd_pred_all < 2.0`, `correct_motif_sequence_all >= 1.0`.
   - **`motif_ligand_binder` defaults** — binder: `scRMSD_bb3 <= 2.0`; motif: `motif_rmsd_pred_all <= 1.5`, `correct_motif_sequence_all >= 1.0`, `has_ligand_clashes_all < 0.5`.
@@ -233,7 +233,7 @@ This is the example that exposes both target-dict defects at once. `39_7V11_LIGA
 `configs/targets/ligand_targets_dict.yaml:2`, **not** in `targets_dict.yaml`, and no shipped
 evaluate config composes the ligand dict — `evaluate_from_pdb_dir.yaml:22` names a group that
 does not exist and `evaluate.yaml:31` composes the protein dict. Nothing routes between the two
-dicts by task name; `get_target_info` (`binder_eval_utils.py:240-254`) just looks the name up in
+dicts by task name; `get_target_info` (`binder_eval_utils.py:262-276`) just looks the name up in
 whatever was composed and raises otherwise. So run the command below against a copy of
 `evaluate_from_pdb_dir.yaml` whose defaults entry reads `- /targets/ligand_targets_dict@dataset`.
 The three `metric.*` / `result_type` overrides shown are already this config's shipped defaults

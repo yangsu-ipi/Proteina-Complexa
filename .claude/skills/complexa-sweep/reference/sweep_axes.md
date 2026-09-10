@@ -78,7 +78,7 @@ These live at top level (the binder_evaluate config is loaded with `@_global_`),
 
 | Key | Default | Typical sweep | Cost multiplier | Effect |
 |---|---|---|---|---|
-| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:105-151` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` (and `esmfold2`) belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`). |
+| `metric.binder_folding_method` | `colabdesign` | `colabdesign`, `rf3_latest` — **and nothing else** | varies | Which refolder validates the binder. AF2 (`colabdesign`) is the standard; RF3 (any name containing `rf3`) is required for ligand targets. `binder_eval.py:107-153` raises `ValueError: Folding model '<x>' not supported` for every other value, so an axis containing `esmfold`, `boltz2_default` or `protenix_*` crashes every config generated from it. `esmfold` (and `esmfold2`) belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`). |
 | `metric.num_redesign_seqs` | 2 | 1, 2, 4, 8, 16 | linear | Number of MPNN redesigns to refold per binder. Higher = more reliable designability signal. |
 | `metric.sequence_types` | `[self]` | `[self]`, `[self, mpnn]`, `[self, mpnn_fixed]` | linear per type | Which sequences to evaluate: generated, MPNN-redesigned, or MPNN with fixed interface. |
 | `metric.interface_cutoff` | 8.0 | 6.0, 8.0, 10.0 | none | Angstrom cutoff defining interface residues for MPNN_fixed and interface metrics. |
@@ -150,13 +150,13 @@ For an irregular set of `(key1, key2)` pairs (not a full cartesian product), the
 Step 6 of the skill from two real per-config outputs:
 
 - `./evaluation_results/eval_{idx}_{run_name}_{pipeline_run_name}/RAW_{result_type}_results_{config_name}_combined.csv`
-  (`analyze.py:3065`) — one row per generated sample.
-- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:697`, moved there by
-  `organize_results`, `analyze.py:2803-2881`) — the pre-computed pass rates.
+  (`analyze.py:3189`) — one row per generated sample.
+- `.../filter_results/res_filter_binder_pass_*.csv` (`binder_analysis.py:723`, moved there by
+  `organize_results`, `analyze.py:2918-2996`) — the pre-computed pass rates.
 
 No emitted file is named `results_*.csv`; the per-job files are
 `{monomer,binder,motif,motif_binder}_results_{config_name}_{job_id}.csv`
-(`evaluate.py:871, :899, :922, :948`).
+(`evaluate.py:872, :899, :922, :948`).
 
 | Column | Source | Notes |
 |---|---|---|
@@ -167,7 +167,7 @@ No emitted file is named `results_*.csv`; the per-job files are
 | `mean_i_pae` | `{seq}_complex_i_pAE.mean()` | Lower = better. AF2 interface PAE, stored **0–1 scaled** — multiply by 31 to report in threshold units. A naive `i_pae < 10` test passes every sample. |
 | `mean_plddt` | `{seq}_complex_pLDDT.mean()` | Higher = better. **Complex** pLDDT, 0–1. There is no interface-pLDDT column in the raw CSV — `i_plddt` does not exist. |
 | `mean_binder_scRMSD_ca` | `{seq}_binder_scRMSD_ca.mean()` | Lower = better. Binder CA scRMSD in Å. `sc_rmsd` does not exist. |
-| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:704`). |
+| `diversity_score` | Unique `{seq}_sequence` count / `n_samples`, or the FoldSeek/MMseqs2 output under `diversity/` and `clusters/` | Higher = more diverse pool. `binder_seq` does not exist; the column is `{seq}_sequence` (`binder_eval.py:816`). |
 | `wall_clock_min` | Timestamp delta from the per-stage logs under `./logs/` | Approximate (process wall-clock, not GPU time). With the split-stage loop from Step 4 there is one log per stage, not one per pipeline. |
 
 `{seq}` is a `metric.sequence_types` value (`self`, `mpnn`, `mpnn_fixed`) used as a column
@@ -178,4 +178,4 @@ Ranking:
 
 - **Best by success** = argmax `success_rate`; tie-break on `mean_i_pae` ascending.
 - **Pareto frontier** on (`wall_clock_min`, `success_rate`): a config is on the frontier iff no other config has both lower wall-clock AND higher success rate. Implement with a sort + linear sweep.
-- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:460-461`) and left an unscaled `i_pAE` comparison that everything passes.
+- **Sanity check**: if every config has `success_rate == 0`, the threshold is too strict OR the sweep regime is broken — surface this to the user before reporting "best". Conversely, a 100% success rate across the board usually means a partial `aggregation.success_thresholds` override replaced the whole default dict (`binder_analysis.py:473-474`) and left an unscaled `i_pAE` comparison that everything passes.

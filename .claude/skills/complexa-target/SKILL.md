@@ -154,7 +154,7 @@ After saving, skip to Step 4 to verify.
 
 ## Step 3b: CLI alternative (`complexa target add`)
 
-Use the CLI when you want its automatic chain/residue quoting, the overwrite-confirm prompt, or to wire target creation into a non-Python script. For agentic use always pass `name` and never pass `-i`: `-i, --interactive` and `-e, --editor NAME` are two **separate** flags (`cli_runner.py:1194-1205`), interactive mode triggers on `args.interactive or not args.name` (`:1819`), so `-i` (or a missing name) blocks on an editor, while `-e vim` on its own with a name is silently discarded.
+Use the CLI when you want its automatic chain/residue quoting, the overwrite-confirm prompt, or to wire target creation into a non-Python script. For agentic use always pass `name` and never pass `-i`: `-i, --interactive` and `-e, --editor NAME` are two **separate** flags (`cli_runner.py:1194-1205`), interactive mode triggers on `args.interactive or not args.name` (`:1817`), so `-i` (or a missing name) blocks on an editor, while `-e vim` on its own with a name is silently discarded.
 
 ### Confirmed flags (from `src/proteinfoundation/cli/cli_runner.py:1177-1321`)
 
@@ -237,14 +237,14 @@ EOF
 ```
 
 > **`complexa validate target CONFIG --target NAME` cannot succeed on any config in this
-> repo — do not use it as a gate.** `validate.py:183-187` loads the config with a plain
-> `yaml.safe_load` and never composes Hydra defaults; `validate.py:315-317` only follows a
+> repo — do not use it as a gate.** `validate.py:181-185` loads the config with a plain
+> `yaml.safe_load` and never composes Hydra defaults; `validate.py:313-315` only follows a
 > `defaults:` entry that is a **dict** containing `"generation"`, but every entry in
 > `search_binder_local_pipeline.yaml:12-16` is a plain string
-> (`pipeline/binder/binder_generate@generation`); and the fallback at `validate.py:359-361`
+> (`pipeline/binder/binder_generate@generation`); and the fallback at `validate.py:357-359`
 > looks for `configs/generation/targets_dict.yaml`, which does not exist. So
 > `target_dict_cfg` is always `None` and the command reports
-> `✗ Target config: Could not find target_dict_cfg in config` (`validate.py:486-490`)
+> `✗ Target config: Could not find target_dict_cfg in config` (`validate.py:484-488`)
 > regardless of whether your entry is correct. The `validate` subparser also takes no Hydra
 > overrides (`cli_runner.py:1326-1348`: only `type`, `config`, `--target`).
 
@@ -286,6 +286,6 @@ For the downstream design / evaluate runs that consume the target, defer to `com
 - `configs/targets/targets_dict.yaml` — live protein entries (copy a known-good one as a template).
 - `configs/targets/ligand_targets_dict.yaml` — live ligand entries.
 - `configs/design_tasks/ame_dict_v2.yaml` — AME task definitions (file-edit only, not exposed via `complexa target` CLI).
-- `src/proteinfoundation/cli/cli_runner.py:1177-1321` — argparse source of truth for `complexa target`. (`src/proteinfoundation/cli/target_cli.py` backs the *separate* `complexa-target` console script declared at `pyproject.toml:74`; its flags are not the ones `complexa target` parses.)
+- `src/proteinfoundation/cli/cli_runner.py:1177-1321` — argparse source of truth for `complexa target`. (`src/proteinfoundation/cli/target_cli.py` backs the *separate* `complexa-target` console script declared at `pyproject.toml:89`; its flags are not the ones `complexa target` parses.)
 - `src/proteinfoundation/cli/target_manager.py` — `add_target_cli`, `list_targets`, `show_target`, schema in `TARGET_FIELDS`, and the CLI-only defaults at `:1004-1030`.
 - `src/proteinfoundation/cli/validate.py` — `validate_target` implementation (currently cannot resolve `target_dict_cfg`; see Step 4).

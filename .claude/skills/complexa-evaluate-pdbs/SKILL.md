@@ -24,7 +24,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 
 ## What this skill enables
 
-- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:105-151` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
+- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:107-153` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
 - **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and the **fourth** protein-binder success criterion: `apo scRMSD_ca < 2.0`. A design must now fold as designed both with and without its target.
@@ -87,7 +87,7 @@ Use this when the user's PDBs are protein-binder designs (multi-chain, binder is
 > - **Ligand targets** — no shipped evaluate config composes `ligand_targets_dict.yaml` at all.
 >   Copy `configs/evaluate_from_pdb_dir.yaml` and change line 22 to
 >   `- /targets/ligand_targets_dict@dataset`. Without the right dict, `get_target_info` raises
->   `target_task_name <name> not found in target_dict_cfg` (`binder_eval_utils.py:240-254`).
+>   `target_task_name <name> not found in target_dict_cfg` (`binder_eval_utils.py:262-276`).
 
 ### Extensions — pick the matching config
 
@@ -98,7 +98,7 @@ stem (`find_result_files(results_dir, config_name, …)`) — pass the **evaluat
 The standalone `configs/analyze*.yaml` files are not runnable on their own: they define neither
 `results_dir` nor `output_dir`, so `complexa analyze configs/analyze.yaml` auto-constructs
 `./evaluation_results/analyze` and exits 1 with `results_dir does not exist`
-(`analyze.py:2922, :2947-2953`; `validate_config` at `:391-410`).
+(`analyze.py:3037, :2947-2953`; `validate_config` at `:393-412`).
 
 | Design type | Use the protein-binder default? | Config (drives `evaluate` **and** `analyze`) | `result_type` | Backend as shipped |
 |---|---|---|---|---|
@@ -133,7 +133,7 @@ Run against the pristine `configs/evaluate_from_pdb_dir.yaml`, this fails twice:
 `generation/targets_dict` group does not exist (above), and even if it did, `39_7V11_LIGAND`
 lives in `configs/targets/ligand_targets_dict.yaml:2` — not `targets_dict.yaml` — so
 `get_target_info` would raise `not found in target_dict_cfg`
-(`binder_eval_utils.py:240-254`). Nothing in the code dispatches between the two dicts by task
+(`binder_eval_utils.py:262-276`). Nothing in the code dispatches between the two dicts by task
 name; the lookup uses whatever `dataset.target_dict_cfg` Hydra composed.
 
 **Extending to AME** (different config; ligand auto-completion gotcha — see Step 4):
@@ -153,7 +153,7 @@ Ask in one batched `AskUserQuestion`:
 
 1. **`pdb_dir`** — absolute path to the directory of PDBs to evaluate.
 2. **Design type** — protein binder / ligand binder / AME (motif + ligand).
-3. **Folding backend** — `colabdesign` (AF2, protein binders) or `rf3_latest` (ligand / AME). Offer exactly these two; every other value raises `ValueError` in `binder_eval.py:105-151`.
+3. **Folding backend** — `colabdesign` (AF2, protein binders) or `rf3_latest` (ligand / AME). Offer exactly these two; every other value raises `ValueError` in `binder_eval.py:107-153`.
 4. **Target / task name** — must match a key in `configs/targets/targets_dict.yaml`, `configs/targets/ligand_targets_dict.yaml`, or `configs/design_tasks/ame_dict_v2.yaml`. Required for binder + AME evaluation (needed to identify the target reference and, for AME, the motif contigs).
 5. **AME-only**: confirm ligand residue name is already renamed to `L:0` in every PDB (see Troubleshooting). If not, do that rename first.
 
@@ -210,31 +210,31 @@ overrides through two `python -m` calls.
 ## Step 5: Parse results
 
 Output lands in the config's `output_dir`, with `run_name` appended unless it is already the
-suffix (`evaluate.py:784-786`; `analyze.py:2957-2959` does the same for `results_dir`). For
+suffix (`evaluate.py:785-787`; `analyze.py:3072-3074` does the same for `results_dir`). For
 `evaluate_from_pdb_dir.yaml` that resolves to `./evaluation_results/${run_name}` because
 `output_dir: ./evaluation_results/${run_name}` (`:39`).
 
 - **Per-job CSV** from `evaluate` — `binder_results_{config_name}_{job_id}.csv`
-  (`evaluate.py:899`). The other flavours are `monomer_results_*` (`:871`), `motif_results_*`
-  (`:922`) and `motif_binder_results_*` (`:948`). `{config_name}` is the config file stem
+  (`evaluate.py:900`). The other flavours are `monomer_results_*` (`:872`), `motif_results_*`
+  (`:923`) and `motif_binder_results_*` (`:949`). `{config_name}` is the config file stem
   (`cli_runner.py:650` passes `++base_config_name=<stem>`).
 - **Primary CSV** from `analyze` — `RAW_{result_type}_results_{config_name}_combined.csv`
-  (`analyze.py:3065`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
-  enumerate index over the file walk (`binder_eval.py:576, :593`). `sequence_types` are column
+  (`analyze.py:3189`), plus a transposed twin. There is **one row per input PDB**: `id_gen` is an
+  enumerate index over the file walk (`binder_eval.py:618, :593`). `sequence_types` are column
   **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
   `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
   lists (`binder_eval.py:669-705`; `binder_analysis_utils.py:219-230` builds
   `{seq}_{prefix}_{metric}_all`).
 - **Pass-rate summaries and everything else are moved into subdirectories** by
-  `organize_results` (`analyze.py:2803-2881`), so do not glob the top level:
+  `organize_results` (`analyze.py:2918-2996`), so do not glob the top level:
   `res_filter_*` → `filter_results/`, `res_div_*` → `diversity/`, `res_monomer_*` →
   `monomer_metrics/`, `res_ss_*` → `secondary_structure/`, `res_aa_*` →
   `amino_acid_distribution/`, `res_motif_*` → `motif_metrics/`,
   `res_motif_binder_*` / `res_filter_motif_binder_*` → `motif_binder_metrics/`, and the
   `clusters_*` directories → `clusters/`. The binder pass-rate file is
   `filter_results/res_filter_binder_pass_*.csv` for `protein_binder` and
-  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:697`);
-  motif runs write `res_filter_motif_binder_pass_*.csv` (`motif_binder_analysis.py:252`).
+  `res_filter_ligand_pass_*.csv` for `ligand_binder` (`binder_analysis.py:723`);
+  motif runs write `res_filter_motif_binder_pass_*.csv` (`motif_binder_analysis.py:254`).
 - Diversity output — FoldSeek/MMseqs2 cluster files under `diversity/` and `clusters/` when
   `aggregation.compute_diversity=true` (default).
 
@@ -270,7 +270,7 @@ Two caveats:
 |------------------------------------------------|-----------------------------------------------------------------------|
 | `++sample_storage_path=<dir>`                  | The directory of PDBs to evaluate (required).                         |
 | `++dataset.task_name=<name>`                   | Target / AME task name (binders, AME). Resolves target PDB + contigs. |
-| `++metric.binder_folding_method=<backend>`     | `colabdesign`, or any name containing `rf3` (e.g. `rf3_latest`). Nothing else is accepted (`binder_eval.py:105-151`). |
+| `++metric.binder_folding_method=<backend>`     | `colabdesign`, or any name containing `rf3` (e.g. `rf3_latest`). Nothing else is accepted (`binder_eval.py:107-153`). |
 | `++metric.inverse_folding_model=<model>`       | `protein_mpnn` / `soluble_mpnn` / `ligand_mpnn`.                      |
 | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which sequence flavors to refold.                                   |
 | `++metric.num_redesign_seqs=N`                 | ProteinMPNN/LigandMPNN redesign count.                                |

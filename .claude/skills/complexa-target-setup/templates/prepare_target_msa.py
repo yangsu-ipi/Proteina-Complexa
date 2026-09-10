@@ -37,7 +37,7 @@ THE PUBLIC SERVER IS A SHARED FREE RESOURCE
 -------------------------------------------
 `https://api.colabfold.com` is run for the community. This script queries it once
 per target chain per campaign -- `PREPARE_STEPS` runs before EVERY stage
-(`run_campaign.sh:150`), so a re-run of `evaluate` would otherwise re-query -- by
+(`run_campaign.sh:156`), so a re-run of `evaluate` would otherwise re-query -- by
 skipping any output that already exists and still validates. Point `--host-url` at
 your own MMseqs2 server if you are doing this at volume, and set a contact in
 `--user-agent`: ColabFold asks for one and warns that it will become mandatory.

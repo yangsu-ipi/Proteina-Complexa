@@ -21,8 +21,8 @@ where `.env` lives — which is why a job can pass one check and fail another.
 |---|---|---|
 | `.claude/skills/_shared/scripts/preflight.sh:33` | `ENV_FILE="$PWD/.env"` | yes (`:49-53`) |
 | `cli/validate.py:137` (`load_env_config`) | `load_dotenv(Path(".env"))`, then reads `os.environ` | yes |
-| `cli/validate.py:250` (`validate_env`) | reports whether `./.env` exists; **keys on the variables** | yes |
-| `cli_runner.py:1721` (`complexa init`) | `Path(".env")` — writes here | no |
+| `cli/validate.py:248` (`validate_env`) | reports whether `./.env` exists; **keys on the variables** | yes |
+| `cli_runner.py:1719` (`complexa init`) | `Path(".env")` — writes here | no |
 
 None of these walks up the tree or falls back to the repo, so **a `.env` sitting in the
 install is invisible to all of them** — exported variables are what rescue them. Note
@@ -39,7 +39,7 @@ for the before/after and the workaround for older installs.
 Every stage module uses the **no-argument** form, which does search:
 
 ```python
-# generate.py:1454, filter.py:87, evaluate.py:695, analysis.py:1983, train.py:362, …
+# generate.py:1492, filter.py:87, evaluate.py:696, analysis.py:1983, train.py:362, …
 load_dotenv()
 ```
 
@@ -55,19 +55,19 @@ went unnoticed: only the checks that read the live environment or `./.env` expos
 
 ## C. the `COMPLEXA_INIT` gate
 
-`_check_complexa_init` (`cli_runner.py:2004-2016`) exits 1 for every non-exempt `complexa`
+`_check_complexa_init` (`cli_runner.py:2002-2014`) exits 1 for every non-exempt `complexa`
 subcommand unless `COMPLEXA_INIT` is set, and only `env.sh` exports it. So `env.sh` is not
 optional, regardless of how `.env` gets found.
 
 ## The `env.sh` export gap
 
 `complexa init <runtime>` generates `env.sh`, which resolves `.env` next to itself and is
-therefore cwd-independent by design (`cli_runner.py:1668-1679`). But `.env` holds plain
+therefore cwd-independent by design (`cli_runner.py:1666-1677`). But `.env` holds plain
 `KEY=value` lines with **no `export`**, so a bare `source .env` creates shell variables that
 child processes never see.
 
 The **docker** branch then explicitly exports the important ones
-(`cli_runner.py:1686-1696`). The **uv** branch did not — it exported only `_TOOL_VARS`
+(`cli_runner.py:1684-1694`). The **uv** branch did not — it exported only `_TOOL_VARS`
 (`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`, `MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH`,
 `cli_runner.py:1630-1637`) plus `COMPLEXA_INIT`. `LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`,
 `CKPT_PATH`, `DATA_PATH`, `AF2_DIR`, `ESM_DIR` reached nothing.
@@ -105,7 +105,7 @@ set -a; source /path/to/Proteina-Complexa/env.sh; set +a
 - The runtime argument only selects which prefix the tool vars read:
   `export FOLDSEEK_EXEC="${UV_FOLDSEEK_EXEC:-$FOLDSEEK_EXEC}"`. Point the `UV_*` vars at
   your conda prefix and they resolve correctly.
-- **Nothing branches on the value of `COMPLEXA_INIT`** — `cli_runner.py:2011` only tests
+- **Nothing branches on the value of `COMPLEXA_INIT`** — `cli_runner.py:2009` only tests
   presence (`if not os.environ.get("COMPLEXA_INIT")`). A conda env labelled `uv` is fine.
 
 In `.env`, override `UV_VENV` and the tool vars follow (`.env_example:79-87`):
@@ -132,7 +132,7 @@ activation *outside* the `set -a` block — otherwise conda's own internals get 
 (harmless, but noisy in `env`).
 
 `env.sh` exports both `COMPLEXA_INIT` (which gates the CLI) and `COMPLEXA_RUNTIME` (which
-`preflight.sh` reports as `complexa_runtime`, `:48`/`:57`/`:216`), so preflight JSON and run
+`preflight.sh` reports as `complexa_runtime`, `:48`/`:57`/`:228`), so preflight JSON and run
 manifests record the runtime label. Older generated `env.sh` files set only
 `COMPLEXA_INIT`, leaving `complexa_runtime` as `""` — cosmetic, but another reason to
 regenerate.
@@ -174,7 +174,7 @@ Three footguns:
 - **Source `env.sh` from bash.** It uses `${BASH_SOURCE[0]}`; under zsh or dash that is
   empty, so `_ENVSH_DIR` silently becomes your cwd and `.env` is not found. No error.
 - **`env.sh` may not exist at the repo root.** `complexa init` writes it to **cwd**
-  (`Path("env.sh")`, `cli_runner.py:1722`), so it is only there if someone ran init there.
+  (`Path("env.sh")`, `cli_runner.py:1720`), so it is only there if someone ran init there.
   `ls "$COMPLEXA_REPO/env.sh"` before relying on it.
 - **`preflight.sh` needs bash 4+** (`declare -A`). Fine on Linux; macOS ships bash 3.2.
 
@@ -266,7 +266,7 @@ in the script. See the flag matrix in
 `.claude/skills/complexa-setup/reference/downloads.md`.
 
 All of those are accepted by `complexa download` too (`cli_runner.py:1060-1133`). The
-handler forwards `sys.argv[2:]` to the script verbatim (`cli_runner.py:2044`) rather than
+handler forwards `sys.argv[2:]` to the script verbatim (`cli_runner.py:2042`) rather than
 reading the parsed values, so the argparse declarations exist only to gate and document —
 which is why a flag missing there is rejected even though the script would have handled it.
 Older installs lack the five per-model flags; see

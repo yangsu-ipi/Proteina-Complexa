@@ -31,7 +31,7 @@ wanted. In rough order of how much time they cost:
 
 `complexa validate target` catches none of these — it confirms the PDB **exists**, then
 echoes your config values back as pass lines without ever opening the file
-(`src/proteinfoundation/cli/validate.py:379-503`).
+(`src/proteinfoundation/cli/validate.py:377-501`).
 
 So the workflow this directory documents front-loads the checks: verify the environment,
 verify the structure against the config, *then* spend a GPU-hour.

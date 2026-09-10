@@ -58,7 +58,7 @@ def needs_protein_interface(cfg: dict, metric: dict) -> bool:
     """
     # Matched to the gate that decides whether the binder track runs at all
     # (`evaluate.py:110`, default False), not to the inner call site inside that
-    # track (`binder_eval.py:638`, default True). Reading the inner one would
+    # track (`binder_eval.py:640`, default True). Reading the inner one would
     # demand the extension from a monomer-only campaign that never mentions
     # binders.
     if metric.get("compute_binder_metrics", False) and "ligand" not in str(cfg.get("result_type", "")):

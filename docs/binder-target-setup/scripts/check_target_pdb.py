@@ -3,7 +3,7 @@
 
 Checks the three things `complexa validate target` does not -- it confirms the file exists,
 then echoes your config back without ever opening it
-(`src/proteinfoundation/cli/validate.py:379-503`):
+(`src/proteinfoundation/cli/validate.py:377-501`):
 
   1. Heteroatoms inside the contig range. `AtomSelectionStack.from_contig` filters on
      (chain_id, res_id) only, with no polymer/hetero/element filter
@@ -154,7 +154,7 @@ def main() -> int:
             print(f"WARN  hotspot(s) in an unresolved gap: {in_gap}")
 
     if args.write_clean:
-        import biotite.structure.io as strucio  # same writer generate.py:1352 uses
+        import biotite.structure.io as strucio  # same writer generate.py:1390 uses
 
         strucio.save_structure(args.write_clean, polymer)
         print(f"wrote clean   : {args.write_clean} (heteroatoms stripped, numbering preserved)")

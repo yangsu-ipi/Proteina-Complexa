@@ -198,5 +198,5 @@ Pass-rate columns land in `filter_results/res_filter_*_pass_*.csv` (AME's
 `res_filter_motif_binder_pass_*.csv` goes to `motif_binder_metrics/` instead);
 diversity columns in `diversity/res_div_foldseek_*.csv` and
 `diversity/res_div_mmseqs_*.csv`; per-design metrics in the combined CSV. The
-subdirectories are created by `organize_results()` (`analyze.py:2813-2856`),
+subdirectories are created by `organize_results()` (`analyze.py:2928-2971`),
 which moves these files out of the results-dir root.

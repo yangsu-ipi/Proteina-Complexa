@@ -170,9 +170,9 @@ From `binder_evaluate.yaml`, `ligand_binder_evaluate.yaml`, `ame_evaluate.yaml`.
 | `input_mode` | enum | `generated` | `++input_mode=pdb_dir` | `generated` for design pipeline; `pdb_dir` for external PDBs |
 | `metric.compute_binder_metrics` | bool | `true` (binder/ligand) | `++metric.compute_binder_metrics=true` | Run binder refolding |
 | `metric.compute_motif_binder_metrics` | bool | (AME only) `true` | `++metric.compute_motif_binder_metrics=false` | Run joint motif + binder metrics |
-| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=rf3_latest` | Refold backend. Only `colabdesign` or a name containing `rf3` (e.g. `rf3_latest`) is accepted; anything else raises `ValueError` (`binder_eval.py:105-151`). `colabdesign` is the only AF2 path, and it rejects ligand targets. `esmfold` belongs to the *different* key `metric.monomer_folding_models`. |
+| `metric.binder_folding_method` | enum | `colabdesign` (binder), `rf3_latest` (ligand, AME) | `++metric.binder_folding_method=rf3_latest` | Refold backend. Only `colabdesign` or a name containing `rf3` (e.g. `rf3_latest`) is accepted; anything else raises `ValueError` (`binder_eval.py:107-153`). `colabdesign` is the only AF2 path, and it rejects ligand targets. `esmfold` belongs to the *different* key `metric.monomer_folding_models`. |
 | `metric.sequence_types` | list | `[self]` (binder default), `[self, mpnn]` (ligand), `[self, mpnn_fixed]` (AME) | `++metric.sequence_types=[self,mpnn,mpnn_fixed]` | Which inverse-folding outputs to evaluate |
-| `metric.num_redesign_seqs` | int | `8` (protein target) / `1` (ligand target) — code defaults `DEFAULT_NUM_REDESIGN_SEQS_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:52-53`); `ame_evaluate.yaml` does not set the key at all | `++metric.num_redesign_seqs=8` | Sequences generated per design by the inverse folder |
+| `metric.num_redesign_seqs` | int | `8` (protein target) / `1` (ligand target) — code defaults `DEFAULT_NUM_REDESIGN_SEQS_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:58-59`); `ame_evaluate.yaml` does not set the key at all | `++metric.num_redesign_seqs=8` | Sequences generated per design by the inverse folder |
 | `metric.inverse_folding_model` | enum | `soluble_mpnn` (binder), `ligand_mpnn` (ligand, AME) | `++metric.inverse_folding_model=protein_mpnn` | `protein_mpnn`, `ligand_mpnn`, `soluble_mpnn` |
 | `metric.interface_cutoff` | float | `5.0` (protein target) / `6.0` (ligand target) — code defaults `DEFAULT_INTERFACE_CUTOFF_PROTEIN` / `_LIGAND` (`binder_eval_utils.py:50-51`); `ame_evaluate.yaml` does not set the key at all | `++metric.interface_cutoff=6.0` | Interface-residue **all-atom** contact distance in Angstroms, measured on the all-atom design PDB. Was 8.0 when the criterion was CA-CA; at all-atom that value selects most of a small binder. Values above 6.0 log a warning (`interface.py:51`). |
 | `metric.reusable_interface_cutoffs` | list | `[]` (all pipelines) | `++metric.reusable_interface_cutoffs=[8.0]` | Structure fingerprints written at an earlier `interface_cutoff` that this run will reuse instead of refolding. The cutoff decides which residues get *counted*, not which structures were *predicted* — so a cutoff change re-derives the numbers from folds already on disk. Raises under the `mpnn_fixed` sequence type, where the cutoff picks the positions ProteinMPNN holds fixed and so does decide the folds. Each reused cache is rewritten under the current fingerprint on first use. |
@@ -204,7 +204,7 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 | Key | Type | Default | Example override | What it controls |
 |-----|------|---------|------------------|------------------|
-| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `monomer_motif`, `motif_protein_binder`, `motif_ligand_binder` (`analyze.py:138-145`) |
+| `result_type` | enum | per pipeline | `++result_type=protein_binder` | One of: `protein_binder`, `ligand_binder`, `monomer`, `monomer_motif`, `motif_protein_binder`, `motif_ligand_binder` (`analyze.py:140-147`) |
 | `aggregation.limit` | int\|null | `null` | `++aggregation.limit=200` | Limit number of result files merged (null = all) |
 | `aggregation.analysis_modes` | list | `[binder, monomer]` (binder, ligand), `[motif_binder, monomer]` (AME) | `++aggregation.analysis_modes=[binder]` | Which analysis functions to run |
 | `aggregation.success_thresholds` | dict\|null | `null` -> `DEFAULT_PROTEIN_BINDER_THRESHOLDS`: `i_pAE` (7.0, `<=`, scale 31.0, prefix `complex`), `pLDDT` (0.9, `>=`, scale 1.0, prefix `complex`), `scRMSD_ca` (1.5, `<`, scale 1.0, prefix `binder`) | supply the **whole dict** — see the warning below | Per-metric binder success criteria |
@@ -218,7 +218,7 @@ From `binder_analyze.yaml`, `ligand_binder_analyze.yaml`, `ame_analyze.yaml`.
 
 ### Threshold overrides must be complete dicts
 
-`binder_analysis.py:460-461` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+`binder_analysis.py:473-474` substitutes `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
 only when `success_thresholds` is *entirely absent*. Supplying a single metric
 replaces the whole dict, and `parse_threshold_spec`
 (`analysis_utils.py:132-137`) then fills the missing `scale` with `1.0`. So
@@ -227,7 +227,7 @@ replaces the whole dict, and `parse_threshold_spec`
 sample passes and the reported success rate becomes 100%.
 
 Always write the full dict, and note the key is `scRMSD_ca`
-(`binder_analysis_utils.py:163`), not `scRMSD`:
+(`binder_analysis_utils.py:193`), not `scRMSD`:
 
 ```yaml
 aggregation:
@@ -241,7 +241,7 @@ aggregation:
 (`motif_binder_analysis_utils.py:40-89`): a `binder` *map* of metric -> spec and
 a `motif` *list* of `{column, threshold, op}` entries, read via `.get("binder")`
 / `.get("motif")` (`:282, :287`). A flat dict yields an empty binder map, and
-`motif_binder_analysis.py:217-218` then skips the sequence type entirely — **no
+`motif_binder_analysis.py:219-220` then skips the sequence type entirely — **no
 pass rates are computed at all**. `motif_seq_recovery` is not a criterion; the
 column is `{seq_type}_correct_motif_sequence_all` with threshold `1.0`.
 
