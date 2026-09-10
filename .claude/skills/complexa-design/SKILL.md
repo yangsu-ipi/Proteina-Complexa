@@ -66,7 +66,7 @@ Read `./preflight.json` (that is where `preflight.sh` writes unless you pass
 - `community_models.AF2_DIR.exists` false -> protein binder default eval (`colabdesign`) fails.
 - `community_models.RF3_CKPT_PATH.exists` or `tools.rf3.exists` false -> ligand binder / AME default eval (`rf3_latest`) fails.
 
-`checkpoints` is keyed by full filename (`preflight.sh:135-150`); the AF2/RF3
+`checkpoints` is keyed by full filename (`preflight.sh:155-162`); the AF2/RF3
 paths are under `community_models`, **not** `env` (`:215-217`).
 
 If a ckpt is missing, point at `complexa-setup` and have the user run

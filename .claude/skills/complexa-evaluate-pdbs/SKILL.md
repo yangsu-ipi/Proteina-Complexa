@@ -223,7 +223,7 @@ suffix (`evaluate.py:785-787`; `analyze.py:3072-3074` does the same for `results
   enumerate index over the file walk (`binder_eval.py:618, :593`). `sequence_types` are column
   **prefixes** on that single row, not extra rows — `self_complex_i_pAE`,
   `mpnn_fixed_binder_scRMSD_ca`, `self_sequence`, and `_all` variants holding the per-redesign
-  lists (`binder_eval.py:669-705`; `binder_analysis_utils.py:219-230` builds
+  lists (`binder_eval.py:789`; `binder_analysis_utils.py:249-273` builds
   `{seq}_{prefix}_{metric}_all`).
 - **Pass-rate summaries and everything else are moved into subdirectories** by
   `organize_results` (`analyze.py:2918-2996`), so do not glob the top level:

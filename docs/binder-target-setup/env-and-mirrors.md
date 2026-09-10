@@ -68,8 +68,8 @@ child processes never see.
 
 The **docker** branch then explicitly exports the important ones
 (`cli_runner.py:1684-1694`). The **uv** branch did not — it exported only `_TOOL_VARS`
-(`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `SC_EXEC`, `MMSEQS_EXEC`, `DSSP_EXEC`, `TMOL_PATH`,
-`cli_runner.py:1630-1637`) plus `COMPLEXA_INIT`. `LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`,
+(`FOLDSEEK_EXEC`, `RF3_EXEC_PATH`, `MMSEQS_EXEC`, `TMOL_PATH`,
+`cli_runner.py:1630-1635`) plus `COMPLEXA_INIT`. `LOCAL_CODE_PATH`, `LOCAL_DATA_PATH`,
 `CKPT_PATH`, `DATA_PATH`, `AF2_DIR`, `ESM_DIR` reached nothing.
 
 The generator now wraps the source in `set -a` / `set +a`. Measured difference in a child
@@ -132,7 +132,7 @@ activation *outside* the `set -a` block — otherwise conda's own internals get 
 (harmless, but noisy in `env`).
 
 `env.sh` exports both `COMPLEXA_INIT` (which gates the CLI) and `COMPLEXA_RUNTIME` (which
-`preflight.sh` reports as `complexa_runtime`, `:48`/`:57`/`:228`), so preflight JSON and run
+`preflight.sh` reports as `complexa_runtime`, `:50`/`:59`/`:228`), so preflight JSON and run
 manifests record the runtime label. Older generated `env.sh` files set only
 `COMPLEXA_INIT`, leaving `complexa_runtime` as `""` — cosmetic, but another reason to
 regenerate.

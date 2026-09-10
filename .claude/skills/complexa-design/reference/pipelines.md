@@ -39,7 +39,7 @@ inverse folding so the redesigned binder is soluble.
   `avg_ipsae`, `max_ipsae`, `min_ipsae_10`, `max_ipsae_10`, `avg_ipsae_10`)
   default to 0.0 and can be enabled by override.
 - Default success thresholds: **six** criteria (`DEFAULT_PROTEIN_BINDER_THRESHOLDS`,
-  `binder_analysis_utils.py:76-116`), in three groups —
+  `binder_analysis_utils.py:98-183`), in three groups —
   *interface* `i_pAE * 31 <= 7.0` and `pLDDT >= 0.9`;
   *fold* `binder scRMSD_ca < 1.5` Å and `apo scRMSD_ca < 2.0` Å;
   *placement* `complex scRMSD_ca < 2.0` Å and `binder scRMSD_target_aligned_ca < 2.0` Å.
