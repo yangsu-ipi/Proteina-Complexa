@@ -137,9 +137,9 @@ defaults:
   - _self_
 
 run_name: mytarget
-ckpt_path: /data/shared/tools/Proteina-Complexa/ckpts
+ckpt_path: ${oc.env:CKPT_PATH}
 ckpt_name: complexa.ckpt
-autoencoder_ckpt_path: /data/shared/tools/Proteina-Complexa/ckpts/complexa_ae.ckpt
+autoencoder_ckpt_path: ${oc.env:CKPT_PATH}/complexa_ae.ckpt
 ncpus_: 24
 seed: 5
 gen_njobs: 1
@@ -147,7 +147,7 @@ eval_njobs: 1
 
 hydra:
   searchpath:
-    - file:///data/shared/tools/Proteina-Complexa/configs
+    - file://${oc.env:LOCAL_CODE_PATH}/configs
   run:
     dir: ./logs/hydra_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
@@ -163,6 +163,17 @@ generation:
       binder_length: [64, 155]
       pdb_id: null
 ```
+
+The install paths come from the environment rather than being written in, so this file
+moves between machines unedited. `CKPT_PATH` and `LOCAL_CODE_PATH` are `.env` keys that
+`env.sh` exports, and the repo's own configs already read the first one
+(`configs/search_binder_pipeline.yaml:29`). Interpolation does work inside
+`hydra.searchpath` -- checked on hydra 1.3.1, `file://${oc.env:LOCAL_CODE_PATH}/configs`
+composes -- and an unset variable fails at once and by name: `KeyError raised while
+resolving interpolation: "Environment variable 'LOCAL_CODE_PATH' not found"`. That is the
+trade. The file is portable, and it needs an `env.sh` that really exports those keys,
+which is a `set -a` source or a regenerated one -- see
+[`env-and-mirrors.md`](../../../docs/binder-target-setup/env-and-mirrors.md).
 
 Two traps to state to the user up front:
 
