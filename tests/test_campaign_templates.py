@@ -16,7 +16,9 @@ the CBLN1 campaign:
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1518,6 +1520,74 @@ def test_the_msa_gate_resolves_a_package_relative_path(tmp_path, monkeypatch):
     assert chk.target_msa_failures(cfg, cfg["metric"]) == []
     monkeypatch.delenv("CAMPAIGN_DIR")
     assert chk.target_msa_failures(cfg, cfg["metric"]), "with no anchor it must fail, not pass"
+
+
+def package(tmp_path, name="pkg"):
+    """A package root holding just campaign.env and the two entry scripts."""
+    root = tmp_path / name
+    (root / "scripts").mkdir(parents=True)
+    (root / "campaign.env").write_text((TEMPLATES / "campaign.env.example").read_text())
+    for script in ("run_campaign.sh", "submit_campaign.sh"):
+        (root / "scripts" / script).write_text((TEMPLATES / script).read_text())
+    return root
+
+
+def campaign_dir_seen(root, env=None):
+    """What CAMPAIGN_DIR resolves to for a package at `root`, sourcing as the
+    scripts do. Run from / so nothing can come from the cwd."""
+    script = (
+        'CAMPAIGN_DIR_FROM_ENV="${CAMPAIGN_DIR:-}"\n'
+        f'HERE="$(cd {root}/scripts/.. && pwd -P)"\n'
+        'source "$HERE/campaign.env"\n'
+        'echo "$CAMPAIGN_DIR"\n'
+    )
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       cwd="/", env={**os.environ, **(env or {})})
+    return r.stdout.strip()
+
+
+def test_a_moved_package_reports_where_it_is(tmp_path):
+    """campaign.env used to carry an absolute CAMPAIGN_DIR default, so a package
+    copied anywhere still named the directory it was first created in -- and every
+    path built from it, including the cd, went there."""
+    first = package(tmp_path, "first")
+    assert campaign_dir_seen(first) == str(first.resolve())
+    moved = tmp_path / "deeper" / "second"
+    moved.parent.mkdir()
+    shutil.copytree(first, moved)
+    assert campaign_dir_seen(moved) == str(moved.resolve()), "a copy must not point at the original"
+
+
+def test_an_explicit_campaign_dir_still_wins_for_other_tooling(tmp_path):
+    """campaign.env keeps honouring an inherited value; it is how submit_campaign.sh
+    hands the path to the sbatch, which uses it to find run_campaign.sh."""
+    root = package(tmp_path)
+    assert campaign_dir_seen(root, {"CAMPAIGN_DIR": "/somewhere/else"}) == "/somewhere/else"
+
+
+def test_the_runner_refuses_a_campaign_dir_that_is_not_its_own(tmp_path):
+    """One package's scripts against another's data mixes two campaigns. The
+    scripts trust their own location and say so rather than picking silently."""
+    root = package(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    r = subprocess.run(["bash", str(root / "scripts" / "run_campaign.sh"), "smoke"],
+                       capture_output=True, text=True,
+                       env={**os.environ, "CAMPAIGN_DIR": str(other)})
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "is not where these scripts live" in r.stderr, r.stderr
+
+
+def test_reaching_the_package_by_symlink_is_not_a_mismatch(tmp_path):
+    """pwd -P on both sides, so a symlinked route is the same package."""
+    root = package(tmp_path)
+    link = tmp_path / "via_link"
+    link.symlink_to(root)
+    assert campaign_dir_seen(root, {"CAMPAIGN_DIR": str(link)}) == str(link)
+    r = subprocess.run(["bash", str(root / "scripts" / "run_campaign.sh"), "smoke"],
+                       capture_output=True, text=True,
+                       env={**os.environ, "CAMPAIGN_DIR": str(link)})
+    assert "is not where these scripts live" not in r.stderr, r.stderr
 
 
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):

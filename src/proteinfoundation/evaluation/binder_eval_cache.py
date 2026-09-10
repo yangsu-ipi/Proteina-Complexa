@@ -63,6 +63,24 @@ def write_binder_eval_cache(
         logger.warning(f"Could not write binder eval cache for {sample_root_path}: {exc}")
 
 
+def digest_file(path: str) -> str:
+    """A file's contents as a fingerprint component, never its location.
+
+    Lives here rather than beside either caller because both the refolding
+    fingerprint and ``consensus_folding.cfg_for_fingerprint`` need it, and two
+    copies of a hash function is two ways for the same cache to key differently.
+
+    An unreadable file keeps the path in the value: whatever is about to fail
+    will say so, and until then the key still changes if it is later pointed
+    somewhere else.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return "sha256:" + hashlib.sha256(handle.read()).hexdigest()[:32]
+    except OSError:
+        return f"unreadable:{path}"
+
+
 def read_binder_eval_cache(
     sample_root_path: str,
     fingerprint: str,

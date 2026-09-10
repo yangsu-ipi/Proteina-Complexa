@@ -20,6 +20,7 @@ import pathlib
 
 from proteinfoundation.evaluation.binder_eval_cache import (
     binder_eval_fingerprint,
+    digest_file,
     read_binder_eval_cache,
     write_binder_eval_cache,
 )
@@ -109,6 +110,63 @@ def test_a_reused_cache_is_rewritten_under_the_current_fingerprint(tmp_path):
 
 
 # ----------------------------------------------------------------- the key itself
+
+
+def test_the_target_is_keyed_by_contents_so_a_moved_package_still_hits(tmp_path):
+    """The fingerprint used to hold target_pdb_path. Moving a campaign package --
+    or reaching the same one through another mount -- changed the hash and threw
+    away every refold in it, for a target that had not changed at all."""
+    first = tmp_path / "a" / "target.pdb"
+    second = tmp_path / "b" / "target.pdb"
+    for path in (first, second):
+        path.parent.mkdir(parents=True)
+        path.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n")
+    assert digest_file(str(first)) == digest_file(str(second))
+    base = {"folding_model": "colabdesign", "target_pdb_chain": ["A"]}
+    before = binder_eval_fingerprint(**base, target_structure=digest_file(str(first)))
+    after = binder_eval_fingerprint(**base, target_structure=digest_file(str(second)))
+    assert before == after, "the same target at a new path must be the same request"
+
+
+def test_a_different_target_still_hashes_apart(tmp_path):
+    """Keying on contents must not turn into keying on nothing."""
+    one, two = tmp_path / "one.pdb", tmp_path / "two.pdb"
+    one.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n")
+    two.write_text("ATOM      1  CA  GLY A   1       9.000   0.000   0.000\n")
+    assert digest_file(str(one)) != digest_file(str(two))
+    base = {"folding_model": "colabdesign", "target_pdb_chain": ["A"]}
+    assert binder_eval_fingerprint(
+        **base, target_structure=digest_file(str(one))
+    ) != binder_eval_fingerprint(**base, target_structure=digest_file(str(two)))
+
+
+def test_an_unreadable_target_keeps_the_path_in_the_key(tmp_path):
+    """So the key still changes if it is later pointed somewhere else, rather
+    than every broken target sharing one hash."""
+    missing = digest_file(str(tmp_path / "gone.pdb"))
+    assert missing.startswith("unreadable:") and "gone.pdb" in missing
+    assert missing != digest_file(str(tmp_path / "also-gone.pdb"))
+
+
+def test_a_cache_written_when_the_target_was_keyed_by_path_is_still_served(tmp_path):
+    """The change to content-keying must not itself cost the refold it prevents.
+    binder_eval declares the old path-keyed fingerprint as legacy, and the reader
+    accepts it and reports it stale, so the structures are kept and only the
+    derived numbers are recomputed."""
+    target = tmp_path / "target.pdb"
+    target.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n")
+    base = {"folding_model": "colabdesign", "target_pdb_chain": ["A"]}
+    legacy = binder_eval_fingerprint(**base, target_pdb_path=str(target))
+    current = binder_eval_fingerprint(**base, target_structure=digest_file(str(target)))
+    assert legacy != current
+
+    root = store(tmp_path, legacy)
+    assert read_binder_eval_cache(root, current, ["self"], "deriv") is None, (
+        "without the declaration it is refused"
+    )
+    stats, seqs, stale = read_binder_eval_cache(root, current, ["self"], "deriv", [legacy])
+    assert (stats, seqs) == (STATS, SEQS)
+    assert stale is True
 
 
 def test_the_interface_cutoff_is_part_of_the_derivation_not_the_structure():

@@ -488,13 +488,11 @@ _PATH_VALUED_CFG_KEYS = ("target_msa", "target_msa_paths")
 
 
 def _digest_file(path: str) -> str:
-    try:
-        with open(path, "rb") as handle:
-            return "sha256:" + hashlib.sha256(handle.read()).hexdigest()[:32]
-    except OSError:
-        # Unreadable now; the scorer will fail and say so. Keep the path so the
-        # key still changes if it is later pointed somewhere else.
-        return f"unreadable:{path}"
+    """Kept as a local name; the implementation is shared with the refolding
+    fingerprint so the two cannot digest the same file differently."""
+    from proteinfoundation.evaluation.binder_eval_cache import digest_file
+
+    return digest_file(path)
 
 
 def cfg_for_fingerprint(cfg: dict) -> dict:

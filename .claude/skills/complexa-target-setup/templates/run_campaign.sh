@@ -44,9 +44,24 @@ if [[ $# -gt 0 && "${1}" != --* ]]; then STAGE="$1"; shift; fi
 [[ "${1:-}" == "--" ]] && shift
 EXTRA_OVERRIDES=("$@")
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CAMPAIGN_DIR_FROM_ENV="${CAMPAIGN_DIR:-}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck source=/dev/null
 source "$HERE/campaign.env"
+# The package's own location is the truth about where it is. campaign.env carries
+# an absolute CAMPAIGN_DIR default, so before this a moved or copied package cd'd
+# to wherever it was FIRST created -- HERE was computed and then used only to
+# source campaign.env. Resolved with `pwd -P` on both sides so reaching the same
+# package through a symlink is not mistaken for a mismatch.
+if [[ -n "${CAMPAIGN_DIR_FROM_ENV:-}" ]]; then
+  want="$(cd "$CAMPAIGN_DIR_FROM_ENV" 2>/dev/null && pwd -P || echo "$CAMPAIGN_DIR_FROM_ENV")"
+  if [[ "$want" != "$HERE" ]]; then
+    echo "CAMPAIGN_DIR=$CAMPAIGN_DIR_FROM_ENV is not where these scripts live ($HERE)." >&2
+    echo "Running one package's scripts against another's data mixes two campaigns." >&2
+    exit 2
+  fi
+fi
+CAMPAIGN_DIR="$HERE"
 
 case "$KIND" in
   smoke)      RUN_NAME="${RUN_PREFIX}_smoke";      SEEDS=$SMOKE_SEEDS;      RAW=$SMOKE_RAW;      KEEP=$SMOKE_KEEP;      EXPECT=$SMOKE_EXPECT;      RNG_SEED=${SMOKE_RNG_SEED:?set SMOKE_RNG_SEED in campaign.env} ;;

@@ -62,7 +62,7 @@ and campaign post-processing may group them further (`pre_filter_shard_trim/`,
 
 | variable | meaning |
 |---|---|
-| `CAMPAIGN_DIR` | the package root — **use this in `pipeline.yaml`**, not a campaign-specific name |
+| `CAMPAIGN_DIR` | the package root, taken from where the scripts actually are — **use this in `pipeline.yaml`**, not a campaign-specific name |
 | `COMPLEXA_REPO` | the Complexa checkout |
 | `COMMUNITY_MODELS_PATH` | community models, also symlinked into the package |
 | `TARGET_MSA` | **only when campaign.env sets it** — the target alignment, package-relative |

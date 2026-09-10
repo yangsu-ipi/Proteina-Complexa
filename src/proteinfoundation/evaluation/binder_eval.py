@@ -21,6 +21,7 @@ from openfold.np.residue_constants import restypes as OF_RESTYPES
 
 from proteinfoundation.evaluation.binder_eval_cache import (
     binder_eval_fingerprint,
+    digest_file,
     read_binder_eval_cache,
     write_binder_eval_cache,
 )
@@ -514,7 +515,15 @@ def compute_binder_metrics(
         "num_redesign_seqs": num_redesign_seqs,
         "sequence_types": sorted(sequence_types),
         "is_target_ligand": bool(is_target_ligand),
-        "target_pdb_path": target_pdb_path,
+        # The target's IDENTITY, not its location. This was `target_pdb_path`,
+        # which meant moving a campaign package -- or reaching the same package
+        # through a different mount -- changed the hash and silently discarded
+        # every refold inside it. On CBLN1 that would have been ~42 GPU-hours to
+        # recompute structures that had not changed at all. A fingerprint is
+        # supposed to answer "same structure request?", and the file's contents
+        # answer that; its path answers "same string?". Existing caches keep
+        # working -- see the legacy fingerprint at the read site.
+        "target_structure": digest_file(target_pdb_path),
         "target_pdb_chain": target_pdb_chain,
         "target_task_name": target_task_name,
         # Redesigns are now drawn from a derived seed rather than whatever
@@ -571,6 +580,16 @@ def compute_binder_metrics(
             f"{reusable_interface_cutoffs} hold different sequences and different structures, not the "
             "same structures read differently. Refold instead."
         )
+    # What the fingerprint looked like when the target was keyed by path. Caches
+    # on disk carry this, and they are the same structures -- so they are accepted
+    # as legacy rather than refolded, and the reader reports them stale so only the
+    # derived numbers get recomputed. Without this, fixing the path dependency
+    # would itself cost the refold it exists to prevent.
+    legacy_target_base = {
+        key: value for key, value in cache_fingerprint_base.items() if key != "target_structure"
+    }
+    legacy_target_base["target_pdb_path"] = target_pdb_path
+
     n_reused = 0
 
     # Advisory second-opinion refolding. Off unless metric.consensus_backends is
@@ -653,12 +672,24 @@ def compute_binder_metrics(
             # the hash, so a legacy fingerprint cannot be computed once for the run.
             legacy_fingerprints = [
                 binder_eval_fingerprint(
-                    **cache_fingerprint_base,
+                    **legacy_target_base,
+                    binder_chain=binder_chain,
+                    gen_target_chain=gen_target_chain,
+                    fixed_residues_override=fixed_residues_override,
+                )
+            ] + [
+                binder_eval_fingerprint(
+                    **base,
                     interface_cutoff=cutoff,
                     binder_chain=binder_chain,
                     gen_target_chain=gen_target_chain,
                     fixed_residues_override=fixed_residues_override,
                 )
+                # Both bases, so a package that moved AND changed cutoff still
+                # reuses. Neither base carries interface_cutoff here: pairing it
+                # with reusable_interface_cutoffs is refused above, for
+                # mpnn_fixed, which is the only case that sets it.
+                for base in (cache_fingerprint_base, legacy_target_base)
                 for cutoff in reusable_interface_cutoffs
             ]
             cached = (

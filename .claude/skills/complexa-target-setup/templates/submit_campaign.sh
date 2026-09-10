@@ -40,9 +40,24 @@ set -euo pipefail
 
 KIND="${1:?usage: submit_campaign.sh smoke|production [STAGE|FROM..TO] | followup N_DESIGNS [STAGE|FROM..TO] [-- HYDRA_OVERRIDE...]}"
 shift
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CAMPAIGN_DIR_FROM_ENV="${CAMPAIGN_DIR:-}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck source=/dev/null
 source "$HERE/campaign.env"
+# The package's own location is the truth about where it is. campaign.env carries
+# an absolute CAMPAIGN_DIR default, so before this a moved or copied package cd'd
+# to wherever it was FIRST created -- HERE was computed and then used only to
+# source campaign.env. Resolved with `pwd -P` on both sides so reaching the same
+# package through a symlink is not mistaken for a mismatch.
+if [[ -n "${CAMPAIGN_DIR_FROM_ENV:-}" ]]; then
+  want="$(cd "$CAMPAIGN_DIR_FROM_ENV" 2>/dev/null && pwd -P || echo "$CAMPAIGN_DIR_FROM_ENV")"
+  if [[ "$want" != "$HERE" ]]; then
+    echo "CAMPAIGN_DIR=$CAMPAIGN_DIR_FROM_ENV is not where these scripts live ($HERE)." >&2
+    echo "Running one package's scripts against another's data mixes two campaigns." >&2
+    exit 2
+  fi
+fi
+CAMPAIGN_DIR="$HERE"
 export CAMPAIGN_DIR
 
 SBATCH_TEMPLATE="$CAMPAIGN_DIR/slurm/campaign.sbatch"
