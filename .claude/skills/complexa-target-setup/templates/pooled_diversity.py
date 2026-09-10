@@ -24,7 +24,7 @@ import sys
 import pandas as pd
 from loguru import logger
 
-# What analyze uses for binder diversity (analyze.py:1432). Matched so pooled
+# What analyze uses for binder diversity (analyze.py:1526). Matched so pooled
 # numbers can be compared against the per-run ones already on disk rather than
 # being a second, differently-calibrated measurement.
 MIN_SEQ_ID = 0.0
