@@ -198,6 +198,7 @@ python "$COMPLEXA_REPO/docs/binder-target-setup/scripts/check_target_pdb.py" \
 bash "$COMPLEXA_REPO/.claude/skills/_shared/scripts/preflight.sh" --quiet --out "metadata/preflight_${KIND_TAG}.json"
 python scripts/check_preflight.py "metadata/preflight_${KIND_TAG}.json" --resolved-config "$RESOLVED" \
   --expected-designs "$EXPECT" --min-vram-gb "$MIN_VRAM_GB" \
+  --mb-per-design "${DISK_MB_PER_DESIGN:-25}" \
   "${REQUIRE_HF_REPOS[@]/#/--require-hf-repo=}"
 
 # One shard per GPU, set INSIDE srun so the step cannot override it. --gres=gpu:1

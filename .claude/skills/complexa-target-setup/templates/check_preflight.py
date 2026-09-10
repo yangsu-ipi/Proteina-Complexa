@@ -14,6 +14,8 @@ What was hardcoded in the campaign this came from, and is now derived or passed:
                           (`folding_models.py`) and copying it here would give the
                           template its own stale copy of someone else's constant
   * the VRAM floor     -- `--min-vram-gb`, default 40
+  * the disk estimate  -- `--mb-per-design`, default 25, from measurement rather than
+                          the unmeasured 0.4 GB/design this used to assume
   * ESMC/ESMFold2 imports -- checked only when the config asks for them
   * hotspot resolution -- read from the target entry the config actually selects,
                           and checked against the PDB it actually points at
@@ -245,6 +247,9 @@ def main() -> int:
     p.add_argument("--require-hf-repo",action="append",default=[],metavar="REPO",
                    help="HF repo that must have a usable snapshot; repeatable")
     p.add_argument("--min-vram-gb",type=int,default=40)
+    p.add_argument("--mb-per-design",type=int,default=25,
+                   help="Disk to expect per evaluated design. Default 25, about 4x the 5.8 MB "
+                        "measured on a real campaign; see the note at the check")
     a=p.parse_args()
     data=json.loads(a.preflight.read_text()); cfg=yaml.safe_load(a.resolved_config.read_text()); metric=cfg["metric"]; failures=[]
     gpu=data.get("gpu",{}); cm=data.get("community_models",{}); tools=data.get("tools",{})
@@ -301,8 +306,26 @@ def main() -> int:
             from transformers import AutoModelForMaskedLM  # noqa: F401
             from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model  # noqa: F401
         except Exception as exc: failures.append(f"ESMC/ESMFold2 imports failed: {exc}")
-    need=max(5,int(a.expected_designs/100*20*2)); free=data.get("disk",{}).get("cwd_free_gb")
-    if free is not None and float(free)<need: failures.append(f"campaign filesystem has {free} GB free; estimate requires {need} GB")
+    # Was expected_designs/100*20*2 -- 0.4 GB per design, which nothing had measured.
+    # Measured on the EFNB3 smoke run, whose every per-design knob (num_redesign_seqs,
+    # sequence_types, both fold-model lists, n_af2_models, n_esmfold2_seeds) matches its
+    # production config, so it extrapolates: one evaluated design is ~5.1 MB of
+    # evaluation_results (AF2 1.9M, binder 1.6M, esmfold2_complex 1.2M, mpnn 156K) plus
+    # ~0.7 MB of inference. The old number therefore demanded 400 GB for a 1000-design run
+    # that needs about 6, and refused a box with 77 GB free -- a gate that blocks correct
+    # runs is worse than no gate, because the way past it is to stop believing it.
+    #
+    # The default keeps roughly 4x headroom over that measurement rather than tracking it
+    # exactly: a campaign storing more per design (more redesign seqs, more backends) costs
+    # more, and this is a floor check, not an accounting. Raise DISK_MB_PER_DESIGN in
+    # campaign.env if a run of yours actually approaches it.
+    need = max(5, int(a.expected_designs * a.mb_per_design / 1024))
+    free = data.get("disk", {}).get("cwd_free_gb")
+    if free is not None and float(free) < need:
+        failures.append(
+            f"campaign filesystem has {free} GB free; {a.expected_designs} designs at "
+            f"{a.mb_per_design} MB each needs {need} GB (--mb-per-design)"
+        )
     if data.get("env",{}).get("missing_required"): failures.append(f"missing required env: {data['env']['missing_required']}")
     for f in failures: print("FAIL:",f)
     if failures:return 1

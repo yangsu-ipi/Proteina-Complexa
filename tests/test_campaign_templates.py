@@ -1628,6 +1628,46 @@ def test_the_required_columns_still_name_what_the_campaign_uses():
     assert any("redesign" in c for c in columns), columns
 
 
+def disk_check(tmp_path, free_gb, designs, extra=()):
+    report, cfg = preflight_report(tmp_path, PRESENT, disk={"cwd_free_gb": free_gb})
+    return run("check_preflight.py", report, "--resolved-config", cfg,
+               "--expected-designs", designs, *extra)
+
+
+def test_the_disk_estimate_is_the_measured_one_not_the_guess(tmp_path):
+    """It asked for expected_designs/100*20*2 -- 0.4 GB per design, unmeasured. A real
+    campaign stores ~5.8 MB per evaluated design, so a 1000-design run was told it
+    needed 400 GB and refused a box with 77 GB free. A gate that blocks correct runs is
+    worse than no gate: the way past it is to stop believing it."""
+    # Asserted on the disk line alone, not the exit code: other gates in this report
+    # (the MPNN checkpoint) fail for reasons that have nothing to do with disk.
+    ok = disk_check(tmp_path, 77, 1000)
+    assert "GB free" not in ok.stdout, ok.stdout
+    tight = disk_check(tmp_path, 10, 1000)
+    assert tight.returncode == 1
+    assert "1000 designs at 25 MB each needs 24 GB" in tight.stdout, tight.stdout
+
+
+def test_the_per_design_figure_is_overridable(tmp_path):
+    """A campaign storing more per design -- more redesign seqs, more backends -- can raise
+    it without editing a template, which is what campaign.env is for."""
+    heavy = disk_check(tmp_path, 77, 1000, ("--mb-per-design", 200))
+    assert heavy.returncode == 1 and "at 200 MB each needs 195 GB" in heavy.stdout, heavy.stdout
+
+
+def test_a_small_run_still_has_a_floor(tmp_path):
+    """Eight designs at 25 MB is 0.2 GB, which would wave through a full disk."""
+    r = disk_check(tmp_path, 1, 8)
+    assert r.returncode == 1 and "needs 5 GB" in r.stdout, r.stdout
+
+
+def test_the_runner_passes_the_disk_knob():
+    runner = (TEMPLATES / "run_campaign.sh").read_text()
+    assert '--mb-per-design "${DISK_MB_PER_DESIGN:-25}"' in runner
+    env = (TEMPLATES / "campaign.env.example").read_text()
+    assert re.search(r"^DISK_MB_PER_DESIGN=", env, re.M), "campaign.env must document it"
+
+
 def test_a_missing_tool_failure_names_what_needs_it(tmp_path):
     report, cfg = preflight_report(tmp_path, {"foldseek": {"path": "/nope/fs", "exists": False}})
     out = run("check_preflight.py", report, "--resolved-config", cfg, "--expected-designs", 1).stdout
