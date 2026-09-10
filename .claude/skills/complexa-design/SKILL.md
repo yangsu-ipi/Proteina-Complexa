@@ -28,11 +28,20 @@ per-design success CSV.
 
 ## What this skill enables
 
-**Evaluation gained a fourth success criterion.** A protein-binder design must now
-fold as designed *without* its target as well as with it: `apo scRMSD_ca < 2.0`
-alongside the three AlphaProteo criteria. On by default
-(`metric.compute_apo_metrics`), folded by plain ESMFold. Pass rates from before
-this change are not comparable — they were measured against three criteria.
+**A protein-binder design is gated on six criteria, not the three AlphaProteo
+published.** Interface: `i_pAE * 31 <= 7.0`, `binder pLDDT >= 0.9`. Fold:
+`binder scRMSD_ca < 1.5`, and `apo scRMSD_ca < 2.0` — it must fold as designed
+*without* its target as well as with it (on by default,
+`metric.compute_apo_metrics`). Placement: `complex scRMSD_ca < 2.0` and
+`binder scRMSD_target_aligned_ca < 2.0`, because a binder can fold correctly and
+sit metres from its designed interface, which binder-aligned RMSD cannot see.
+
+Pass rates are therefore not comparable across versions of this gate, and the
+direction is always the same: fewer criteria report a better campaign than you
+ran. Measured on 340 designs, adding the two placement criteria took 97 passing
+designs to 89. The set lives in `DEFAULT_PROTEIN_BINDER_THRESHOLDS`
+(`binder_analysis_utils.py:104-183`) — count it there rather than trusting a
+number in prose, including this one.
 
 ESMC perplexity, ESMFold2 advisory complex refolding (optionally with a target
 MSA) and ESMFold2 apo folding are all reachable from the same `metric.*` keys;

@@ -548,11 +548,23 @@ def test_the_skill_docs_state_the_real_number_of_gates():
         r"(?:protein-binder\s+)?(?:success\s+)?(?:criteria|gates|thresholds|defaults)",
         re.I,
     )
+    # "gained a fourth success criterion" is a count claim wearing an ordinal, and it
+    # is how this drifted: the cardinal check below caught the same paragraph only
+    # because it also said "three criteria". Indexing ("the fourth of the six") is
+    # legitimate, so only the "gained a Nth" idiom is treated as a claim.
+    ordinals = {"third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7}
+    gained = re.compile(r"gained a \*{0,2}(" + "|".join(ordinals) + r")\*{0,2}\s", re.I)
     wrong = []
     for doc in sorted(SKILL_DOCS.rglob("*.md")):
         text = doc.read_text()
         if "DEFAULT_PROTEIN_BINDER_THRESHOLDS" not in text and "success_thresholds" not in text:
             continue
+        for match in gained.finditer(text):
+            said = ordinals[match.group(1).lower()]
+            if said != real:
+                line = text[: match.start()].count("\n") + 1
+                wrong.append(f"{doc.relative_to(SKILL_DOCS)}:{line} says it gained a "
+                             f"{match.group(1)}, implying {said}; code has {real}")
         for match in pattern.finditer(text):
             said = NUMBER_WORDS[match.group(1).lower()]
             if said != real:
