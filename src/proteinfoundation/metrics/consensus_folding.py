@@ -581,12 +581,15 @@ CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binde
 # Read off the kept structure, in the same names and by the same code the
 # mandatory side uses, so an ESMFold2 interface can be compared with an AF2 one
 # rather than being a second definition of buried area that happens to share a
-# word. Shape complementarity is deliberately absent: it is the most expensive
-# of the set and nothing compares it across backends yet -- adding it is one
-# string here.
+# word. Shape complementarity was held out of this list as "the most expensive
+# of the set", which stopped being true when it moved in process: over CBLN1's
+# kept ESMFold2 complexes it is ~0.07s of a ~0.33s derivation, behind the SASA
+# step. It answers what the rest cannot -- whether an advisory interface PACKS
+# like the primary one, or only buries the same area.
 CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = (
     "sasa_engine",
     "sasa_radii",
+    "interface_sc",
     "binder_dSASA",
     "target_dSASA",
     "interface_dSASA",

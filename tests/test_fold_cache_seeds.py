@@ -669,12 +669,18 @@ def test_the_derived_suffixes_are_the_ones_the_scorer_produces():
     assert not missing, f"registered with no producer: {missing}"
 
 
-def test_shape_complementarity_is_deliberately_not_derived():
-    """The most expensive of the set, and nothing compares it across backends
-    yet. Left out on purpose, so its absence is not read as an oversight."""
-    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES
+def test_shape_complementarity_is_read_off_the_structure_not_refolded_for():
+    """Registered as derived, never as a folder metric. The distinction is the
+    whole cost of adding it: derived, a campaign re-reads its kept PDBs; listed
+    beside i_pAE it would invalidate every fold and refold them, three seeds
+    deep, for a number the folder has no say in."""
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_DERIVED_SUFFIXES,
+        CONSENSUS_METRIC_SUFFIXES,
+    )
 
-    assert "interface_sc" not in CONSENSUS_DERIVED_SUFFIXES
+    assert "interface_sc" in CONSENSUS_DERIVED_SUFFIXES
+    assert "interface_sc" not in CONSENSUS_METRIC_SUFFIXES
 
 
 def test_the_packed_counts_average_elementwise_over_seeds():
