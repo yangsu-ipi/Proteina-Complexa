@@ -304,6 +304,107 @@ def compute_grouped_pass_rate(
     return pass_rate, per_sample_pass
 
 
+def _ranking_score(values: dict, ranking_criteria: dict) -> float:
+    """One sequence's composite score, lower is better.
+
+    Deliberately the same arithmetic as ``compute_composite_ranking_score`` in
+    binder_eval_utils: a missing metric is skipped, a None or infinite one makes
+    the whole sample unrankable, and "maximize" is folded into the same
+    lower-is-better space by negation. Two implementations of a ranking is how
+    the headline and the verdict came to describe different sequences.
+    """
+    score = 0.0
+    for name, spec in ranking_criteria.items():
+        if name not in values:
+            continue
+        value = values[name]
+        if value is None or value != value or value in (float("inf"), float("-inf")):
+            return float("inf")
+        scale = float(spec.get("scale", 1.0))
+        if spec.get("direction") == "maximize":
+            score -= value * scale
+        else:
+            score += value * scale
+    return score
+
+
+def pick_headline_sequence(
+    df: pd.DataFrame,
+    seq_types: list[str],
+    ranking_criteria: dict,
+    complex_backend: str | None = None,
+) -> pd.DataFrame:
+    """Choose which sequence each row's scalars describe, and make them describe it.
+
+    Evaluate emits per-sequence lists; which entry the row *presents* is a
+    formulation over those lists, not a measurement, so it belongs here beside the
+    thresholds. Reweighting the ranking is now an analyze run, exactly as
+    re-scoring against new thresholds is (7fc6c07) -- neither changes a design, so
+    neither should cost a refold.
+
+    The rule is uniform and needs no list of columns: for every ``X`` whose
+    ``X_all`` is a per-sequence list, ``X`` is ``X_all[best_idx]``. That is the
+    same invariant ``assert_headline_indices_agree`` checks, applied rather than
+    asserted.
+    """
+    from proteinfoundation.metrics.column_names import _split_seq_type
+
+    # The frame's own provenance, the way refresh_per_sequence_verdicts resolves
+    # it -- a pooled frame can hold runs from different folders.
+    complex_backend = complex_backend or complex_backend_of(df) or "af2"
+    for seq_type in seq_types:
+        # threshold_column already returns the `_all` list column -- build_column_name
+        # appends the suffix itself -- so this is the per-sequence column, not a
+        # scalar to be suffixed again.
+        criteria_columns = {
+            name: threshold_column(seq_type, name, spec, complex_backend)
+            for name, spec in ranking_criteria.items()
+        }
+        missing = sorted(c for c in criteria_columns.values() if c not in df.columns)
+        if missing:
+            # Cannot rank without the numbers to rank on. Index 0 is the honest
+            # answer and is recorded as such, rather than left implicit.
+            logger.warning(
+                f"Cannot rank {seq_type}: no per-sequence column for {missing}. "
+                "Headline scalars stay at index 0."
+            )
+
+        pairs = [
+            c for c in df.columns
+            if f"{c}_all" in df.columns and _split_seq_type(c)[0] == seq_type
+        ]
+        best_indices = []
+        for row in df.to_dict("records"):
+            lists = {n: row.get(c) for n, c in criteria_columns.items()}
+            length = max((len(v) for v in lists.values() if isinstance(v, list)), default=0)
+            if not length:
+                best_indices.append(0)
+                continue
+            scores = [
+                _ranking_score(
+                    {n: v[i] for n, v in lists.items() if isinstance(v, list) and i < len(v)},
+                    ranking_criteria,
+                )
+                for i in range(length)
+            ]
+            best = min(range(length), key=lambda i: scores[i])
+            best_indices.append(0 if scores[best] == float("inf") else best)
+
+        df[f"{seq_type}_best_idx"] = best_indices
+        for column in pairs:
+            df[column] = [
+                values[i] if isinstance(values, list) and i < len(values) else current
+                for values, i, current in zip(
+                    df[f"{column}_all"], best_indices, df[column], strict=False
+                )
+            ]
+        logger.info(
+            f"Headline for {seq_type} set from {len(pairs)} per-sequence lists "
+            f"by {sorted(ranking_criteria)} over {len(df)} rows"
+        )
+    return df
+
+
 def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], success_thresholds: dict) -> pd.DataFrame:
     """Recompute ``{seq}_pass`` / ``{seq}_pass_all`` from the metric columns.
 

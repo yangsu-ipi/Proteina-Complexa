@@ -32,8 +32,12 @@ aggregation:
   # ---------------------------------------------------------------------------
   # Success thresholds (for binder analysis mode)
   # ---------------------------------------------------------------------------
-  # null = use defaults for result_type:
-  #   protein_binder: i_pAE*31 <= 7.0, pLDDT >= 0.9, scRMSD < 1.5
+  # null = use defaults for result_type. protein_binder has SIX, and quoting only
+  # the first three overreports the pass rate (measured: 97 designs against 89):
+  #   i_pAE*31 <= 7.0, binder pLDDT >= 0.9, binder scRMSD_ca < 1.5,
+  #   apo scRMSD_ca < 2.0, complex scRMSD_ca < 2.0,
+  #   binder scRMSD_target_aligned_ca < 2.0
+  # Count them in DEFAULT_PROTEIN_BINDER_THRESHOLDS rather than trusting this list.
   #
   # Custom example:
   # success_thresholds:
@@ -54,6 +58,20 @@ aggregation:
   #     op: "<"
   #     scale: 1.0
   #     column_prefix: binder
+
+  # ---------------------------------------------------------------------------
+  # Which redesign each row's scalars describe
+  # ---------------------------------------------------------------------------
+  # null = minimise i_pAE, which is what evaluate used to apply. The choice is a
+  # formulation over the per-sequence _all lists, not a measurement, so it lives
+  # here beside the thresholds: reweighting it is an analyze run, not a refold.
+  # Same shape as ranking_criteria in metric, and the same validator.
+  #
+  # ranking_criteria:
+  #   i_pAE:
+  #     scale: 1.0
+  #     direction: minimize
+  ranking_criteria: null
 
   # ---------------------------------------------------------------------------
   # Monomer thresholds (for monomer analysis mode)

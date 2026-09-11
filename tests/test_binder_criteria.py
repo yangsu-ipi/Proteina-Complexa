@@ -579,3 +579,69 @@ def test_the_count_guard_would_catch_a_stale_number():
     pattern = re.compile(r"\*{0,2}(" + "|".join(NUMBER_WORDS) + r")\*{0,2}\s+criteria", re.I)
     match = pattern.search("the **four** criteria are")
     assert match and NUMBER_WORDS[match.group(1).lower()] == 4 != real
+
+
+# ------------------------------------------------ which sequence the row describes
+
+
+def _frame(mpnn_ipae, mpnn_pass, extra=None):
+    import pandas as pd
+    data = {
+        "complex_folding_backend": ["af2"] * len(mpnn_ipae),
+        "mpnn_complex_af2_i_pAE_all": mpnn_ipae,
+        "mpnn_complex_af2_i_pAE": [v[0] for v in mpnn_ipae],
+        "mpnn_pass_all": mpnn_pass,
+        "mpnn_pass": [v[0] for v in mpnn_pass],
+    }
+    data.update(extra or {})
+    return pd.DataFrame(data)
+
+
+def test_the_headline_follows_the_ranking_not_the_order():
+    """Evaluate used to freeze this choice in. It is a formulation over the _all
+    lists -- reweighting it changes no measurement -- so analyze owns it, and a
+    row whose best redesign is not its first must say so."""
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    df = _frame([[9.0, 1.0], [1.0, 9.0]], [[0, 1], [1, 0]])
+    out = pick_headline_sequence(df, ["mpnn"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
+    assert list(out["mpnn_best_idx"]) == [1, 0]
+    assert list(out["mpnn_complex_af2_i_pAE"]) == [1.0, 1.0]
+    assert list(out["mpnn_pass"]) == [1, 1], "the verdict must follow the same index"
+
+
+def test_direction_maximize_is_honoured():
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    df = _frame([[9.0, 1.0], [1.0, 9.0]], [[0, 1], [1, 0]])
+    out = pick_headline_sequence(df, ["mpnn"], {"i_pAE": {"scale": 1.0, "direction": "maximize"}})
+    assert list(out["mpnn_best_idx"]) == [0, 1]
+
+
+def test_an_unrankable_row_falls_back_to_index_zero_and_says_so():
+    """A criterion that is NaN for every redesign cannot order them. Index 0 is the
+    honest answer, and it is recorded rather than left implicit."""
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    df = _frame([[float("nan"), float("nan")]], [[0, 1]])
+    out = pick_headline_sequence(df, ["mpnn"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
+    assert list(out["mpnn_best_idx"]) == [0]
+    assert list(out["mpnn_pass"]) == [0]
+
+
+def test_a_single_sequence_type_is_unaffected():
+    """`self` has one sequence, so there is nothing to rank and nothing may move."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    df = pd.DataFrame({
+        "complex_folding_backend": ["af2"],
+        "self_complex_af2_i_pAE_all": [[0.4]],
+        "self_complex_af2_i_pAE": [0.4],
+        "self_pass_all": [[1]],
+        "self_pass": [1],
+    })
+    out = pick_headline_sequence(df, ["self"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
+    assert list(out["self_best_idx"]) == [0]
+    assert list(out["self_complex_af2_i_pAE"]) == [0.4]

@@ -3164,12 +3164,29 @@ def main(cfg: DictConfig) -> None:
     # verdict costs hours to recompute a comparison; this costs microseconds and
     # keeps the per-row columns agreeing with the pass rates below them.
     if result_type in ("protein_binder", "ligand_binder"):
-        from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
+        from proteinfoundation.evaluation.binder_eval_utils import (
+            DEFAULT_PROTEIN_RANKING_CRITERIA,
+            validate_ranking_criteria,
+        )
+        from proteinfoundation.result_analysis.binder_analysis import (
+            pick_headline_sequence,
+            refresh_per_sequence_verdicts,
+        )
         from proteinfoundation.result_analysis.binder_analysis_utils import (
             add_outlier_columns,
             get_thresholds_for_result_type,
         )
 
+        # Which sequence each row's scalars describe is a formulation over the
+        # per-sequence lists, like the thresholds below -- not a measurement. So it
+        # is chosen here, and reweighting the ranking is an analyze run rather than
+        # a refold. Must run BEFORE the verdicts, which are taken at this index.
+        combined_df = pick_headline_sequence(
+            combined_df,
+            list(cfg_aggregation.get("sequence_types", ["self", "mpnn"])),
+            validate_ranking_criteria(cfg_aggregation.get("ranking_criteria"))
+            or dict(DEFAULT_PROTEIN_RANKING_CRITERIA),
+        )
         combined_df = refresh_per_sequence_verdicts(
             combined_df,
             list(cfg_aggregation.get("sequence_types", ["self", "mpnn"])),
