@@ -1,3 +1,4 @@
+import glob
 import os
 import shutil
 import subprocess
@@ -276,6 +277,37 @@ def _convert_esm_outputs_to_pdb(outputs) -> list[str]:
     return pdbs
 
 
+def colabfold_data_dir(cache_dir: str | None = None) -> str:
+    """Where ``colabfold_batch`` finds its AlphaFold parameters.
+
+    It wants ``<dir>/params/params_model_*.npz``, which is exactly the tree
+    build_blackwell.sh already creates at ``community_models/ckpts/AF2`` from the
+    2022-12-06 release -- monomer, ptm and multimer sets together. So the weights
+    are normally on disk already and the only question is pointing at them.
+
+    Order: an explicit argument, then COLABFOLD_DATA_DIR, then AF2_DIR, then
+    CACHE_DIR. Raising beats falling through, because the previous code assigned
+    ``os.environ.get("CACHE_DIR")`` OVER its own argument and, with that unset,
+    ran ``colabfold_batch ... --data None`` -- four gigabytes downloaded into a
+    directory literally named None, per design, on a compute node.
+    """
+    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR"), os.environ.get("AF2_DIR"),
+                  os.environ.get("CACHE_DIR")):
+        if value:
+            resolved = os.path.expanduser(value)
+            if glob.glob(os.path.join(resolved, "params", "params_model_*.npz")):
+                return resolved
+    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR"), os.environ.get("CACHE_DIR")):
+        if value:
+            # Nothing on disk yet, but a named directory to download into.
+            return os.path.expanduser(value)
+    raise RuntimeError(
+        "ColabFold needs a parameter directory holding params/params_model_*.npz. "
+        "Set COLABFOLD_DATA_DIR, or AF2_DIR to the tree build_blackwell.sh creates at "
+        "community_models/ckpts/AF2, or CACHE_DIR to a writable directory to download into."
+    )
+
+
 def run_colabfold(
     sequences: list[str],
     path_to_colabfold_out: str,
@@ -306,10 +338,9 @@ def run_colabfold(
     os.makedirs(path_to_colabfold_out, exist_ok=True)
     os.makedirs(os.path.join(path_to_colabfold_out, "structures"), exist_ok=True)
 
-    cache_dir = os.environ.get("CACHE_DIR")
-    if cache_dir:
-        cache_dir = os.path.expanduser(cache_dir)
-        os.environ["XDG_CACHE_HOME"] = cache_dir
+    data_dir = colabfold_data_dir(cache_dir)
+    if os.environ.get("CACHE_DIR"):
+        os.environ["XDG_CACHE_HOME"] = os.path.expanduser(os.environ["CACHE_DIR"])
 
     # Create individual FASTA files using the unified function
     fasta_dir = os.path.join(path_to_colabfold_out, "individual_fastas")
@@ -320,7 +351,7 @@ def run_colabfold(
 
     # Run ColabFold batch on the directory containing individual FASTA files
     batch_command = (
-        f"colabfold_batch {fasta_dir} {path_to_colabfold_out}/structures --msa-mode single_sequence --data {cache_dir}"
+        f"colabfold_batch {fasta_dir} {path_to_colabfold_out}/structures --msa-mode single_sequence --data {data_dir}"
     )
     if relax:
         batch_command = batch_command + " --num-relax 1 --use-gpu-relax"

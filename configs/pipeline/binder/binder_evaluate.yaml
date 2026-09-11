@@ -57,7 +57,15 @@ metric:
   # Turning this off removes that criterion's column and so removes gating
   # entirely; override aggregation.success_thresholds if that is what you want.
   compute_apo_metrics: true
-  apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
+  # Two folders, and the apo criterion gates on BOTH: its {model} placeholder
+  # expands against the columns a run produced, so a design must fold as designed
+  # without its target under each. That is the point -- one folder agreeing with
+  # itself is not evidence -- but it is a stricter gate than a single model, and
+  # pass rates move when a second one is added.
+  # colabfold is AlphaFold2 via colabfold_batch, single-sequence. Its parameters
+  # are the ones build_blackwell.sh already fetches to community_models/ckpts/AF2;
+  # point AF2_DIR or COLABFOLD_DATA_DIR there (see colabfold_data_dir).
+  apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
   # ESMFold2 is a diffusion sampler: one fold is one draw, and two unseeded runs
   # disagree. Folding several seeds and averaging trades evaluation time for a
   # less noisy number. Only esmfold2 uses this -- esmfold and colabfold are

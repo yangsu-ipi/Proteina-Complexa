@@ -87,7 +87,15 @@ metric:
   # against the designed binder backbone. Ungated -- emitted for calibration.
   # Costs one monomer fold per sequence per design on top of complex folding.
   compute_apo_metrics: true
-  apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
+  # Two folders, and the apo criterion gates on BOTH: its {model} placeholder
+  # expands against the columns a run produced, so a design must fold as designed
+  # without its target under each. That is the point -- one folder agreeing with
+  # itself is not evidence -- but it is a stricter gate than a single model, and
+  # pass rates move when a second one is added.
+  # colabfold is AlphaFold2 via colabfold_batch, single-sequence. Its parameters
+  # are the ones build_blackwell.sh already fetches to community_models/ckpts/AF2;
+  # point AF2_DIR or COLABFOLD_DATA_DIR there (see colabfold_data_dir).
+  apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true
   

@@ -832,3 +832,40 @@ def test_the_pae_divisor_has_one_definition():
             if isinstance(node, ast.Constant) and isinstance(node.value, float) and node.value == 31.0:
                 offenders.append(f"{path.relative_to(SRC)}:{node.lineno}")
     assert not offenders, f"the PAE divisor retyped instead of imported: {offenders}"
+
+
+def test_colabfold_is_pointed_at_the_parameters_the_build_already_fetched(tmp_path, monkeypatch):
+    """build_blackwell.sh puts the 2022-12-06 release at community_models/ckpts/AF2,
+    which is exactly the <dir>/params/params_model_*.npz layout colabfold_batch
+    wants -- so AF2 apo folding needs no download, only an address."""
+    from proteinfoundation.metrics.folding_models import colabfold_data_dir
+
+    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+    af2 = tmp_path / "community_models" / "ckpts" / "AF2"
+    (af2 / "params").mkdir(parents=True)
+    (af2 / "params" / "params_model_1_ptm.npz").write_text("")
+    monkeypatch.setenv("AF2_DIR", str(af2))
+
+    assert colabfold_data_dir() == str(af2)
+    # An explicit argument still wins, and a directory with no parameters yet is
+    # still a legitimate place to download into.
+    empty = tmp_path / "downloads"
+    empty.mkdir()
+    assert colabfold_data_dir(str(empty)) == str(af2), "a populated tree beats an empty one"
+
+
+def test_colabfold_refuses_to_download_into_a_directory_named_none(monkeypatch):
+    """The bug this replaced: cache_dir = os.environ.get("CACHE_DIR") was assigned
+    OVER the function's own argument, so with CACHE_DIR unset the command read
+    `--data None` and colabfold downloaded four gigabytes into ./None, per
+    design, on a compute node."""
+    import pytest as _pytest
+
+    from proteinfoundation.metrics.folding_models import colabfold_data_dir
+
+    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    with _pytest.raises(RuntimeError, match="params_model"):
+        colabfold_data_dir()
