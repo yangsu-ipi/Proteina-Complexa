@@ -469,7 +469,115 @@ def test_the_refolded_path_lookup_builds_its_column_rather_than_guessing():
     # And finding nothing is loud, because that is what made it invisible: a run
     # asking for refolded interface metrics got none, with only a debug line.
     assert "logger.error(" in source
-    assert "if not any(best_paths.values()):" in source
+    assert "if not any(paths.values()):" in source
+
+
+def _frame_with_refold_paths(tmp_path, slots_by_type, scalar=False):
+    """A frame shaped the way evaluate emits it: per-sequence path lists."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
+
+    design = tmp_path / "design_0.pdb"
+    design.write_text("")
+    row = {"pdb_path": str(design), COMPLEX_BACKEND_COLUMN: "af2"}
+    for seq_type, slots in slots_by_type.items():
+        paths = []
+        for i, present in enumerate(slots):
+            if not present:
+                paths.append(None)
+                continue
+            path = tmp_path / f"{seq_type}_seq{i}_model1.pdb"
+            path.write_text("")
+            paths.append(str(path))
+        column = f"{seq_type}_complex_af2_pdb_path"
+        row[f"{column}_all"] = paths
+        if scalar:
+            row[column] = next((p for p in paths if p), None)
+    return pd.DataFrame([row])
+
+
+def test_the_path_lookup_returns_every_redesign_not_the_ranked_one(tmp_path):
+    """The asymmetry this removes: AF2 measured one redesign's interface while
+    the advisory backend measured all of them, so the two backends' interface
+    numbers could describe different sequences."""
+    from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
+
+    df = _frame_with_refold_paths(tmp_path, {"self": [True], "mpnn": [True, True, True]})
+    got = extract_refolded_structure_paths_from_df(df, sequence_types=["self", "mpnn"])
+
+    assert len(got["design_0"]["mpnn"]) == 3, "every redesign, not the best one"
+    assert len(got["design_0"]["self"]) == 1
+
+
+def test_the_path_lookup_does_not_need_the_headline_scalar(tmp_path):
+    """The regression. Evaluate stopped writing {seq}_complex_{backend}_pdb_path
+    when ranking moved to analyze; this lookup still read it, so every metric
+    computed on a refolded structure vanished from the run -- loudly, but
+    vanished."""
+    from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
+
+    df = _frame_with_refold_paths(tmp_path, {"self": [True], "mpnn": [True, True]}, scalar=False)
+    assert not [c for c in df.columns if c.endswith("pdb_path") and not c.endswith("_all")][1:], (
+        "the frame carries no headline path column beyond the design's own"
+    )
+
+    got = extract_refolded_structure_paths_from_df(df, sequence_types=["self", "mpnn"])
+    assert got["design_0"]["self"] and got["design_0"]["mpnn"]
+
+
+def test_a_redesign_with_no_structure_keeps_its_slot(tmp_path):
+    """Dropping it would slide every later redesign's metrics onto the wrong
+    sequence: slot i of these lists has to stay the sequence in
+    {seq}_sequence_all[i]."""
+    from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
+
+    df = _frame_with_refold_paths(tmp_path, {"mpnn": [True, False, True]})
+    got = extract_refolded_structure_paths_from_df(df, sequence_types=["mpnn"])
+
+    slots = got["design_0"]["mpnn"]
+    assert len(slots) == 3
+    assert slots[1] is None
+    assert slots[0] and slots[2]
+
+
+def test_every_redesign_gets_its_own_interface_metrics(tmp_path, monkeypatch):
+    """One list per metric, one entry per redesign, and no headline scalar --
+    which redesign the row presents is analyze's call, like every other family."""
+    from proteinfoundation.evaluation import binder_eval
+    from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
+
+    seen = []
+
+    def fake_bio(pdb_path, binder_chain, target_chain):
+        seen.append(pdb_path)
+        return {"interface_sc": 0.5 + 0.01 * len(seen), "binder_ss_counts": [1.0] * 8}
+
+    monkeypatch.setattr(binder_eval, "compute_bioinformatics_metrics_single", fake_bio)
+    monkeypatch.setattr(
+        binder_eval, "get_binder_chain_from_complex", lambda path, return_multi_target=False: ("B", ["A"], False)
+    )
+    monkeypatch.setattr(binder_eval, "parse_cfg_for_table", lambda cfg: ([], {}))
+
+    df = _frame_with_refold_paths(tmp_path, {"mpnn": [True, False, True]})
+    paths = extract_refolded_structure_paths_from_df(df, sequence_types=["mpnn"])
+    out = binder_eval.compute_interface_metrics_on_refolded_structures(
+        df=df,
+        paths_dict=paths,
+        cfg_metric={"sequence_types": ["mpnn"], "binder_folding_method": "colabdesign"},
+        cfg={},
+        compute_bioinformatics=True,
+        n_af2_models=1,
+    )
+
+    assert len(seen) == 2, "the missing slot is not folded for"
+    values = out.at[0, "mpnn_complex_af2_interface_sc_all"]
+    assert len(values) == 3, "aligned with the sequence list, missing slot included"
+    assert values[0] == pytest.approx(0.51) and values[2] == pytest.approx(0.52)
+    assert math.isnan(values[1])
+    # The packed counts survive as a list per redesign, not averaged into one.
+    assert out.at[0, "mpnn_complex_af2_binder_ss_counts_all"][0] == [1.0] * 8
+    assert "mpnn_complex_af2_interface_sc" not in out.columns, "the headline is analyze's to choose"
 
 
 def test_the_reduction_rule_is_derivation_not_structure():

@@ -86,7 +86,7 @@ from proteinfoundation.evaluation.utils import (
 # Import shared column filtering from analysis utilities
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES, filter_columns_for_csv
 from proteinfoundation.result_analysis.binder_analysis import save_combined_success_criteria_json
-from proteinfoundation.utils.refolded_structure_utils import extract_best_refolded_structure_paths_from_df
+from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
 
 # =============================================================================
 # Configuration Validation
@@ -452,16 +452,16 @@ def _add_refolded_structure_metrics(
     df: pd.DataFrame,
     job_id: int,
 ) -> pd.DataFrame:
-    """Compute interface metrics on best refolded structures and merge into *df*."""
+    """Compute interface metrics on every refolded structure and merge into *df*."""
     cfg_metric = cfg.metric
     show_progress = cfg.get("show_progress", False)
 
     if not cfg_metric.get("compute_refolded_structure_metrics", False):
         return df
 
-    logger.info("Computing metrics on successful refolded structures...")
+    logger.info("Computing metrics on refolded structures...")
 
-    best_paths_dict = extract_best_refolded_structure_paths_from_df(
+    paths_dict = extract_refolded_structure_paths_from_df(
         df,
         sequence_types=cfg_metric.get("sequence_types", SEQUENCE_TYPES),
     )
@@ -472,7 +472,7 @@ def _add_refolded_structure_metrics(
 
     df = compute_interface_metrics_on_refolded_structures(
         df=df,
-        best_paths_dict=best_paths_dict,
+        paths_dict=paths_dict,
         cfg_metric=cfg_metric,
         cfg=cfg,
         compute_bioinformatics=compute_bioinformatics,

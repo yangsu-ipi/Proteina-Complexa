@@ -1314,53 +1314,6 @@ def compute_interface_metrics_df(
 # =============================================================================
 
 
-def merge_metrics_to_df(
-    df: pd.DataFrame,
-    metrics_list: list[dict[str, Any]],
-    sample_names: list[str],
-    column_prefix: str,
-    skip_cols: set | None = None,
-) -> pd.DataFrame:
-    """
-    Merge computed metrics back into the original DataFrame.
-
-    Args:
-        df: Original DataFrame
-        metrics_list: List of metric dictionaries
-        sample_names: List of sample names to match against pdb_path
-        column_prefix: Prefix for new column names
-        skip_cols: Columns to skip when merging
-
-    Returns:
-        Updated DataFrame with merged metrics
-    """
-    if skip_cols is None:
-        skip_cols = {"pdb_path"}
-
-    updated_df = df.copy()
-
-    for sample_name, metrics in zip(sample_names, metrics_list, strict=False):
-        sample_mask = updated_df["pdb_path"].str.contains(sample_name, regex=False)
-        if not sample_mask.any():
-            continue
-
-        for col, value in metrics.items():
-            if col in skip_cols:
-                continue
-
-            col_name = f"{column_prefix}{col}"
-            if col_name not in updated_df.columns:
-                updated_df[col_name] = None
-
-            if isinstance(value, list):
-                for idx in updated_df[sample_mask].index:
-                    updated_df.at[idx, col_name] = value
-            else:
-                updated_df.loc[sample_mask, col_name] = value
-
-    return updated_df
-
-
 def compute_interface_metrics_over_models(
     pdb_paths: list[str],
     n_af2_models: int = 1,
@@ -1402,9 +1355,45 @@ def compute_interface_metrics_over_models(
     ]
 
 
+def merge_per_sequence_metrics_to_df(
+    df: pd.DataFrame,
+    per_sample: list[tuple[str, list[dict | None]]],
+    metric_names: list[str],
+    column_prefix: str,
+) -> pd.DataFrame:
+    """Write one ``_all`` list per row, aligned with the row's other lists.
+
+    For metrics that now have one value per redesign rather than one per design.
+    Replaced a per-design merge that wrote scalars. Emits only ``{col}_all``: the
+    headline scalar is analyze's to choose, the same as every other per-sequence
+    family since the ranking moved there.
+
+    A redesign whose structure could not be read holds NaN, not a dropped slot,
+    so ``X_all[i]`` keeps describing the sequence in ``{seq}_sequence_all[i]``.
+    """
+    updated_df = df.copy()
+    columns = [f"{column_prefix}{name}_all" for name in metric_names]
+    for column in columns:
+        if column not in updated_df.columns:
+            # object, because every cell holds a list -- and for the packed
+            # secondary-structure counts, a list of lists.
+            updated_df[column] = pd.Series([None] * len(updated_df), dtype=object, index=updated_df.index)
+
+    for sample_name, per_sequence in per_sample:
+        sample_mask = updated_df["pdb_path"].str.contains(sample_name, regex=False)
+        if not sample_mask.any():
+            continue
+        for name, column in zip(metric_names, columns, strict=True):
+            values = [np.nan if metrics is None else metrics.get(name, np.nan) for metrics in per_sequence]
+            for idx in updated_df[sample_mask].index:
+                updated_df.at[idx, column] = values
+
+    return updated_df
+
+
 def compute_interface_metrics_on_refolded_structures(
     df: pd.DataFrame,
-    best_paths_dict: dict[str, dict[str, str]],
+    paths_dict: dict[str, dict[str, list[str | None]]],
     cfg_metric: DictConfig,
     cfg: DictConfig,
     compute_bioinformatics: bool = False,
@@ -1412,12 +1401,11 @@ def compute_interface_metrics_on_refolded_structures(
     show_progress: bool = False,
     n_af2_models: int = 1,
 ) -> pd.DataFrame:
-    """
-    Compute force field and bioinformatics metrics on successful refolded structures.
+    """Interface metrics on every refolded structure, one value per redesign.
 
     Args:
         df: DataFrame with evaluation results.
-        best_paths_dict: Dictionary of best refolded structure paths.
+        paths_dict: ``{sample: {seq_type: [path or None per redesign]}}``.
         cfg_metric: Metric configuration.
         cfg: Full configuration.
         compute_bioinformatics: Whether to compute bioinformatics metrics (SC, SASA, hydrophobicity).
@@ -1428,84 +1416,97 @@ def compute_interface_metrics_on_refolded_structures(
             the confidence and geometry families already are.
 
     Returns:
-        DataFrame with added refolded structure metrics.
+        DataFrame with ``{seq_type}_complex_{backend}_{metric}_all`` added.
+
+    This used to measure one redesign per sequence type -- whichever evaluate's
+    ranking had named -- while the advisory backend measured all of them. The
+    asymmetry made the two backends' interface numbers describe different
+    sequences, so the cross-backend comparison the advisory columns exist for was
+    not available on the interface family at all.
     """
-    # Check if any metrics requested
     if not any([compute_bioinformatics, compute_tmol]):
         return df
 
-    successful_samples = []
     sequence_types = cfg_metric.get("sequence_types", SEQUENCE_TYPES)
-    for _, row in df.iterrows():
-        # Extract sample name from pdb_path
-        pdb_path = row["pdb_path"]
-        sample_name = os.path.basename(pdb_path).replace(".pdb", "").replace("tmp_", "")
-        if sample_name not in best_paths_dict:
-            continue
-        for seq_type in sequence_types:
-            structure_path = best_paths_dict[sample_name].get(seq_type)
-            if structure_path and os.path.exists(structure_path):
-                successful_samples.append((sample_name, seq_type, structure_path))
-                logger.debug(f"Found successful best sample: {sample_name} {seq_type}")
-            else:
-                logger.debug(f"Structure path not found for successful sample: {sample_name} {seq_type}")
 
-    logger.info(f"Found {len(successful_samples)} successful best samples with refolded structures")
-    if not successful_samples:
-        logger.warning("No successful refolded structures found")
+    # per sequence type: [(sample name, [path or None per redesign])]
+    samples_by_seq_type: dict[str, list[tuple[str, list[str | None]]]] = {}
+    for _, row in df.iterrows():
+        sample_name = os.path.basename(row["pdb_path"]).replace(".pdb", "").replace("tmp_", "")
+        for seq_type in sequence_types:
+            slots = (paths_dict.get(sample_name) or {}).get(seq_type)
+            if slots and any(slot is not None for slot in slots):
+                samples_by_seq_type.setdefault(seq_type, []).append((sample_name, slots))
+
+    found = sum(len(v) for v in samples_by_seq_type.values())
+    if not found:
+        logger.warning("No refolded structures found")
         return df
 
-    # Log which metrics are being computed
     enabled_metrics = []
     if compute_bioinformatics:
         enabled_metrics.append("bioinformatics")
     if compute_tmol:
         enabled_metrics.append("TMOL")
 
-    logger.info(f"Computing metrics [{', '.join(enabled_metrics)}] on {len(successful_samples)} refolded structures")
-
-    # Group samples by sequence type for efficient processing
-    samples_by_seq_type: dict[str, list[tuple[str, str]]] = {}
-    for sample_name, seq_type, path in successful_samples:
-        if seq_type not in samples_by_seq_type:
-            samples_by_seq_type[seq_type] = []
-        samples_by_seq_type[seq_type].append((sample_name, path))
+    total = sum(len([s for s in slots if s]) for group in samples_by_seq_type.values() for _, slots in group)
+    logger.info(
+        f"Computing metrics [{', '.join(enabled_metrics)}] on {total} refolded structures "
+        f"across {found} (design, sequence type) pairs"
+    )
 
     # The slots the columns below carry. Resolved here rather than passed, so a
     # caller cannot label these with a different model than the one that folded.
     complex_backend = backend_for_folding_method(cfg_metric.get("binder_folding_method", "colabdesign"))
 
-    # Compute and merge metrics for each sequence type
     updated_df = df.copy()
     _, flat_dict = parse_cfg_for_table(cfg)
     skip_cols = {"pdb_path"} | set(flat_dict.keys())
 
     for seq_type, samples in samples_by_seq_type.items():
-        sample_names = [s[0] for s in samples]
-        structure_paths = [s[1] for s in samples]
+        # One flat pass over every redesign of every design, so the loop that
+        # opens PDBs runs once per sequence type rather than once per design.
+        flat = [path for _, slots in samples for path in slots if path]
 
         # Averaged over the models the refold produced, not read off one of them.
-        # best_paths_dict names the model-1 structure, and computing an interface
-        # from it alone reports one draw of five as though it were the design:
-        # across five AF2 models of one design the interface itself moves, 13 to
-        # 16 residues being typical. The confidence and geometry families already
+        # A slot names the model-1 structure, and computing an interface from it
+        # alone reports one draw of five as though it were the design: across
+        # five AF2 models of one design the interface itself moves, 13 to 16
+        # residues being typical. The confidence and geometry families already
         # reduce over models; this brings the interface family into line.
-        metrics_list = compute_interface_metrics_over_models(
-            pdb_paths=structure_paths,
+        computed = compute_interface_metrics_over_models(
+            pdb_paths=flat,
             n_af2_models=n_af2_models,
             compute_bioinformatics=compute_bioinformatics,
             compute_tmol=compute_tmol,
             show_progress=show_progress,
         )
 
+        # Back into per-design shape. Positional rather than keyed on the path:
+        # two redesigns that folded to the same file would collapse into one
+        # entry under a dict, and the lists must keep their length.
+        computed_iter = iter(computed)
+        per_sample = [
+            (sample_name, [next(computed_iter) if path else None for path in slots])
+            for sample_name, slots in samples
+        ]
+
+        metric_names = sorted(
+            {
+                name
+                for _, per_sequence in per_sample
+                for metrics in per_sequence
+                if metrics
+                for name in metrics
+                if name not in skip_cols
+            }
+        )
         # Slots, not a "refolded" prefix that never said which model refolded.
-        prefix = f"{seq_type}_complex_{complex_backend}_"
-        updated_df = merge_metrics_to_df(
+        updated_df = merge_per_sequence_metrics_to_df(
             df=updated_df,
-            metrics_list=metrics_list,
-            sample_names=sample_names,
-            column_prefix=prefix,
-            skip_cols=skip_cols,
+            per_sample=per_sample,
+            metric_names=metric_names,
+            column_prefix=f"{seq_type}_complex_{complex_backend}_",
         )
 
     logger.info("Successfully merged refolded structure metrics")

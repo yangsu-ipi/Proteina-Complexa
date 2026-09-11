@@ -17,30 +17,26 @@ from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.result_analysis.binder_analysis_utils import complex_backend_of
 
 
-def extract_best_refolded_structure_paths_from_df(
+def extract_refolded_structure_paths_from_df(
     df: pd.DataFrame, sequence_types: list[str] = None
-) -> dict[str, dict[str, str]]:
-    """
-    Extract paths to the best refolded structures from binder evaluation dataframe.
+) -> dict[str, dict[str, list[str | None]]]:
+    """Every refold's path per sequence type, not the one a ranking chose.
 
-    For Protenix evaluation, the dataframe contains columns with the paths to the best
-    refolded structures for each sequence type:
-    - For mpnn and mpnn_fixed: uses the single "best" path column (not the "_all" column)
-    - For self: uses the single path column
+    Returns ``{sample: {seq_type: [path or None per redesign]}}``, positionally
+    aligned with the row's other per-sequence lists: a redesign whose structure
+    is missing holds ``None`` rather than being dropped, so slot *i* here is the
+    sequence in ``{seq_type}_sequence_all[i]``.
 
-    Args:
-        df: Binder evaluation results dataframe
-        sequence_types: List of sequence types to consider
+    This replaced a lookup of the headline scalar ``{seq}_complex_{backend}_pdb_path``,
+    which had two problems at once. Evaluate stopped writing that scalar when
+    ranking moved to analyze, so the lookup found nothing and every metric
+    computed on a refolded structure went silently missing from the run. And
+    reading it at all meant one redesign's interface was measured and the rest
+    were not -- so nothing downstream could re-rank on an interface number, which
+    is the whole point of emitting per-sequence lists.
 
-    Returns:
-        Dictionary mapping sample names to best structure paths:
-        {
-            'sample_name': {
-                'mpnn': 'path_to_best_mpnn_structure',
-                'mpnn_fixed': 'path_to_best_mpnn_fixed_structure',
-                'self': 'path_to_self_structure'
-            }
-        }
+    The ``_all`` column is the source; the scalar is accepted as a fallback so a
+    frame written before the split still resolves.
     """
     if sequence_types is None:
         sequence_types = SEQUENCE_TYPES
@@ -51,23 +47,24 @@ def extract_best_refolded_structure_paths_from_df(
     backend = complex_backend_of(df) or "af2"
     path_columns = {t: rename(f"{t}_complex_pdb_path", backend) for t in sequence_types}
 
-    best_paths = {}
+    paths: dict[str, dict[str, list[str | None]]] = {}
 
     for _, row in df.iterrows():
-        # Extract sample name from pdb_path
-        pdb_path = row["pdb_path"]
-        sample_name = os.path.basename(pdb_path).replace(".pdb", "").replace("tmp_", "")
-
-        if sample_name not in best_paths:
-            best_paths[sample_name] = {}
+        sample_name = os.path.basename(row["pdb_path"]).replace(".pdb", "").replace("tmp_", "")
+        found = paths.setdefault(sample_name, {})
 
         for seq_type in sequence_types:
-            col = path_columns[seq_type]
-            structure_path = row[col] if col in row.index and pd.notna(row[col]) and row[col] != "" else None
-            if structure_path and os.path.exists(structure_path):
-                best_paths[sample_name][seq_type] = structure_path
+            column = path_columns[seq_type]
+            values = row.get(f"{column}_all")
+            if not isinstance(values, (list, tuple)):
+                # A frame from before evaluate emitted lists.
+                single = row.get(column)
+                values = [single] if isinstance(single, str) and single else []
+            slots = [p if isinstance(p, str) and p and os.path.exists(p) else None for p in values]
+            if any(slot is not None for slot in slots):
+                found[seq_type] = slots
             else:
-                logger.debug(f"No valid structure path found for {sample_name} {seq_type} in {col}")
+                logger.debug(f"No valid structure paths for {sample_name} {seq_type} in {column}_all")
 
     # Loud, because the failure mode is silence. This used to try four candidate
     # names, three of which never existed in any frame; when the rename turned the
@@ -75,14 +72,14 @@ def extract_best_refolded_structure_paths_from_df(
     # exactly like the ordinary "this design has no refold" miss. The refolded
     # interface metrics were then simply absent from a run that asked for them,
     # with nothing above debug level to say so.
-    if not any(best_paths.values()):
+    if not any(paths.values()):
         logger.error(
             f"No refolded structure paths found in any of {len(df)} rows. Looked for "
-            f"{sorted(path_columns.values())}; the frame has "
-            f"{sorted(c for c in df.columns if c.endswith('pdb_path'))}. Any metric computed on "
+            f"{sorted(c + '_all' for c in path_columns.values())}; the frame has "
+            f"{sorted(c for c in df.columns if 'pdb_path' in c)}. Any metric computed on "
             f"refolded structures will be absent."
         )
-    return best_paths
+    return paths
 
 
 def extract_refolded_paths_from_evaluation_output(
