@@ -38,7 +38,15 @@ TEMPLATED = re.compile(r"^\{(?:seq_type|seq|t|sequence_type)\}_([A-Za-z0-9_]+)$"
 # `migrate_frame` maps them when the pooled frame is read. Consumers of a
 # *per-run* CSV therefore correctly ask for the legacy name. Listed rather than
 # pattern-matched so adding a third such column is a deliberate act.
-DELIBERATELY_LEGACY = {"aa_counts", "aa_interface_counts"}
+# Emitted under their pre-rename names on purpose; the `_all` siblings are the
+# same columns, added when evaluate stopped picking a headline and began
+# emitting per-sequence lists only, so they carry the same exemption.
+DELIBERATELY_LEGACY = {
+    "aa_counts",
+    "aa_interface_counts",
+    "aa_counts_all",
+    "aa_interface_counts_all",
+}
 
 
 def _templated_literals(tree: ast.AST):

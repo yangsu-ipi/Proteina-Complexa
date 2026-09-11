@@ -29,10 +29,8 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     BIOINFORMATICS_METRIC_COLS,
     DEFAULT_INTERFACE_CUTOFF_LIGAND,
     DEFAULT_INTERFACE_CUTOFF_PROTEIN,
-    DEFAULT_LIGAND_RANKING_CRITERIA,
     DEFAULT_NUM_REDESIGN_SEQS_LIGAND,
     DEFAULT_NUM_REDESIGN_SEQS_PROTEIN,
-    DEFAULT_PROTEIN_RANKING_CRITERIA,
     TMOL_METRIC_COLS,
     apo_column,
     apo_fold_fingerprint,
@@ -45,8 +43,6 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     get_metric_columns,
     per_sequence_pass,
     resolve_success_thresholds,
-    select_best_sample_idx,
-    validate_ranking_criteria,
 )
 from proteinfoundation.evaluation.esm_eval import (
     DEFAULT_ESM_BATCH_TOKENS,
@@ -174,7 +170,8 @@ def sequences_for_type(
 
     ``aa_stats`` now records the sequence each row was computed from, which makes
     it the source of truth: it is appended in the same iteration as the complex
-    and RMSD stats, so indexing it with ``best_idx`` is aligned by construction.
+    and RMSD stats, so the lists stay parallel by construction -- which is what
+    lets analyze index them all at one chosen position.
     Caches written before that field existed have no sequences, so fall back to
     the old behaviour there, and report a mismatch loudly rather than emitting
     misaligned metrics.
@@ -455,13 +452,18 @@ def compute_binder_metrics(
         cfg_metric.get("inverse_folding_model", "protein_mpnn"), is_target_ligand
     )
 
-    # Get ranking criteria from config or use defaults
-    ranking_criteria = cfg_metric.get("ranking_criteria", None)
-    if ranking_criteria is None:
-        ranking_criteria = DEFAULT_LIGAND_RANKING_CRITERIA if is_target_ligand else DEFAULT_PROTEIN_RANKING_CRITERIA
-    else:
-        ranking_criteria = validate_ranking_criteria(ranking_criteria)
-    logger.info(f"Using ranking criteria: {ranking_criteria}")
+    # No ranking here. metric.ranking_criteria moved to aggregation.ranking_criteria,
+    # where analyze applies it: choosing which redesign a row presents is a
+    # formulation over the per-sequence lists this stage emits, and reweighting it
+    # must not cost a refold. A config still setting metric.ranking_criteria is
+    # named rather than ignored -- silently dropping a knob someone tuned is how a
+    # run ends up ranked by something other than what its config says.
+    if cfg_metric.get("ranking_criteria") is not None:
+        logger.warning(
+            "metric.ranking_criteria is no longer read here; move it to "
+            "aggregation.ranking_criteria, which analyze applies when it chooses "
+            "the headline sequence."
+        )
 
     # Success criteria, applied per sequence rather than left to the analysis
     # stage. Analysis reports a design as passing when *any* of its sequences
@@ -769,34 +771,15 @@ def compute_binder_metrics(
                     continue
 
                 # Find best sample using composite ranking score
-                best_idx, best_score = select_best_sample_idx(seq_stats, ranking_criteria)
-
-                if best_idx < 0 or best_score == float("inf"):
-                    # Fall back to first sample only if stats exist
-                    if len(seq_stats) > 0:
-                        logger.warning(f"No valid samples found for {seq_type}, defaulting to first sample")
-                        best_idx = 0
-                    else:
-                        logger.warning(f"Empty stats for {seq_type} at sample {idx}, skipping")
-                        continue
-                else:
-                    logger.debug(f"Best sample for {seq_type}: {best_idx} with score {best_score:.4f}")
-
-                # The index every headline column on this row refers to. It has to
-                # travel with the row: analyze re-derives {seq}_pass from the metric
-                # columns whenever thresholds change (7fc6c07), and without this it
-                # fell back to index 0 -- putting the FIRST sequence's verdict beside
-                # the BEST sequence's metrics. Measured on a 657-design run: 32 rows
-                # disagreed. It also records the fallback above, where index 0 is the
-                # honest answer because the ranking could not be computed.
-                row_dict[f"{seq_type}_best_idx"] = best_idx
-                if f"{seq_type}_best_idx" not in all_columns:
-                    all_columns.append(f"{seq_type}_best_idx")
-
-                # Extract best sample metrics
-                best_complex = seq_stats[best_idx]
-                best_rmsd = sequence_type_stats[seq_type]["rmsd_stats"][best_idx]
-                aa_stats = sequence_type_stats[seq_type]["aa_stats"][best_idx]
+                # No ranking here any more. Which redesign a row's scalars describe is
+                # a formulation over the per-sequence lists, not a measurement, so
+                # analyze chooses it (pick_headline_sequence) and can re-choose it
+                # without a refold. Evaluate emits the lists and nothing else.
+                #
+                # The only per-row scalars left are those equal for every redesign:
+                # ProteinMPNN is fixed-length, so binder_length is the backbone's.
+                aa_stats_all = sequence_type_stats[seq_type]["aa_stats"]
+                aa_stats = aa_stats_all[0]
 
                 row_dict["L"] = aa_stats["binder_length"]
                 # Which folder produced the complex columns below. analyze and
@@ -816,22 +799,20 @@ def compute_binder_metrics(
                 # Complex metrics (best and all). Named through the same mapping
                 # the migration uses, so emission and rename cannot drift into
                 # agreeing only by inspection.
-                for metric, value in best_complex.items():
+                for metric in seq_stats[0]:
                     col = rename(f"{seq_type}_complex_{metric.removeprefix('complex_')}", complex_backend)
-                    row_dict[col] = value
                     row_dict[f"{col}_all"] = [s[metric] for s in seq_stats]
                     if idx == 0:
-                        all_columns.extend([col, f"{col}_all"])
+                        all_columns.append(f"{col}_all")
 
                 # RMSD metrics (best and all). The keys already carry their scope
                 # -- complex_scRMSD_ca is the whole complex, binder_scRMSD_ca the
                 # binder within it -- so the mapping places them.
-                for metric, value in best_rmsd.items():
+                for metric in sequence_type_stats[seq_type]["rmsd_stats"][0]:
                     col = rename(f"{seq_type}_{metric}", complex_backend)
-                    row_dict[col] = value
                     row_dict[f"{col}_all"] = [s[metric] for s in sequence_type_stats[seq_type]["rmsd_stats"]]
                     if idx == 0:
-                        all_columns.extend([col, f"{col}_all"])
+                        all_columns.append(f"{col}_all")
 
                 # AA composition
                 res_count = [0] * len(OF_RESTYPES)
@@ -843,18 +824,18 @@ def compute_binder_metrics(
                     if aa in OF_RESTYPES:
                         interface_count[OF_RESTYPES.index(aa)] += count
 
-                row_dict[f"{seq_type}_aa_counts"] = res_count
-                row_dict[f"{seq_type}_aa_interface_counts"] = interface_count
+                row_dict[f"{seq_type}_aa_counts_all"] = res_count
+                row_dict[f"{seq_type}_aa_interface_counts_all"] = interface_count
                 if idx == 0:
-                    all_columns.extend([f"{seq_type}_aa_counts", f"{seq_type}_aa_interface_counts"])
+                    all_columns.extend(
+                        [f"{seq_type}_aa_counts_all", f"{seq_type}_aa_interface_counts_all"]
+                    )
 
                 # Store sequences (best and all). Taken from the stats rather
                 # than from sequences_dict so they stay paired with the metrics
                 # on this row -- see sequences_for_type.
                 seqs = sequences_for_type(seq_type, sequences_dict, sequence_type_stats)
                 if seqs:
-                    seq_best_idx = 0 if seq_type == "self" else best_idx
-                    row_dict[f"{seq_type}_sequence"] = seqs[seq_best_idx]
                     row_dict[f"{seq_type}_sequence_all"] = seqs
                     if idx == 0:
                         all_columns.extend([f"{seq_type}_sequence", f"{seq_type}_sequence_all"])
@@ -879,7 +860,6 @@ def compute_binder_metrics(
                     # column called mpnn_mpnn_score.
                     scores = redesign_scores_for_type(seq_type, seqs, sequences_dict)
                     if not all(np.isnan(v) for v in scores):
-                        row_dict[f"{seq_type}_redesign_score"] = scores[seq_best_idx]
                         row_dict[f"{seq_type}_redesign_score_all"] = scores
                         row_dict["redesign_score_kind"] = REDESIGN_SCORE_KIND.get(inverse_folding_model, "unknown")
                         # Named the same as the monomer track's column so the two
@@ -931,7 +911,6 @@ def compute_binder_metrics(
                         # nearly everything. Emitted for looking at, and picked
                         # up by the outlier flags in analyze.
                         col = apo_plddt_column(seq_type, model)
-                        row_dict[col] = values[best_idx] if best_idx < len(values) else np.nan
                         row_dict[f"{col}_all"] = values
                         for name in (col, f"{col}_all"):
                             if name not in all_columns:
@@ -939,7 +918,6 @@ def compute_binder_metrics(
 
                     for (mode, model), values in apo_values.items():
                         col = apo_column(seq_type, mode, model)
-                        row_dict[col] = values[best_idx] if best_idx < len(values) else np.nan
                         row_dict[f"{col}_all"] = values
                         for name in (col, f"{col}_all"):
                             if name not in all_columns:
@@ -977,7 +955,6 @@ def compute_binder_metrics(
                 # apo became a criterion rather than a decoration.
                 pass_vector = per_sequence_pass(row_dict, seq_type, success_thresholds)
                 if pass_vector is not None:
-                    row_dict[f"{seq_type}_pass"] = pass_vector[best_idx] if best_idx < len(pass_vector) else None
                     row_dict[f"{seq_type}_pass_all"] = pass_vector
                     # Not gated on idx == 0: the criteria columns can be absent
                     # for the first design and present later, and reindex would
@@ -1001,8 +978,6 @@ def compute_binder_metrics(
                         reuse_cache=cfg_metric.get("reuse_cached_esm", True),
                     )
 
-                    row_dict[f"{seq_type}_esm_pseudo_perplexity"] = esm_df["esm_pseudo_perplexity"].iloc[seq_best_idx]
-                    row_dict[f"{seq_type}_esm_log_likelihood"] = esm_df["esm_log_likelihood"].iloc[seq_best_idx]
                     row_dict[f"{seq_type}_esm_pseudo_perplexity_all"] = esm_df["esm_pseudo_perplexity"].tolist()
                     row_dict[f"{seq_type}_esm_log_likelihood_all"] = esm_df["esm_log_likelihood"].tolist()
 
@@ -1055,12 +1030,9 @@ def compute_binder_metrics(
                     # {seq}_esmfold2_i_pAE and {seq}_complex_i_pAE describe
                     # different redesigns whenever the best was not the first --
                     # the exact pairing failure sequences_for_type exists to stop.
-                    adv_idx = seq_best_idx
                     new_cols = []
                     for suffix in (*CONSENSUS_METRIC_SUFFIXES, *CONSENSUS_DERIVED_SUFFIXES):
                         col = advisory_column(seq_type, backend_name, suffix)
-                        row_dict[col] = advisory[adv_idx].get(suffix, np.nan) if adv_idx < len(advisory) else np.nan
-                        new_cols.append(col)
                         # Always, now that best-only is gone. These lists are what
                         # make the advisory numbers re-rankable and calibratable
                         # later; under best-only they held one entry and the
@@ -1073,8 +1045,6 @@ def compute_binder_metrics(
                     # advisory_column like the rest -- the slot scheme puts the backend
                     # in a slot of its own, so nothing here has to avoid a substring.
                     path_col = advisory_column(seq_type, backend_name, "pdb_path")
-                    row_dict[path_col] = advisory[adv_idx].get("pdb_path") if adv_idx < len(advisory) else None
-                    new_cols.append(path_col)
                     row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
                     new_cols.append(f"{path_col}_all")
                     if idx == 0:

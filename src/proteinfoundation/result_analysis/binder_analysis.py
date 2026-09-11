@@ -369,9 +369,14 @@ def pick_headline_sequence(
                 "Headline scalars stay at index 0."
             )
 
+        # Driven off the _all columns, not off existing scalars: evaluate emits the
+        # lists and nothing else, so the headline column usually does not exist yet
+        # and has to be created. Keying on the scalars silently rebuilt only the two
+        # the verdict refresh happened to add -- 2 of 110.
         pairs = [
-            c for c in df.columns
-            if f"{c}_all" in df.columns and _split_seq_type(c)[0] == seq_type
+            c[: -len("_all")]
+            for c in df.columns
+            if c.endswith("_all") and _split_seq_type(c[: -len("_all")])[0] == seq_type
         ]
         best_indices = []
         for row in df.to_dict("records"):
@@ -392,11 +397,10 @@ def pick_headline_sequence(
 
         df[f"{seq_type}_best_idx"] = best_indices
         for column in pairs:
+            existing = df[column] if column in df.columns else [None] * len(df)
             df[column] = [
                 values[i] if isinstance(values, list) and i < len(values) else current
-                for values, i, current in zip(
-                    df[f"{column}_all"], best_indices, df[column], strict=False
-                )
+                for values, i, current in zip(df[f"{column}_all"], best_indices, existing, strict=False)
             ]
         logger.info(
             f"Headline for {seq_type} set from {len(pairs)} per-sequence lists "
