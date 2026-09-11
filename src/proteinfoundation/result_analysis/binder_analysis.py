@@ -357,7 +357,40 @@ def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], succes
             for v, b in zip(vectors, best if best is not None else [0] * len(vectors), strict=False)
         ]
         logger.info(f"Refreshed {seq_type} verdicts from {len(parsed)} criteria over {len(df)} rows")
+        _assert_verdict_follows_the_headline(df, seq_type)
     return df
+
+
+def _assert_verdict_follows_the_headline(df: pd.DataFrame, seq_type: str) -> None:
+    """Fail if the refreshed verdict describes a different sequence than the row.
+
+    The refresh above is the one place a headline column is rewritten after
+    evaluate chose which sequence the row describes, so it is the one place that
+    can put the wrong sequence's verdict beside the right sequence's metrics. It
+    did: ``{seq}_best_idx`` was never written, the lookup fell back to index 0,
+    and on a 657-design run 32 rows ended up mismatched -- silently, because the
+    verdict is a plausible 0 or 1 either way.
+
+    Checked here rather than trusted from the code above, because the bug was in
+    the code above.
+    """
+    idx_col, pass_col, all_col = f"{seq_type}_best_idx", f"{seq_type}_pass", f"{seq_type}_pass_all"
+    if not {idx_col, pass_col, all_col} <= set(df.columns):
+        # A frame from before the index column existed. Index 0 is then the only
+        # answer available and the fallback above is the honest one.
+        return
+    bad = 0
+    for best, verdict, vector in zip(df[idx_col], df[pass_col], df[all_col], strict=False):
+        if vector is None or best is None or best != best:  # NaN
+            continue
+        i = int(best)
+        if 0 <= i < len(vector) and vector[i] != verdict:
+            bad += 1
+    if bad:
+        raise ValueError(
+            f"{bad} of {len(df)} rows have {pass_col} disagreeing with {all_col}[{idx_col}] -- "
+            f"the verdict describes a different sequence than the metrics on the same row"
+        )
 
 
 def add_success_rate_columns(

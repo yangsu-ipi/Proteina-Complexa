@@ -63,7 +63,9 @@ from collections.abc import Callable
 import numpy as np
 from loguru import logger
 
+from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.ensembling import mean_chain_plddt
+from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 
 # Metrics a backend may report. Named to mirror the primary backend's metrics so
 # a column-to-column comparison reads naturally, without reusing its prefix.
@@ -418,8 +420,30 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
     Raises:
         ValueError: If no single index explains both sets of headlines.
     """
-    primary = _agreeing_indices(row, [f"{seq_type}_complex_{m}" for m in CONSENSUS_METRIC_SUFFIXES])
+    # The primary columns carry a backend slot -- `mpnn_complex_af2_i_pAE`, not
+    # `mpnn_complex_i_pAE`. This read the pre-rename shape, so `_agreeing_indices`
+    # found no `_all` lists, returned None, and the function returned before
+    # checking anything. It had been dead on every real row since the slot scheme
+    # landed, while its tests passed because they built rows the old way -- a name
+    # written in one place and read in another, which is the failure this very
+    # function exists to catch. The backend travels on the row for exactly this
+    # reason, so read it there rather than taking another argument.
+    complex_backend = row.get(COMPLEX_BACKEND_COLUMN) or "af2"
+    primary_columns = [
+        rename(f"{seq_type}_complex_{m}", complex_backend) for m in CONSENSUS_METRIC_SUFFIXES
+    ]
+    # The verdict is a headline column too, and the one that actually drifted: it
+    # is re-derived downstream, so it is the one most able to end up describing a
+    # different sequence than the metrics beside it.
+    primary_columns.append(f"{seq_type}_pass")
+    primary = _agreeing_indices(row, primary_columns)
     advisory = _agreeing_indices(row, [advisory_column(seq_type, backend, m) for m in CONSENSUS_METRIC_SUFFIXES])
+    if primary is not None and not primary:
+        raise ValueError(
+            f"No single sequence explains the '{seq_type}' headline: its scalars disagree with each "
+            f"other about which entry of their own _all lists they are. Most often {seq_type}_pass "
+            f"against the metric columns -- see {seq_type}_best_idx."
+        )
     if primary is None or advisory is None:
         return  # best-only mode, or a metric this backend does not report
     if primary and advisory and not (primary & advisory):

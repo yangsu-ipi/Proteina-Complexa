@@ -783,6 +783,17 @@ def compute_binder_metrics(
                 else:
                     logger.debug(f"Best sample for {seq_type}: {best_idx} with score {best_score:.4f}")
 
+                # The index every headline column on this row refers to. It has to
+                # travel with the row: analyze re-derives {seq}_pass from the metric
+                # columns whenever thresholds change (7fc6c07), and without this it
+                # fell back to index 0 -- putting the FIRST sequence's verdict beside
+                # the BEST sequence's metrics. Measured on a 657-design run: 32 rows
+                # disagreed. It also records the fallback above, where index 0 is the
+                # honest answer because the ranking could not be computed.
+                row_dict[f"{seq_type}_best_idx"] = best_idx
+                if f"{seq_type}_best_idx" not in all_columns:
+                    all_columns.append(f"{seq_type}_best_idx")
+
                 # Extract best sample metrics
                 best_complex = seq_stats[best_idx]
                 best_rmsd = sequence_type_stats[seq_type]["rmsd_stats"][best_idx]

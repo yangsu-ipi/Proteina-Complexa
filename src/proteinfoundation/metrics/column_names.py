@@ -182,6 +182,10 @@ _SEQUENCE_LEVEL_METRICS: tuple[str, ...] = (
     "esm_pseudo_perplexity",
     "redesign_score",
     "pass",
+    # Which entry of every _all list on the row the scalars refer to. Unregistered
+    # it classified as UNCLASSIFIED -- indistinguishable from a typo, which is the
+    # one distinction this module exists to keep.
+    "best_idx",
 )
 
 # Retired rather than renamed: biotite's P-SEA over-called beta by four times on

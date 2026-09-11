@@ -15,14 +15,17 @@ import math
 
 import pytest
 
+from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
     assert_headline_indices_agree,
 )
+from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 
 SEQ = "mpnn"
 BACKEND = "esmfold2"
+COMPLEX_BACKEND = "af2"
 
 # Three redesigns. The ranked best is index 1, which is what made the original bug
 # invisible in any test using a single sequence or a best-of-first ordering.
@@ -49,15 +52,23 @@ ADVISORY = {
 BEST = 1
 
 
-def build_row(primary_idx=BEST, advisory_idx=BEST, *, advisory_all=True):
-    row = {}
+def build_row(primary_idx=BEST, advisory_idx=BEST, *, advisory_all=True, pass_idx=None):
+    # Keys exactly as binder_eval writes them -- through rename(), with the backend
+    # slot. Built the pre-rename way, every test here passed against a guard that
+    # could not see a single real row.
+    row = {COMPLEX_BACKEND_COLUMN: COMPLEX_BACKEND}
     for suffix in CONSENSUS_METRIC_SUFFIXES:
-        row[f"{SEQ}_complex_{suffix}"] = PRIMARY[suffix][primary_idx]
-        row[f"{SEQ}_complex_{suffix}_all"] = list(PRIMARY[suffix])
+        primary = rename(f"{SEQ}_complex_{suffix}", COMPLEX_BACKEND)
+        row[primary] = PRIMARY[suffix][primary_idx]
+        row[f"{primary}_all"] = list(PRIMARY[suffix])
         column = advisory_column(SEQ, BACKEND, suffix)
         row[column] = ADVISORY[suffix][advisory_idx]
         if advisory_all:
             row[f"{column}_all"] = list(ADVISORY[suffix])
+    if pass_idx is not None:
+        verdicts = [0, 1, 0]
+        row[f"{SEQ}_pass_all"] = list(verdicts)
+        row[f"{SEQ}_pass"] = verdicts[pass_idx]
     return row
 
 
@@ -122,3 +133,26 @@ def test_one_sequence_cannot_hide_the_bug_but_is_still_accepted():
 
 def test_nan_helper_assumption():
     assert float("nan") != float("nan") and math.isnan(float("nan"))
+
+
+def test_the_guard_sees_production_key_shapes():
+    """It did not. binder_eval writes `mpnn_complex_af2_i_pAE` through rename();
+    this module looked up `mpnn_complex_i_pAE`, found no _all lists, and returned
+    before checking anything -- dead on every real row since the slot scheme
+    landed, and green the whole time because these tests built the old shape."""
+    row = build_row(primary_idx=1, advisory_idx=0)
+    assert any("_complex_af2_" in k for k in row), "the fixture must use the real keys"
+    with pytest.raises(ValueError, match="different sequence"):
+        assert_headline_indices_agree(row, SEQ, BACKEND)
+
+
+def test_a_verdict_from_another_sequence_is_caught():
+    """The verdict is a headline column, and the one that actually drifted: analyze
+    re-derives it, so it is the one able to end up describing a different sequence
+    than the metrics beside it."""
+    with pytest.raises(ValueError, match="No single sequence explains"):
+        assert_headline_indices_agree(build_row(pass_idx=0), SEQ, BACKEND)
+
+
+def test_a_verdict_on_the_headline_sequence_passes():
+    assert_headline_indices_agree(build_row(pass_idx=BEST), SEQ, BACKEND)
