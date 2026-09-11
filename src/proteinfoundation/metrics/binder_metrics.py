@@ -607,9 +607,16 @@ def run_binder_eval(
 def atomarray_to_atom37_coords(
     atomarray: AtomArray,
     chains: list[str],
-) -> Tensor:
+    return_mask: bool = False,
+) -> Tensor | tuple[Tensor, Tensor]:
     """
     Convert an atomarray (selected chains) to atom37 coordinates.
+
+    With *return_mask*, also returns which of the 37 slots each residue actually
+    fills. The encoding pads every residue to 37 and the absent slots are NaN,
+    turned into the origin here -- so an all-atom comparison that does not carry
+    this mask is comparing about four phantom atoms at (0, 0, 0) for every real
+    one.
     """
     for chain in chains:
         assert chain in atomarray.chain_id, f"Chain {chain} not found in atomarray.chain_id"
@@ -622,8 +629,10 @@ def atomarray_to_atom37_coords(
         for m in masks[1:]:
             mask = mask | m
         subset_atomarray = atomarray[mask]
-    atom37_coords = atom_array_to_encoding(subset_atomarray, encoding=AF2_ATOM37_ENCODING)
-    atom37_coords = torch.tensor(atom37_coords["xyz"], dtype=torch.float32).nan_to_num(0.0)
+    encoded = atom_array_to_encoding(subset_atomarray, encoding=AF2_ATOM37_ENCODING)
+    atom37_coords = torch.tensor(encoded["xyz"], dtype=torch.float32).nan_to_num(0.0)
+    if return_mask:
+        return atom37_coords, torch.tensor(encoded["mask"], dtype=torch.bool)
     return atom37_coords
 
 
@@ -672,14 +681,25 @@ def calculate_prot_prot_binder_rmsd(
 
     # Get the atom coordinates of the complex and the binder in the refolded complex
     refolded_complex_coors = atomarray_to_atom37_coords(refolded_complex, refolded_complex_chains)
-    refolded_binder_coors = atomarray_to_atom37_coords(refolded_complex, [refolded_binder_chain])
+    refolded_binder_coors, refolded_binder_mask = atomarray_to_atom37_coords(
+        refolded_complex, [refolded_binder_chain], return_mask=True
+    )
     # Get the atom coordinates of the generated complex and binder
     gen_complex_coors = atomarray_to_atom37_coords(gen_complex, gen_complex_chains)
-    gen_binder_coors = atomarray_to_atom37_coords(gen_complex, [gen_binder_chain])
+    gen_binder_coors, gen_binder_mask = atomarray_to_atom37_coords(
+        gen_complex, [gen_binder_chain], return_mask=True
+    )
 
     # Compute binder RMSD in all modes
     binder_scRMSD_ca = rmsd_metric(gen_binder_coors, refolded_binder_coors, mode="ca")
-    mask_binder = torch.ones(gen_binder_coors.shape[:-1], device=gen_binder_coors.device, dtype=torch.bool)
+    # The atoms both structures actually have, the way the designability track
+    # builds it (gen_mask * rec_mask). This was torch.ones: with 69 residues that
+    # is 2553 slots against 540 real atoms, so all-atom RMSD was fitting ~2000
+    # phantom atoms parked at the origin, far from the protein. The error scales
+    # with how much the two structures really differ, which is what made it look
+    # sane where it mattered least -- on one EFNB3 design the AF2 number read 0.475
+    # against a true 1.006, while ESMFold2's read 11.505 against a true 1.177.
+    mask_binder = gen_binder_mask & refolded_binder_mask
     binder_scRMSD_allatom = rmsd_metric(
         gen_binder_coors,
         refolded_binder_coors,
@@ -802,13 +822,19 @@ def calculate_ligand_binder_rmsd(
         np.array([1.0 for chain in gen_complex.chain_id], dtype=gen_complex.coord.dtype),
     )
 
-    refolded_binder_coords = atomarray_to_atom37_coords(refolded_complex, [binder_chain_id])
+    refolded_binder_coords, refolded_binder_mask = atomarray_to_atom37_coords(
+        refolded_complex, [binder_chain_id], return_mask=True
+    )
 
-    gen_binder_coords = atomarray_to_atom37_coords(gen_complex, [binder_chain_id])
+    gen_binder_coords, gen_binder_mask = atomarray_to_atom37_coords(
+        gen_complex, [binder_chain_id], return_mask=True
+    )
 
     # Get the protein binder RMSD (both all-atom and CA)
     binder_scRMSD_ca = rmsd_metric(gen_binder_coords, refolded_binder_coords, mode="ca")
-    mask_atom_37 = torch.ones(gen_binder_coords.shape[:-1], device=gen_binder_coords.device, dtype=torch.bool)
+    # Real atoms only -- see calculate_prot_prot_binder_rmsd for what torch.ones
+    # was measuring here.
+    mask_atom_37 = gen_binder_mask & refolded_binder_mask
     binder_scRMSD_allatom = rmsd_metric(
         gen_binder_coords,
         refolded_binder_coords,

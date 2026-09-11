@@ -1037,6 +1037,10 @@ def compute_binder_metrics(
                         cache_dir=sample_root_path,
                         reuse_cache=reuse_cached_consensus,
                         keep_structures=cfg_metric.get("keep_folding_outputs", True),
+                        # The designed complex the geometry family is measured
+                        # against -- the same structure the primary backend's
+                        # scRMSD columns compare to.
+                        reference_pdb_path=pdb_path,
                     )
                     # `advisory` is parallel to `seqs`, so the headline must be the
                     # same sequence the primary columns describe. Using 0 here made

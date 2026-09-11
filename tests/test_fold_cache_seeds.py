@@ -639,7 +639,10 @@ def test_the_derived_suffixes_are_the_ones_the_scorer_produces():
     pytest.importorskip("protein_interface")
     pytest.importorskip("mdtraj")
 
-    from proteinfoundation.metrics.consensus_folding import CONSENSUS_DERIVED_SUFFIXES
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_DERIVED_SUFFIXES,
+        CONSENSUS_RMSD_SUFFIXES,
+    )
     from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
 
     atoms = [("N", 0.0, 0.0, 0.0), ("CA", 1.46, 0.0, 0.0), ("C", 2.0, 1.42, 0.0),
@@ -665,8 +668,50 @@ def test_the_derived_suffixes_are_the_ones_the_scorer_produces():
     os.environ["SC_EXEC"] = str(sc_stub)
 
     scores, _, _ = pr_alternative_score_interface(str(path), binder_chain="B", target_chain="A")
-    missing = sorted(set(CONSENSUS_DERIVED_SUFFIXES) - set(scores))
+    # The geometry family has its own producer, checked below -- it is measured
+    # against the design, which this scorer never sees.
+    interface = set(CONSENSUS_DERIVED_SUFFIXES) - set(CONSENSUS_RMSD_SUFFIXES.values())
+    missing = sorted(interface - set(scores))
     assert not missing, f"registered with no producer: {missing}"
+
+
+def test_the_geometry_suffixes_are_the_ones_the_rmsd_function_produces():
+    """Same rule as the interface family, second producer. Named against
+    calculate_prot_prot_binder_rmsd's real output rather than a hand-kept list,
+    and measured structure-against-itself so the answer is known: zero."""
+    pytest.importorskip("torch")
+    pytest.importorskip("atomworks")
+
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_DERIVED_SUFFIXES,
+        CONSENSUS_RMSD_SUFFIXES,
+        rmsd_against_design,
+    )
+
+    atoms = [("N", 0.0, 0.0, 0.0), ("CA", 1.46, 0.0, 0.0), ("C", 2.0, 1.42, 0.0),
+             ("O", 1.3, 2.4, 0.0), ("CB", 2.0, -0.77, -1.2)]
+    lines, serial = [], 1
+    for ci, chain in enumerate(("A", "B")):
+        for res in range(4):
+            for name, x, y, z in atoms:
+                lines.append(
+                    f"ATOM  {serial:5d}  {name:<3s} ALA {chain}{1 + res:4d}    "
+                    f"{x + res * 3.6:8.3f}{y + ci * 4.0:8.3f}{z:8.3f}  1.00 50.00"
+                    f"          {name[0]:>2s}  "
+                )
+                serial += 1
+    import tempfile
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "complex.pdb"
+    path.write_text("\n".join(lines) + "\nTER\nEND\n")
+
+    got = rmsd_against_design(str(path), str(path))
+
+    registered = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(CONSENSUS_DERIVED_SUFFIXES)
+    assert registered, "the geometry family is registered"
+    assert not sorted(registered - set(got)), f"registered with no producer: {sorted(registered - set(got))}"
+    for name in registered:
+        assert got[name] == pytest.approx(0.0, abs=1e-3), f"{name} against itself is zero, got {got[name]}"
 
 
 def test_shape_complementarity_is_read_off_the_structure_not_refolded_for():

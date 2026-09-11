@@ -631,6 +631,22 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
 
 CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binder, seed)
 
+# Geometry keys, mapped from what calculate_prot_prot_binder_rmsd returns to the
+# suffix the primary backend's columns carry. Its ``complex_scRMSD_ca`` lands in
+# the kind slot on the primary side -- {seq}_complex_{backend}_scRMSD_ca -- so the
+# advisory suffix is ``scRMSD_ca``, not ``complex_scRMSD_ca``, which would emit
+# the word twice. The legacy ``binder_scRMSD`` / ``complex_scRMSD`` aliases are
+# deliberately absent: they equal the CA values and exist only for frames written
+# before the modes were named.
+CONSENSUS_RMSD_SUFFIXES: dict[str, str] = {
+    "binder_scRMSD_ca": "binder_scRMSD_ca",
+    "binder_scRMSD_bb3": "binder_scRMSD_bb3",
+    "binder_scRMSD_bb3o": "binder_scRMSD_bb3o",
+    "binder_scRMSD_allatom": "binder_scRMSD_allatom",
+    "complex_scRMSD_ca": "scRMSD_ca",
+    "binder_scRMSD_target_aligned_ca": "binder_scRMSD_target_aligned_ca",
+}
+
 # Metrics read off a kept advisory structure rather than reported by the folder.
 # They are not part of a structure's identity: the same fold answers for any of
 # them, so changing which are computed -- or how -- must re-read the PDBs already
@@ -664,6 +680,11 @@ CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = (
     "target_ss_total",
     "target_interface_ss_counts",
     "target_interface_ss_total",
+    # Geometry against the designed backbone. Derived rather than folder-reported
+    # because the structure holds it: the advisory PDB and the design are both on
+    # disk, so asking whether ESMFold2 places the binder where AF2 does costs a
+    # re-read, never a refold.
+    *CONSENSUS_RMSD_SUFFIXES.values(),
 )
 # Bumped when the derivation of any registered metric changes without its name
 # changing, which the name alone cannot express.
@@ -685,8 +706,43 @@ def consensus_derivation_fingerprint() -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def derive_from_structure(pdb_path: str, n_target_chains: int) -> dict[str, float]:
+def rmsd_against_design(pdb_path: str, reference_pdb_path: str) -> dict[str, float]:
+    """The advisory fold measured against the designed backbone.
+
+    By the primary backend's own function, not a second definition of scRMSD:
+    :func:`calculate_prot_prot_binder_rmsd` is what produces
+    ``{seq}_complex_af2_binder_scRMSD_ca``, so the ESMFold2 column can be read
+    beside the AF2 one rather than being a similarly-named number. Both it and
+    the loader are imported lazily -- they pull torch and atomworks, which a run
+    with no geometry registered should not pay for.
+
+    The binder is the last chain in both structures: :func:`advisory_chain_ids`
+    writes it last on purpose, and the generated complexes use the same order.
+    """
+    from atomworks.io.utils.io_utils import load_any
+
+    from proteinfoundation.metrics.binder_metrics import calculate_prot_prot_binder_rmsd
+
+    advisory = load_any(pdb_path, file_type="pdb")[0]
+    design = load_any(reference_pdb_path)[0]
+    computed = calculate_prot_prot_binder_rmsd(
+        refolded_complex=advisory, gen_complex=design, label="advisory"
+    )
+    return {
+        suffix: float(computed[key]) for key, suffix in CONSENSUS_RMSD_SUFFIXES.items() if key in computed
+    }
+
+
+def derive_from_structure(
+    pdb_path: str, n_target_chains: int, reference_pdb_path: str | None = None
+) -> dict[str, float]:
     """Read the registered derived metrics off one advisory structure.
+
+    *reference_pdb_path* is the designed complex, needed only by the geometry
+    family -- everything else is a property of the advisory structure alone.
+    Without it the geometry keys are simply absent, which a caller sees as "not
+    derivable" and retries next run; the only caller in the pipeline always has
+    the design in hand.
 
     Returns ``{}`` while nothing is registered, which is what makes the split
     inert until a caller opts in. Raises nothing of its own: a caller treats a
@@ -705,7 +761,13 @@ def derive_from_structure(pdb_path: str, n_target_chains: int) -> dict[str, floa
         binder_chain=chains[-1],
         target_chain=",".join(chains[:-1]),
     )
-    return {name: scores[name] for name in CONSENSUS_DERIVED_SUFFIXES if name in scores}
+    derived = {name: scores[name] for name in CONSENSUS_DERIVED_SUFFIXES if name in scores}
+    wanted = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(CONSENSUS_DERIVED_SUFFIXES)
+    if reference_pdb_path and wanted:
+        derived.update(
+            {k: v for k, v in rmsd_against_design(pdb_path, reference_pdb_path).items() if k in wanted}
+        )
+    return derived
 
 
 def read_consensus_cache(
@@ -882,6 +944,7 @@ def score_binders(
     cache_dir: str | None = None,
     reuse_cache: bool = True,
     keep_structures: bool = False,
+    reference_pdb_path: str | None = None,
 ) -> list[dict[str, float | str]]:
     """Advisory metrics for each binder against the target, in input order.
 
@@ -893,6 +956,10 @@ def score_binders(
     sequence of the type anyway: scoring only the primary's pick would condition
     the advisory sample on the ranking it exists to check, and would leave a
     single-entry ``_all`` list that no later stage can re-rank from.
+
+    *reference_pdb_path* is the designed complex, which the geometry family is
+    measured against. Only the derived side uses it, so a caller without one gets
+    everything except scRMSD.
     """
     cfg = dict(cfg or {})
     if backend not in CONSENSUS_BACKENDS:
@@ -949,7 +1016,7 @@ def score_binders(
                 if not (isinstance(pdb, str) and os.path.exists(pdb)):
                     continue
                 try:
-                    derived = derive_from_structure(pdb, len(target_seqs))
+                    derived = derive_from_structure(pdb, len(target_seqs), reference_pdb_path)
                 except Exception as exc:
                     failed += 1
                     logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")
