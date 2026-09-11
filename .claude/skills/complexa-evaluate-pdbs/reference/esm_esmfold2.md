@@ -60,7 +60,6 @@ on GPU while the ESM2 path is fp32.
 ```yaml
 metric:
   consensus_backends: [esmfold2]     # [] disables; "esmfold2" is the only registered backend
-  consensus_best_only: false         # false = score every sequence (see below)
   reuse_cached_consensus: true       # per design, one cache file per backend
   consensus_cfg:
     target_msa: /path/to/target.a3m  # single-chain target
@@ -87,12 +86,7 @@ key to give the binder one.
 chains without an alignment — or it raises with the counts. `target_msa` is the
 single-chain shorthand and fills the remaining chains with `null`.
 
-**Leave `consensus_best_only: false`.** Folding only the primary backend's
-ranked-best sequence conditions the advisory sample on the ranking it is meant to
-be checked against: rank disagreement becomes unmeasurable, any fit is estimated
-on the primary's upper tail, and the sequences the primary rejected — the
-interesting failures — are never folded. `true` is for cheap monitoring of a
-backend already characterised.
+**Every sequence of every requested type is folded.** There was a `consensus_best_only` knob; it is gone. Folding only the primary backend's ranked-best sequence conditioned the advisory sample on the ranking it is meant to check: rank disagreement became unmeasurable, any fit was estimated on the primary's upper tail, and the sequences the primary rejected -- the interesting failures -- were never folded. It also left `_all` lists holding one entry, freezing the primary's ranking into the artifact so no later stage could re-rank or re-calibrate from it.
 
 **Skipped entirely for ligand targets**: these backends fold protein complexes, so
 there is no target sequence to fold against.

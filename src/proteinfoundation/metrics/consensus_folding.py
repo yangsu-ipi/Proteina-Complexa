@@ -828,9 +828,10 @@ def score_binders(
     fold yields empty dicts, and the caller writes NaN columns. Failures are not
     cached, so a transient one does not become permanent across resumes.
 
-    A diffusion-based folder costs minutes per complex, so callers are expected
-    to pass only the sequences they actually want scored -- see
-    ``metric.consensus_best_only``.
+    A diffusion-based folder costs minutes per complex. The caller passes every
+    sequence of the type anyway: scoring only the primary's pick would condition
+    the advisory sample on the ranking it exists to check, and would leave a
+    single-entry ``_all`` list that no later stage can re-rank from.
     """
     cfg = dict(cfg or {})
     if backend not in CONSENSUS_BACKENDS:

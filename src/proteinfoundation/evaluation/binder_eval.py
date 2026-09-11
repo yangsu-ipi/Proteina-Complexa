@@ -597,7 +597,6 @@ def compute_binder_metrics(
     # backends fold protein-protein complexes, so a ligand target has no target
     # sequence to fold against and the whole feature is skipped.
     consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
-    consensus_best_only = cfg_metric.get("consensus_best_only", False)
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
     # The advisory folds are ESMFold2 too, so they answer to the same knob --
     # otherwise metric.n_esmfold2_seeds means "three seeds, except for the
@@ -623,7 +622,7 @@ def compute_binder_metrics(
             logger.info(
                 f"Advisory refolding enabled: {consensus_backends}, target "
                 f"{len(consensus_target_seqs)} chain(s)/{sum(len(s) for s in consensus_target_seqs)} residues, "
-                f"{'best sequence only' if consensus_best_only else 'all sequences'}"
+                "all sequences"
             )
 
     # Setup columns
@@ -1023,19 +1022,25 @@ def compute_binder_metrics(
                 # diffusion folder costs minutes per complex -- far more than the
                 # primary refold -- and a resumed evaluation must not repay it.
                 #
-                # Scores every sequence by default. Folding only the ranked-best
-                # one would condition the advisory sample on the primary
-                # backend's ranking, which is the opposite of what calibration
-                # needs: it makes rank disagreement unmeasurable (whether this
-                # backend would pick a different winner), estimates any fit on
-                # the primary's upper tail only, and never folds the sequences
-                # the primary rejected -- the interesting failures. Since the
-                # point of these columns is to decide whether the backend could
-                # replace the primary one, best-only defeats it.
-                # consensus_best_only=true remains available for cheap monitoring
-                # once a backend is characterised.
+                # Every sequence, always. Folding only the ranked-best one
+                # conditions the advisory sample on the primary backend's ranking,
+                # which is the opposite of what calibration needs: it makes rank
+                # disagreement unmeasurable (whether this backend would pick a
+                # different winner), estimates any fit on the primary's upper tail
+                # only, and never folds the sequences the primary rejected -- the
+                # interesting failures. Since the point of these columns is to
+                # decide whether the backend could replace the primary one,
+                # best-only defeats it.
+                #
+                # There used to be a consensus_best_only knob for "cheap monitoring
+                # of a characterised backend". It is gone: the saving is one fold
+                # per extra redesign, and the cost is a run whose advisory _all
+                # lists hold a single entry -- which freezes the primary's ranking
+                # into the artifact, so no later stage can re-rank or re-calibrate
+                # from it. A cheaper run that cannot answer the question it was
+                # written to answer is not cheaper.
                 for backend_name in consensus_backends:
-                    to_score = [seqs[seq_best_idx]] if consensus_best_only else seqs
+                    to_score = seqs
                     advisory = score_binders(
                         backend_name,
                         consensus_target_seqs,
@@ -1045,23 +1050,24 @@ def compute_binder_metrics(
                         reuse_cache=reuse_cached_consensus,
                         keep_structures=cfg_metric.get("keep_folding_outputs", True),
                     )
-                    # Which entry of `advisory` is the headline. In best-only mode
-                    # exactly one sequence was folded, so it is index 0; otherwise
-                    # `advisory` is parallel to `seqs` and the headline must be the
+                    # `advisory` is parallel to `seqs`, so the headline must be the
                     # same sequence the primary columns describe. Using 0 here made
                     # {seq}_esmfold2_i_pAE and {seq}_complex_i_pAE describe
                     # different redesigns whenever the best was not the first --
                     # the exact pairing failure sequences_for_type exists to stop.
-                    adv_idx = 0 if consensus_best_only else seq_best_idx
+                    adv_idx = seq_best_idx
                     new_cols = []
                     for suffix in (*CONSENSUS_METRIC_SUFFIXES, *CONSENSUS_DERIVED_SUFFIXES):
                         col = advisory_column(seq_type, backend_name, suffix)
                         row_dict[col] = advisory[adv_idx].get(suffix, np.nan) if adv_idx < len(advisory) else np.nan
                         new_cols.append(col)
-                        if not consensus_best_only:
-                            col_all = f"{col}_all"
-                            row_dict[col_all] = [m.get(suffix, np.nan) for m in advisory]
-                            new_cols.append(col_all)
+                        # Always, now that best-only is gone. These lists are what
+                        # make the advisory numbers re-rankable and calibratable
+                        # later; under best-only they held one entry and the
+                        # primary's ranking was baked into the artifact.
+                        col_all = f"{col}_all"
+                        row_dict[col_all] = [m.get(suffix, np.nan) for m in advisory]
+                        new_cols.append(col_all)
                     # Where the advisory structure landed, when keep_folding_outputs
                     # kept it. Not a metric, so emitted explicitly, and built through
                     # advisory_column like the rest -- the slot scheme puts the backend
@@ -1069,9 +1075,8 @@ def compute_binder_metrics(
                     path_col = advisory_column(seq_type, backend_name, "pdb_path")
                     row_dict[path_col] = advisory[adv_idx].get("pdb_path") if adv_idx < len(advisory) else None
                     new_cols.append(path_col)
-                    if not consensus_best_only:
-                        row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
-                        new_cols.append(f"{path_col}_all")
+                    row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
+                    new_cols.append(f"{path_col}_all")
                     if idx == 0:
                         # The contract of these columns is that they cannot change a
                         # pass/fail decision. Checked against the columns the criteria

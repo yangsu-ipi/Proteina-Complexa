@@ -120,7 +120,6 @@ metric:
   # makes rank disagreement unmeasurable and biases any calibration to the
   # primary's upper tail. Set true for cheap monitoring of a backend whose
   # relationship to the primary one is already characterised.
-  consensus_best_only: false
   reuse_cached_consensus: true
   # backend settings. For esmfold2: num_loops, num_sampling_steps,
   # num_diffusion_samples (>1 folds N and keeps the best by i_pAE).

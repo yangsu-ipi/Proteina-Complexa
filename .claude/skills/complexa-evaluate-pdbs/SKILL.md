@@ -306,4 +306,4 @@ ESMC pseudo-perplexity, ESMFold2 advisory complex folding with a target MSA, and
 
 1. **A success criterion whose column is absent removes gating** rather than weakening it — no pass verdicts, no pass rates, for any sequence type. Reported as an error at startup and again during analysis; never ignore it. Most likely cause: `compute_apo_metrics=false`, or `apo_folding_models` changed without renaming the `scRMSD_ca_<model>` threshold key.
 2. **`redesign_score_kind` decides the sort direction.** `protein_mpnn` reports an NLL (lower better); `soluble_mpnn` / `ligand_mpnn` report a confidence (higher better). Both land in `{seq}_redesign_score`. Sorting without reading the kind selects the worst sequences and looks like it worked.
-3. **`consensus_best_only: true` defeats the purpose of advisory folding.** Leave it false unless the backend is already characterised.
+- **Advisory folding scores every sequence.** The `consensus_best_only` knob is gone: folding only the primary's pick defeats the purpose of the columns and leaves `_all` lists with one entry.

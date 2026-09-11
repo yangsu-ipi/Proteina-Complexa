@@ -95,9 +95,11 @@ def test_agreement_at_any_shared_index_passes(index):
     assert_headline_indices_agree(build_row(index, index), SEQ, BACKEND)
 
 
-def test_best_only_mode_has_no_all_columns_and_is_not_flagged():
-    """With consensus_best_only=true a single sequence is folded and no advisory
-    _all columns are written; there is nothing to compare and that is not a fault."""
+def test_a_row_without_advisory_all_columns_is_not_flagged():
+    """No current run produces one -- consensus_best_only is gone and every
+    sequence is folded. But rows written under it still exist on disk, and
+    re-analysing an old campaign must not fail on a row that simply has nothing
+    to compare."""
     assert_headline_indices_agree(build_row(advisory_all=False), SEQ, BACKEND)
 
 
