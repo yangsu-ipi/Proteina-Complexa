@@ -86,3 +86,41 @@ def test_analyze_emits_the_interface_family_and_counts_the_binder_alone():
     assert "res_aa_interface_distribution_" in source
     # and the whole-binder view no longer counts the target alongside it
     assert "_count_residues_from_pdb(path, chains=_binder_chains(path))" in source
+
+
+def test_the_composition_is_one_vector_per_redesign():
+    """ProteinMPNN changes the sequence, so the composition changes with it.
+    Emitting aa_stats[0] reported the first redesign's vector for the row."""
+    from proteinfoundation.evaluation.binder_eval import packed_aa_counts
+
+    first = packed_aa_counts({"L": 5, "A": 2})
+    second = packed_aa_counts({"L": 1, "A": 6})
+    assert first != second
+    assert len(first) == len(AA), "OpenFold residue order, which is the contract"
+    assert sum(first) == 7
+
+
+def test_the_headline_composition_is_a_vector_not_one_count_of_twenty():
+    """The shape bug hiding inside the rename. {seq}_aa_counts_all held the twenty
+    counts rather than a list over redesigns, so once the headline moved to
+    analyze -- where the rule is X = X_all[best_idx] -- the scalar became count
+    number best_idx, an integer where every consumer unpacks a vector."""
+    import pandas as pd
+
+    from proteinfoundation.evaluation.binder_eval_utils import DEFAULT_PROTEIN_RANKING_CRITERIA
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    first, second = counts(L=5, A=2), counts(L=1, A=6)
+    df = pd.DataFrame(
+        [
+            {
+                "complex_folding_backend": "af2",
+                "self_complex_af2_i_pAE_all": [9.0, 1.0],
+                "self_aa_counts_all": [first, second],
+            }
+        ]
+    )
+    out = pick_headline_sequence(df, ["self"], DEFAULT_PROTEIN_RANKING_CRITERIA)
+
+    assert out.at[0, "self_best_idx"] == 1, "the second redesign ranks better"
+    assert out.at[0, "self_aa_counts"] == second, "a whole vector, and the ranked one"

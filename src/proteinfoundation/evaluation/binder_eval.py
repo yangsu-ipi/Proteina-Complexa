@@ -226,6 +226,20 @@ def redesign_scores_for_type(
     return [np.nan if s in ambiguous else by_seq.get(s, np.nan) for s in sequences]
 
 
+def packed_aa_counts(counts_by_residue: dict[str, int]) -> list[int]:
+    """One redesign's amino-acid composition, packed into OpenFold's residue order.
+
+    Positional rather than a mapping because that is what the columns have always
+    carried and what the distribution code in analyze unpacks; the order is the
+    contract.
+    """
+    packed = [0] * len(OF_RESTYPES)
+    for residue, count in counts_by_residue.items():
+        if residue in OF_RESTYPES:
+            packed[OF_RESTYPES.index(residue)] += count
+    return packed
+
+
 def apo_refold(
     seq_type: str,
     sequences: list[str],
@@ -779,9 +793,8 @@ def compute_binder_metrics(
                 # The only per-row scalars left are those equal for every redesign:
                 # ProteinMPNN is fixed-length, so binder_length is the backbone's.
                 aa_stats_all = sequence_type_stats[seq_type]["aa_stats"]
-                aa_stats = aa_stats_all[0]
 
-                row_dict["L"] = aa_stats["binder_length"]
+                row_dict["L"] = aa_stats_all[0]["binder_length"]
                 # Which folder produced the complex columns below. analyze and
                 # analyze_pooled re-derive verdicts from a CSV with no config in
                 # reach, and a pooled frame can hold runs that used different
@@ -814,18 +827,18 @@ def compute_binder_metrics(
                     if idx == 0:
                         all_columns.append(f"{col}_all")
 
-                # AA composition
-                res_count = [0] * len(OF_RESTYPES)
-                interface_count = [0] * len(OF_RESTYPES)
-                for aa, count in aa_stats["residue_counts"].items():
-                    if aa in OF_RESTYPES:
-                        res_count[OF_RESTYPES.index(aa)] += count
-                for aa, count in aa_stats["interface_counts"].items():
-                    if aa in OF_RESTYPES:
-                        interface_count[OF_RESTYPES.index(aa)] += count
-
-                row_dict[f"{seq_type}_aa_counts_all"] = res_count
-                row_dict[f"{seq_type}_aa_interface_counts_all"] = interface_count
+                # AA composition, per redesign. ProteinMPNN changes the sequence,
+                # so both vectors differ from one redesign to the next; taking
+                # aa_stats[0] reported the first redesign's composition for the
+                # whole row. It also made {col}_all the twenty counts rather than
+                # a list over redesigns, so once the headline moved to analyze the
+                # scalar became count number best_idx OUT OF the twenty.
+                row_dict[f"{seq_type}_aa_counts_all"] = [
+                    packed_aa_counts(a["residue_counts"]) for a in aa_stats_all
+                ]
+                row_dict[f"{seq_type}_aa_interface_counts_all"] = [
+                    packed_aa_counts(a["interface_counts"]) for a in aa_stats_all
+                ]
                 if idx == 0:
                     all_columns.extend(
                         [f"{seq_type}_aa_counts_all", f"{seq_type}_aa_interface_counts_all"]
