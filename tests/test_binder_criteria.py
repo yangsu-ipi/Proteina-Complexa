@@ -687,3 +687,48 @@ def test_a_frame_without_the_monomer_track_is_untouched():
 
     df = pd.DataFrame({"self_pass": [1]})
     assert "_res_mpnn_best_sequence" not in pick_monomer_best_sequence(df).columns
+
+
+def test_every_evaluate_config_folds_apo_with_two_models():
+    """One folder agreeing with itself is not evidence that a binder holds its
+    fold without its target. The configs drifted apart before -- the ligand one
+    kept esmfold while the protein ones moved -- and nothing said so."""
+    import pathlib
+
+    from omegaconf import OmegaConf
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "configs"
+    seen = {}
+    for path in sorted(root.rglob("*.yaml")):
+        text = path.read_text()
+        if "apo_folding_models:" not in text:
+            continue
+        metric = OmegaConf.load(path).get("metric") or {}
+        models = list(metric.get("apo_folding_models") or [])
+        if models:
+            seen[str(path.relative_to(root))] = models
+
+    assert seen, "the configs still set apo_folding_models somewhere"
+    for name, models in seen.items():
+        assert len(models) >= 2, f"{name} folds apo with one model: {models}"
+        assert len(set(models)) == len(models), f"{name} lists a model twice: {models}"
+
+
+def test_the_apo_criterion_gates_on_every_model_the_run_used():
+    """The consequence of the line above, and the reason it is a decision rather
+    than a default: with two apo folders a design must clear the threshold under
+    BOTH. Adding a model tightens the gate."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        expand_model_criteria,
+    )
+
+    row = {
+        "self_apo_esmfold2_binder_scRMSD_ca_all": [1.0],
+        "self_apo_colabfold_binder_scRMSD_ca_all": [9.0],
+    }
+    expanded = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "self", set(row))
+    apo = {name: spec for name, spec in expanded.items() if spec.get("column_prefix") == "apo"}
+    assert len(apo) == 2, f"one criterion per folding model, got {sorted(apo)}"
+    metrics = {spec["metric"] for spec in apo.values()}
+    assert metrics == {"esmfold2_binder_scRMSD_ca", "colabfold_binder_scRMSD_ca"}

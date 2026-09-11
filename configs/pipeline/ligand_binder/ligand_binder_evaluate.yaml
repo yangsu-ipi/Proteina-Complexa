@@ -34,8 +34,14 @@ metric:
   # Apo refolding: fold each sequence WITHOUT the target and measure scRMSD
   # against the designed binder backbone. Ungated -- emitted for calibration.
   # Costs one monomer fold per sequence per design on top of complex folding.
+  #
+  # Two folders, as on the protein-binder side. Strictly additive here: the
+  # ligand thresholds carry no apo criterion, so this adds columns and moves no
+  # pass rate. colabfold is AlphaFold2 via colabfold_batch, single-sequence; its
+  # parameters are the ones build_blackwell.sh already fetches to
+  # community_models/ckpts/AF2 (see colabfold_data_dir).
   compute_apo_metrics: true
-  apo_folding_models: [esmfold]   # esmfold, esmfold2, colabfold
+  apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
   apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
   reuse_cached_apo_folds: true
   
