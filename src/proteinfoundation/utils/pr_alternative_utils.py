@@ -942,6 +942,68 @@ def openmm_relax(
             return None
 
 
+def monomer_structure_metrics(pdb_file_path: str, chain_id: str | None = None) -> dict:
+    """What a single-chain structure can say about itself.
+
+    The apo counterpart of :func:`pr_alternative_score_interface`, which needs two
+    chains. An apo fold has one, so dSASA, shape complementarity and everything
+    else defined across an interface are not merely unmeasured there but
+    meaningless. What survives is the binder's own surface and its secondary
+    structure, and both are computed here by the same engines under the same
+    pinned radii and the same eight-state counts -- so an apo number and a holo
+    one differ because the structures differ, not because two functions defined
+    them.
+
+    Surface hydrophobicity needs no new definition at all: the complex path
+    already computes it from the binder CARVED OUT of the complex, a single chain
+    on its own. This is that computation without the carving.
+
+    Raises :class:`SasaError` rather than returning a placeholder, for the reason
+    the interface path does: 0.30 and 0.0 are indistinguishable from measurements
+    once they reach a column.
+    """
+    from proteinfoundation.metrics.structure_ss import structure_ss
+
+    if not _HAS_FREESASA:
+        raise SasaError("FreeSASA is not available, and the monomer surface has no second engine here")
+
+    basename = os.path.basename(pdb_file_path)
+    classifier_obj = freesasa.Classifier.getStandardClassifier("protor")  # type: ignore[name-defined]
+    params = freesasa.Parameters(  # type: ignore[name-defined]
+        {"algorithm": freesasa.LeeRichards, "n-slices": SASA_N_SLICES,  # type: ignore[name-defined]
+         "probe-radius": SASA_PROBE_RADIUS, "n-threads": 1}
+    )
+    structure = freesasa.Structure(  # type: ignore[name-defined]
+        pdb_file_path, classifier=classifier_obj, options=SASA_STRUCTURE_OPTIONS
+    )
+    result = freesasa.calc(structure, params)  # type: ignore[name-defined]
+    total = float(result.totalArea())
+    if total <= 0.0:
+        raise SasaError(f"monomer SASA is {total} in {pdb_file_path}")
+    try:
+        with _suppress_freesasa_warnings():
+            sel_area = freesasa.selectArea(  # type: ignore[name-defined]
+                ["hydro, resn ala+val+leu+ile+met+phe+pro+trp+tyr+cys"], structure, result
+            )
+        hydro_area = float(sel_area["hydro"])
+    except Exception as exc:
+        raise SasaError(f"FreeSASA hydrophobic-residue selection failed for {basename}: {exc}") from exc
+
+    # interface_resseqs=None: a monomer has no interface, which structure_ss
+    # already states as the meaning of None rather than leaving it to a caller.
+    ss = structure_ss(pdb_file_path, chain_id, None)
+
+    metrics = {
+        "sasa_engine": SASA_ENGINE,
+        "sasa_radii": SASA_RADII,
+        "binder_sasa": total,
+        "binder_surface_hydrophobicity": hydro_area / total,
+        "binder_ss_counts": ss["ss_counts"],
+        "binder_ss_total": ss["ss_total"],
+    }
+    return {k: round(v, 3) if isinstance(v, float) else v for k, v in metrics.items()}
+
+
 def pr_alternative_score_interface(
     pdb_file,
     binder_chain="B",

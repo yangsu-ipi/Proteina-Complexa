@@ -105,6 +105,30 @@ def collapse_counts(value) -> dict[str, float]:
     return {state: out[state] / total for state in SS_COARSE_STATES}
 
 
+def _load_pdb_named_otherwise(pdb_path: str):
+    """Load a PDB whose filename does not end in .pdb.
+
+    mdtraj dispatches on the extension and refuses anything else, and the apo
+    refolds are written as ``<name>.pdb_esm_apo_mpnn`` -- so every kept apo
+    structure in every finished campaign is a PDB mdtraj will not open. The
+    contents are fine; only the name is. A link under a .pdb name is cheaper than
+    a copy and leaves the original untouched.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    import mdtraj as md
+
+    with tempfile.TemporaryDirectory() as tmp:
+        linked = os.path.join(tmp, "structure.pdb")
+        try:
+            os.symlink(os.path.abspath(pdb_path), linked)
+        except OSError:
+            shutil.copyfile(pdb_path, linked)
+        return md.load(linked)
+
+
 def chain_states(pdb_path: str, chain_id: str | None = None) -> list[tuple[int, str]]:
     """(residue number, DSSP state) for one chain, or for the whole file.
 
@@ -115,7 +139,7 @@ def chain_states(pdb_path: str, chain_id: str | None = None) -> list[tuple[int, 
     """
     import mdtraj as md
 
-    traj = md.load(pdb_path)
+    traj = md.load(pdb_path) if pdb_path.endswith(".pdb") else _load_pdb_named_otherwise(pdb_path)
     states = md.compute_dssp(traj, simplified=False)[0]
     residues = list(traj.topology.residues)
     if len(states) != len(residues):

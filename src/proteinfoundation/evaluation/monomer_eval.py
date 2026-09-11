@@ -36,6 +36,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     FoldingResult,
     _fold_seeds,
     average_folds,
+    folded_paths_by_model,
     monomer_fold_fingerprint,
     read_monomer_folds,
     write_monomer_fold_cache,
@@ -320,21 +321,28 @@ def compute_scrmsd_from_folded(
 
     rmsd_values = {mode: {} for mode in rmsd_modes}
     plddt: dict[str, list[float]] = {}
-    folded_paths = []
+    # Keyed by model, one slot per sequence, None where a fold failed. It used to
+    # be one flat list appended model by model with failures skipped, which threw
+    # away the only thing that says which structure belongs to which sequence and
+    # which model -- so anything read OFF these structures had to refuse to guess,
+    # and did.
+    folded_paths: dict[str, list[str | None]] = {}
 
     for model_name, results in folding_results.items():
         for mode in rmsd_modes:
             rmsd_values[mode][model_name] = []
         plddt[model_name] = []
+        folded_paths[model_name] = []
 
         for result in results:
             if not result.success or result.pdb_path is None:
                 for mode in rmsd_modes:
                     rmsd_values[mode][model_name].append(float("inf"))
                 plddt[model_name].append(float("nan"))
+                folded_paths[model_name].append(None)
                 continue
 
-            folded_paths.append(result.pdb_path)
+            folded_paths[model_name].append(result.pdb_path)
             # Read here because this is already the one place that opens every
             # folded structure. The backends write per-residue pLDDT into the
             # B-factor column, so it costs a parse of a file being parsed anyway.
@@ -395,14 +403,15 @@ def _result_from_cache(
     caching them: adding an RMSD mode costs a reload rather than a refold. Anything
     else recomputes.
 
-    The partial path is limited to a single folding model, because
-    DesignabilityResult.folded_paths is flat across models and cannot be split
-    back apart; with two models a partial miss simply refolds.
+    The partial path used to be limited to a single folding model, because
+    folded_paths was flat across models and could not be split back apart -- so
+    with two models a partial miss refolded. Schema 3 keys the paths by model, and
+    the restriction is gone with it.
     """
     have = cached["rmsd_values"]
     missing = [m for m in rmsd_modes if m not in have]
     sequences = list(cached.get("sequences") or [])
-    paths = list(cached.get("folded_paths") or [])
+    paths = folded_paths_by_model(cached)
 
     if not missing:
         logger.info(f"Reusing cached refold for {len(sequences)} sequence(s), modes {rmsd_modes}")
@@ -414,28 +423,29 @@ def _result_from_cache(
             plddt=dict(cached.get("plddt") or {}),
         )
 
-    models = sorted({model for by_model in have.values() for model in by_model})
-    reusable = (
-        cached.get("structures_kept") and len(models) == 1 and paths and all(os.path.exists(pth) for pth in paths)
+    on_disk = paths and all(
+        pth and os.path.exists(pth) for by_model in paths.values() for pth in by_model
     )
+    reusable = cached.get("structures_kept") and on_disk
     if not reusable:
         why = (
             "structures were not kept"
             if not cached.get("structures_kept")
             else "structures are missing from disk"
-            if paths and not all(os.path.exists(pth) for pth in paths)
-            else f"{len(models)} folding models cannot be separated"
+            if paths
+            else "no kept structures could be attributed to a model"
         )
         logger.info(f"Cached refold lacks mode(s) {missing} and {why}; refolding")
         return None
 
-    model = models[0]
-    logger.info(f"Cached refold lacks mode(s) {missing}; computing them from {len(paths)} kept structure(s)")
+    total = sum(len(v) for v in paths.values())
+    logger.info(f"Cached refold lacks mode(s) {missing}; computing them from {total} kept structure(s)")
     synthetic = {
         model: [
             FoldingResult(pdb_path=pth, sequence=seq, model_name=model, success=True)
-            for pth, seq in zip(paths, sequences + [""] * len(paths), strict=False)
+            for pth, seq in zip(by_model, sequences + [""] * len(by_model), strict=False)
         ]
+        for model, by_model in paths.items()
     }
     extra = compute_scrmsd_from_folded(
         reference_pdb_path=reference_pdb_path,
@@ -608,7 +618,7 @@ def evaluate_self_consistency(
             "sequences": list(scored.sequences),
             "rmsd_values": scored.rmsd_values,
             "best_rmsd": scored.best_rmsd,
-            "folded_paths": list(scored.folded_paths),
+            "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
         }
 
     result = _result_from_folds(per_seed, rmsd_modes, pdb_path)

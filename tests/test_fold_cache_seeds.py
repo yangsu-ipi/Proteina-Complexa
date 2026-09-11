@@ -265,18 +265,20 @@ def test_per_seed_rmsds_average_and_keep_their_positions():
             "sequences": ["A", "B"],
             "rmsd_values": {"ca": {"esmfold2": [1.0, 3.0]}},
             "best_rmsd": 1.0,
-            "folded_paths": ["/1"],
+            "folded_paths": {"esmfold2": ["/1a", "/1b"]},
         },
         2: {
             "sequences": ["A", "B"],
             "rmsd_values": {"ca": {"esmfold2": [2.0, 5.0]}},
             "best_rmsd": 2.0,
-            "folded_paths": ["/2"],
+            "folded_paths": {"esmfold2": ["/2a", "/2b"]},
         },
     }
     got = average_folds(folds)
     assert got["rmsd_values"]["ca"]["esmfold2"] == [1.5, 4.0]
-    assert set(got["folded_paths"]) == {"/1", "/2"}, "paths are kept, not averaged -- each is a real structure"
+    assert set(got["folded_paths"]["esmfold2"]) == {"/1a", "/1b", "/2a", "/2b"}, (
+        "paths are kept, not averaged -- each is a real structure, and which model made it is part of it"
+    )
 
 
 def test_one_bad_seed_does_not_average_into_a_plausible_number():
@@ -750,3 +752,75 @@ def test_the_engine_and_radii_are_taken_from_a_seed_not_averaged():
     assert mean_over_seeds(by_seed)["sasa_engine"] == "freesasa"
 
 
+
+
+def test_a_legacy_flat_path_list_is_attributed_only_when_it_can_be():
+    """Schema 2 stored one flat list appended model by model with failures
+    skipped. One model and one path per sequence is recoverable; anything else is
+    a guess, and a structure attributed to the wrong sequence is worse than one
+    left unattributed."""
+    from proteinfoundation.evaluation.monomer_eval_utils import folded_paths_by_model
+
+    recoverable = {
+        "sequences": ["A", "B"],
+        "rmsd_values": {"ca": {"esmfold2": [1.0, 2.0]}},
+        "folded_paths": ["/a", "/b"],
+    }
+    assert folded_paths_by_model(recoverable) == {"esmfold2": ["/a", "/b"]}
+
+    two_models = {
+        "sequences": ["A", "B"],
+        "rmsd_values": {"ca": {"esmfold2": [1.0, 2.0], "colabfold": [1.0, 2.0]}},
+        "folded_paths": ["/a", "/b", "/c", "/d"],
+    }
+    assert folded_paths_by_model(two_models) == {}, "two models, one flat list -- not separable"
+
+    a_failure = {
+        "sequences": ["A", "B"],
+        "rmsd_values": {"ca": {"esmfold2": [1.0, float("inf")]}},
+        "folded_paths": ["/a"],
+    }
+    assert folded_paths_by_model(a_failure) == {}, "one path for two sequences says nothing about which"
+
+
+def test_the_apo_derivation_is_not_part_of_the_fold_fingerprint():
+    """The same split the advisory side has, and for the same arithmetic: adding
+    something read off a kept apo structure must re-read PDBs, not refold them."""
+    from proteinfoundation.evaluation import monomer_eval_utils as mu
+
+    before = mu.monomer_derivation_fingerprint()
+    original = mu.MONOMER_DERIVED_SUFFIXES
+    try:
+        mu.MONOMER_DERIVED_SUFFIXES = original + ("binder_radius_of_gyration",)
+        assert mu.monomer_derivation_fingerprint() != before, "what is read off the structure changed"
+    finally:
+        mu.MONOMER_DERIVED_SUFFIXES = original
+
+    args = dict(
+        reference_pdb_path="/design.pdb",
+        suffix="apo_mpnn",
+        folding_models=["esmfold2"],
+        model_identities={"esmfold2": "x"},
+        num_seq_per_target=2,
+        pmpnn_sampling_temp=0.1,
+        binder_chain="B",
+    )
+    fold_fingerprint = mu.monomer_fold_fingerprint(**args)
+    try:
+        mu.MONOMER_DERIVED_SUFFIXES = original + ("binder_radius_of_gyration",)
+        assert mu.monomer_fold_fingerprint(**args) == fold_fingerprint, "the fold is unchanged"
+    finally:
+        mu.MONOMER_DERIVED_SUFFIXES = original
+
+
+def test_an_apo_structure_has_no_interface_metrics():
+    """An apo fold is one chain. dSASA, shape complementarity and interface
+    composition are not merely unmeasured there but meaningless, so registering
+    one would create a column that is always absent."""
+    from proteinfoundation.evaluation.monomer_eval_utils import MONOMER_DERIVED_SUFFIXES
+
+    for name in MONOMER_DERIVED_SUFFIXES:
+        assert "interface" not in name, f"{name} needs two chains"
+        assert "dSASA" not in name, f"{name} needs two chains"
+    assert "binder_surface_hydrophobicity" in MONOMER_DERIVED_SUFFIXES
+    assert "binder_ss_counts" in MONOMER_DERIVED_SUFFIXES

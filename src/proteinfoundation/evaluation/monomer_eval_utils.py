@@ -73,7 +73,10 @@ class DesignabilityResult:
 
     rmsd_values: dict[str, dict[str, list[float]]]  # mode -> model -> list of rmsds
     best_rmsd: dict[str, dict[str, float]]  # mode -> model -> best rmsd
-    folded_paths: list[str] = field(default_factory=list)
+    # {model: [path or None per sequence]}. Keyed, because a flat list cannot say
+    # which structure belongs to which sequence or which model, and anything read
+    # off these structures needs both.
+    folded_paths: dict[str, list[str | None]] = field(default_factory=dict)
     sequences: list[str] = field(default_factory=list)
     # model -> per-sequence mean pLDDT of the fold, positionally aligned with
     # sequences like everything else here. Empty for folds cached before it was
@@ -167,35 +170,237 @@ def monomer_fold_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-MONOMER_CACHE_SCHEMA = 2  # 1 held a single fold; 2 holds one per seed
+MONOMER_CACHE_SCHEMA = 3  # 1 held a single fold; 2 one per seed; 3 keys folded_paths by model
+
+
+# =============================================================================
+# Derived metrics
+# =============================================================================
+#
+# Read off a kept apo structure rather than reported by the folder, and so not
+# part of a fold's identity: the same structure answers for any of them, which
+# means changing which are computed must re-read the PDBs already on disk rather
+# than refold. The split mirrors the advisory one in metrics/consensus_folding.py
+# and exists for the same arithmetic -- on CBLN1 that is the difference between
+# re-reading 22k structures and predicting them again.
+#
+# An apo fold is one chain, so everything defined across an interface is absent
+# here on purpose: dSASA, shape complementarity, interface composition. What a
+# monomer can say about itself is its own surface and its secondary structure.
+MONOMER_DERIVED_SUFFIXES: tuple[str, ...] = (
+    "sasa_engine",
+    "sasa_radii",
+    "binder_sasa",
+    "binder_surface_hydrophobicity",
+    "binder_ss_counts",
+    "binder_ss_total",
+)
+# Bumped when the derivation of a registered metric changes without its name
+# changing, which the name alone cannot express.
+MONOMER_DERIVATION_VERSION = 1
+
+
+def monomer_derivation_fingerprint() -> str:
+    """Identity of what is read OFF an apo structure, not of the structure."""
+    canonical = json.dumps(
+        {"derived": sorted(MONOMER_DERIVED_SUFFIXES), "version": MONOMER_DERIVATION_VERSION},
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def derive_from_monomer_structure(pdb_path: str) -> dict:
+    """The registered metrics, read off one apo structure.
+
+    Returns ``{}`` while nothing is registered, which keeps the split inert until
+    a caller opts in. Raises nothing of its own: a caller treats a failure as "not
+    derivable for this structure" and leaves the columns absent, so one unreadable
+    PDB does not cost a refold of everything.
+    """
+    if not MONOMER_DERIVED_SUFFIXES:
+        return {}
+    from proteinfoundation.utils.pr_alternative_utils import monomer_structure_metrics
+
+    metrics = monomer_structure_metrics(pdb_path)
+    return {name: metrics[name] for name in MONOMER_DERIVED_SUFFIXES if name in metrics}
+
+
+def _entry_needs_derivation(entry: dict, stale: bool) -> bool:
+    if stale:
+        return True
+    derived = entry.get("derived") or {}
+    return any(
+        any(name not in (derived.get(model) or {}) for name in MONOMER_DERIVED_SUFFIXES)
+        for model in folded_paths_by_model(entry)
+    )
+
+
+def derive_for_result(result) -> dict[str, dict[str, list]]:
+    """Derived metrics for one in-memory result, with no cache to stamp.
+
+    For the apo ``self`` path, which shares the codesignability fold: its
+    structures live under that track's cache and fingerprint, so there is nothing
+    here to mark as derived. Re-reading one sequence's structures each run is
+    cheaper than reaching into another track's cache file with a fingerprint this
+    caller would have to reconstruct -- and reconstructing it wrongly would write
+    derived values against folds they did not come from.
+    """
+    if not MONOMER_DERIVED_SUFFIXES:
+        return {}
+    entry = {
+        "sequences": list(getattr(result, "sequences", []) or []),
+        "rmsd_values": getattr(result, "rmsd_values", {}) or {},
+        "folded_paths": getattr(result, "folded_paths", {}) or {},
+    }
+    folds = {0: entry}
+    _derive_into(folds, stale=True)
+    return (folds[0].get("derived") or {}) if folds else {}
+
+
+def refresh_monomer_derivation(
+    output_dir: str, suffix: str, fingerprint: str, folds: dict[int, dict]
+) -> dict[int, dict]:
+    """Fill in what is read off the kept apo structures, re-reading not refolding.
+
+    Runs when the derivation fingerprint moved AND when an entry simply lacks a
+    key -- so a fold cached before its structure existed heals itself once the PDB
+    is there, instead of staying blank forever behind a fingerprint that already
+    matches. Fresh folds are filled on the run that produced them rather than the
+    one after, which is the difference between a column being there and a campaign
+    having to be evaluated twice to populate it.
+
+    Returns *folds* with ``derived`` attached per seed, as
+    ``{model: {metric: [value per sequence]}}``, positionally aligned with the
+    sequences like everything else here.
+    """
+    if not MONOMER_DERIVED_SUFFIXES or not folds:
+        return folds
+    path = monomer_fold_cache_path(output_dir, suffix)
+    current = monomer_derivation_fingerprint()
+    stored = None
+    if os.path.exists(path):
+        try:
+            with open(path) as handle:
+                stored = json.load(handle).get("derivation")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            stored = None
+    stale = stored != current
+
+    changed = _derive_into(folds, stale)
+    if changed or stale:
+        _rewrite_monomer_derivation(path, fingerprint, folds, current)
+    return folds
+
+
+def _derive_into(folds: dict, stale: bool) -> bool:
+    """Attach ``derived`` to every entry that needs it. True if anything changed."""
+    changed, failed = False, 0
+    for entry in folds.values():
+        if not _entry_needs_derivation(entry, stale):
+            continue
+        sequences = list(entry.get("sequences") or [])
+        derived = {str(m): dict(v) for m, v in (entry.get("derived") or {}).items()}
+        for model, paths in folded_paths_by_model(entry).items():
+            if len(paths) != len(sequences):
+                continue
+            per_metric: dict[str, list] = {name: [] for name in MONOMER_DERIVED_SUFFIXES}
+            usable = False
+            for pdb in paths:
+                one = {}
+                if pdb and os.path.exists(pdb):
+                    try:
+                        one = derive_from_monomer_structure(pdb)
+                        usable = usable or bool(one)
+                    except Exception as exc:
+                        failed += 1
+                        logger.warning(f"Could not derive apo metrics from {pdb}: {exc}")
+                for name in MONOMER_DERIVED_SUFFIXES:
+                    per_metric[name].append(one.get(name, math.nan))
+            if usable:
+                derived[model] = per_metric
+                changed = True
+        if derived:
+            entry["derived"] = derived
+    if failed:
+        logger.warning(f"Apo derivation failed for {failed} structures; their columns stay absent")
+    return changed
+
+
+def _rewrite_monomer_derivation(path: str, fingerprint: str, folds: dict[int, dict], derivation: str) -> None:
+    """Persist the derived values beside the folds they were read from."""
+    try:
+        existing = {}
+        if os.path.exists(path):
+            with open(path) as handle:
+                blob = json.load(handle)
+            if blob.get("fingerprint") == fingerprint:
+                existing = dict(blob.get("folds") or {})
+        for seed, entry in folds.items():
+            stored = existing.get(str(seed))
+            if isinstance(stored, dict) and entry.get("derived"):
+                stored["derived"] = entry["derived"]
+            elif entry.get("derived"):
+                existing[str(seed)] = entry
+        with open(path, "w") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "fingerprint": fingerprint,
+                        "schema": MONOMER_CACHE_SCHEMA,
+                        "derivation": derivation,
+                        "folds": existing,
+                    }
+                )
+            )
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(f"Could not persist apo derived metrics for {path}: {exc}")
+
+
+def folded_paths_by_model(entry: dict) -> dict[str, list[str | None]]:
+    """Kept structures as ``{model: [path or None per sequence]}``.
+
+    Schema-3 entries store exactly this. Schema-2 stored one flat list, appended
+    model by model with failed folds skipped, which is recoverable only where
+    there was one model and one path per sequence -- the same condition the pLDDT
+    recovery already refused to guess past. Anything else yields ``{}``, which a
+    caller reads as "no structures it can attribute", not as "no structures".
+    """
+    paths = entry.get("folded_paths")
+    if isinstance(paths, dict):
+        return {str(model): list(values) for model, values in paths.items()}
+    paths = list(paths or [])
+    sequences = list(entry.get("sequences") or [])
+    models = sorted({m for by_model in (entry.get("rmsd_values") or {}).values() for m in by_model})
+    if len(models) == 1 and paths and len(paths) == len(sequences):
+        return {models[0]: paths}
+    return {}
 
 
 def _plddt_from_kept_structures(entry: dict) -> dict[str, list[float]]:
     """pLDDT for a fold cached before it was recorded, read back off the
     structures that fold kept.
 
-    Only attempted where the mapping from paths to sequences is unambiguous:
-    one folding model, and exactly one kept structure per sequence.
-    ``folded_paths`` is a flat list appended model by model, skipping folds that
-    failed, so with two models or a single failure there is no way to say which
-    path belongs to which sequence -- and a confidence attributed to the wrong
-    sequence is worse than an absent one. Those folds stay unmeasured.
+    Attributable now for any number of models, because the paths say which model
+    and which sequence each belongs to. Under the flat list this worked only for a
+    single model, and a confidence attributed to the wrong sequence is worse than
+    an absent one -- so those folds stayed unmeasured, and would have gone on
+    staying unmeasured the moment a second apo folder was enabled.
 
     This is what makes the column available without refolding: whenever
     keep_folding_outputs held, the structures are already on disk and their
     B-factor column already holds the number.
     """
-    paths = list(entry.get("folded_paths") or [])
     sequences = list(entry.get("sequences") or [])
-    models = {m for by_model in (entry.get("rmsd_values") or {}).values() for m in by_model}
-    if len(models) != 1 or not paths or len(paths) != len(sequences):
-        return {}
-    values = [mean_plddt_from_pdb(path) for path in paths]
-    # All NaN means the structures are gone or unreadable. Recording that is no
-    # better than recording nothing, and nothing is what the caller expects.
-    if all(math.isnan(v) for v in values):
-        return {}
-    return {next(iter(models)): values}
+    recovered: dict[str, list[float]] = {}
+    for model, paths in folded_paths_by_model(entry).items():
+        if len(paths) != len(sequences):
+            continue
+        values = [mean_plddt_from_pdb(path) if path else math.nan for path in paths]
+        # All NaN means the structures are gone or unreadable. Recording that is no
+        # better than recording nothing, and nothing is what the caller expects.
+        if not all(math.isnan(v) for v in values):
+            recovered[model] = values
+    return recovered
 
 
 def _fold_payload(entry: dict) -> dict | None:
@@ -241,6 +446,40 @@ def per_model_plddt(plddt: dict | None, folding_models: list[str], n: int) -> di
     for model in folding_models:
         values = list(stored.get(model) or [])
         out[model] = (values + [float("nan")] * n)[:n]
+    return out
+
+
+def _mean_derived(per_seed: list):
+    """Average one derived metric over the seeds that produced it.
+
+    Each entry is a list over sequences whose elements may be floats, packed
+    eight-state counts (lists), or provenance strings. Strings come from the first
+    seed -- averaging "freesasa" is not a thing -- and a NaN in any seed makes the
+    result NaN, the same rule the RMSDs use for infinity: a seed that produced no
+    usable value did not produce a slightly worse one.
+    """
+    usable = [v for v in per_seed if isinstance(v, list)]
+    if not usable:
+        return per_seed[0] if per_seed else None
+    width = min(len(v) for v in usable)
+    out = []
+    for i in range(width):
+        values = [v[i] for v in usable]
+        first = values[0]
+        if isinstance(first, str):
+            out.append(first)
+        elif isinstance(first, list):
+            if any(not isinstance(v, list) or len(v) != len(first) for v in values):
+                out.append(first)
+            else:
+                out.append([sum(v[j] for v in values) / len(values) for j in range(len(first))])
+        else:
+            numbers = [float(v) for v in values if isinstance(v, (int, float))]
+            out.append(
+                sum(numbers) / len(numbers)
+                if len(numbers) == len(values) and all(math.isfinite(n) for n in numbers)
+                else math.nan
+            )
     return out
 
 
@@ -294,7 +533,27 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
     averaged["rmsd_values"] = merged
     if merged_plddt:
         averaged["plddt"] = merged_plddt
-    averaged["folded_paths"] = [p for f in usable for p in f.get("folded_paths", [])]
+    # Concatenated per model rather than across models: a path is not a
+    # measurement, and each is a real structure a reader may want -- but which
+    # model produced it is part of what makes it readable.
+    merged_paths: dict[str, list[str | None]] = {}
+    for fold in usable:
+        for model, paths in folded_paths_by_model(fold).items():
+            merged_paths.setdefault(model, []).extend(paths)
+    averaged["folded_paths"] = merged_paths
+    # Derived metrics average over seeds exactly as the RMSDs and pLDDTs do: three
+    # seeds are three structures, and reporting the first one's secondary
+    # structure beside confidences that are means of three would be two different
+    # claims on one row. Provenance strings are taken, not averaged.
+    merged_derived: dict[str, dict[str, list]] = {}
+    for model in {m for fold in usable for m in (fold.get("derived") or {})}:
+        per_seed = [fold["derived"][model] for fold in usable if model in (fold.get("derived") or {})]
+        merged_derived[model] = {
+            name: _mean_derived([seed.get(name) for seed in per_seed])
+            for name in {n for seed in per_seed for n in seed}
+        }
+    if merged_derived:
+        averaged["derived"] = merged_derived
     averaged["n_seeds"] = len(usable)
     return averaged
 
@@ -449,7 +708,7 @@ def write_monomer_fold_cache(
         "sequences": list(result.sequences),
         "rmsd_values": result.rmsd_values,
         "best_rmsd": result.best_rmsd,
-        "folded_paths": list(result.folded_paths) if keep_outputs else [],
+        "folded_paths": {m: list(v) for m, v in (result.folded_paths or {}).items()} if keep_outputs else {},
         "plddt": result.plddt,
         "structures_kept": bool(keep_outputs),
     }
@@ -486,7 +745,17 @@ def write_monomer_fold_cache(
         entry["seed_index"] = seed_index
         entry["seed_derivation"] = SEED_DERIVATION_VERSION
         folds[str(seed)] = entry
-        blob = json.dumps({"fingerprint": fingerprint, "schema": MONOMER_CACHE_SCHEMA, "folds": folds})
+        blob = json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "schema": MONOMER_CACHE_SCHEMA,
+                # Stamped even though this write carries no derived values: the
+                # refresh pass runs right after and compares against it, and a
+                # file with no stamp reads as stale on every run forever.
+                "derivation": monomer_derivation_fingerprint(),
+                "folds": folds,
+            }
+        )
         with open(path, "w") as handle:
             handle.write(blob)
     except (OSError, TypeError, ValueError) as exc:

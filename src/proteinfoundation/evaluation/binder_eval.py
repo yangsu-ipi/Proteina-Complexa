@@ -33,6 +33,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     DEFAULT_NUM_REDESIGN_SEQS_PROTEIN,
     TMOL_METRIC_COLS,
     apo_column,
+    apo_derived_column,
     apo_fold_fingerprint,
     apo_plddt_column,
     check_thresholds_are_computable,
@@ -50,7 +51,10 @@ from proteinfoundation.evaluation.esm_eval import (
     compute_esm_ppl_for_sequences,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
+    MONOMER_DERIVED_SUFFIXES,
+    derive_for_result,
     per_model_plddt,
+    refresh_monomer_derivation,
     write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
@@ -266,7 +270,9 @@ def apo_refold(
     ``_res_co_scRMSD_{mode}_{model}`` sharing one fold.
 
     Returns ``({(mode, model): [rmsd per sequence]}, {model: [pLDDT per
-    sequence]})``. Empty when nothing could be folded; a failed fold is ``inf``
+    sequence]}, {model: {metric: [value per sequence]}})`` -- the third being what
+    is read OFF the kept structures rather than reported by the folder. Empty
+    when nothing could be folded; a failed fold is ``inf``
     for that sequence, not a missing row, so the lists stay aligned with the
     sequences they describe. A fold with no readable confidence is NaN, which is
     the same distinction: unmeasured rather than bad.
@@ -314,6 +320,11 @@ def apo_refold(
                 for m in folding_models
             },
             per_model_plddt(result.plddt, folding_models, len(sequences)),
+            # Read off the same structures, without a cache of its own to stamp:
+            # this path shares the codesignability fold, whose cache lives under
+            # another track's fingerprint. One sequence's worth of re-reading per
+            # run beats reconstructing that fingerprint here and writing into it.
+            derive_for_result(result),
         )
 
     suffix = f"apo_{seq_type}"
@@ -368,9 +379,13 @@ def apo_refold(
             "sequences": list(scored.sequences),
             "rmsd_values": scored.rmsd_values,
             "best_rmsd": scored.best_rmsd,
-            "folded_paths": list(scored.folded_paths),
+            "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
             "plddt": scored.plddt,
         }
+
+    # What the kept structures say about themselves, filled in on the run that
+    # produced them rather than the one after. Re-reads PDBs, never refolds.
+    per_seed = refresh_monomer_derivation(sample_root_path, suffix, fingerprint, per_seed)
 
     averaged = average_folds(per_seed) or {}
     values = averaged.get("rmsd_values", {})
@@ -379,7 +394,11 @@ def apo_refold(
         for mode in rmsd_modes
         for m in folding_models
     }
-    return rmsds, per_model_plddt(averaged.get("plddt"), folding_models, len(sequences))
+    return (
+        rmsds,
+        per_model_plddt(averaged.get("plddt"), folding_models, len(sequences)),
+        averaged.get("derived") or {},
+    )
 
 
 def _target_chain_sequences(target_pdb_path: str, target_pdb_chain: list[str]) -> list[str]:
@@ -914,9 +933,9 @@ def compute_binder_metrics(
                         )
                     except Exception as exc:
                         logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")
-                        apo_values = ({}, {})
+                        apo_values = ({}, {}, {})
 
-                    apo_values, apo_plddt = apo_values
+                    apo_values, apo_plddt, apo_derived = apo_values
                     for model, values in (apo_plddt or {}).items():
                         # Advisory. The campaign folds apo with esmfold2, which
                         # runs on a compressed scale -- a native protein reaches
@@ -935,6 +954,20 @@ def compute_binder_metrics(
                         for name in (col, f"{col}_all"):
                             if name not in all_columns:
                                 all_columns.append(name)
+
+                    # Read off the kept apo structures, not reported by the folder:
+                    # the binder's own surface and its secondary structure, by the
+                    # same engines and the same eight-state counts the complex side
+                    # uses. Advisory like the pLDDT above -- nothing gates on them.
+                    for model, by_metric in (apo_derived or {}).items():
+                        for metric in MONOMER_DERIVED_SUFFIXES:
+                            if metric not in by_metric:
+                                continue
+                            col = apo_derived_column(seq_type, model, metric)
+                            row_dict[f"{col}_all"] = by_metric[metric]
+                            for name in (col, f"{col}_all"):
+                                if name not in all_columns:
+                                    all_columns.append(name)
 
                 # ESM pseudo-perplexity metrics (optional).
                 #

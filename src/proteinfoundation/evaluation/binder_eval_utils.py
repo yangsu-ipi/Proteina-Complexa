@@ -691,6 +691,18 @@ def apo_column(seq_type: str, mode: str, model: str) -> str:
     return f"{seq_type}_apo_{model}_binder_scRMSD_{mode}"
 
 
+def apo_derived_column(seq_type: str, model: str, metric: str) -> str:
+    """Column for a metric read OFF the apo structure, per type and folding model.
+
+    Same slots as the apo RMSD and pLDDT columns, and the same names the complex
+    side uses for the same quantities -- so {seq}_apo_esmfold2_binder_ss_counts
+    sits a slot away from {seq}_complex_esmfold2_binder_ss_counts and the two can
+    be subtracted. Nothing defined across an interface appears here: an apo fold
+    is one chain.
+    """
+    return f"{seq_type}_apo_{model}_{metric}"
+
+
 def apo_plddt_column(seq_type: str, model: str) -> str:
     """Column for the apo fold's mean pLDDT, per sequence type and folding model.
 

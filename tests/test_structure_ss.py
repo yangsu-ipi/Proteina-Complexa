@@ -202,3 +202,38 @@ def test_counts_survive_the_csv_round_trip_into_fractions():
     as_text = pd.DataFrame({"x_ss_counts": [str(packed)]})
     as_list = pd.DataFrame({"x_ss_counts": [packed]})
     assert derive_ss_fractions(as_text)["x_ss_helix"][0] == derive_ss_fractions(as_list)["x_ss_helix"][0]
+
+
+def test_a_pdb_whose_name_does_not_end_in_pdb_is_still_read():
+    """mdtraj dispatches on the extension. The apo refolds are written as
+    <name>.pdb_esm_apo_mpnn, so every kept apo structure in every finished
+    campaign is a PDB mdtraj refuses to open -- the contents are fine, only the
+    name is."""
+    import pathlib
+    import tempfile
+
+    import pytest
+
+    pytest.importorskip("mdtraj")
+
+    from proteinfoundation.metrics.structure_ss import chain_states
+
+    atoms = [("N", 0.0, 0.0, 0.0), ("CA", 1.46, 0.0, 0.0), ("C", 2.0, 1.42, 0.0), ("O", 1.3, 2.4, 0.0)]
+    lines, serial = [], 1
+    for res in range(4):
+        for name, x, y, z in atoms:
+            lines.append(
+                f"ATOM  {serial:5d}  {name:<3s} ALA A{1 + res:4d}    "
+                f"{x + res * 3.6:8.3f}{y:8.3f}{z:8.3f}  1.00 50.00          {name[0]:>2s}  "
+            )
+            serial += 1
+    body = "\n".join(lines) + "\nTER\nEND\n"
+
+    home = pathlib.Path(tempfile.mkdtemp())
+    proper = home / "structure.pdb"
+    proper.write_text(body)
+    awkward = home / "structure.pdb_esm_apo_mpnn"
+    awkward.write_text(body)
+
+    assert chain_states(str(awkward)) == chain_states(str(proper))
+    assert len(chain_states(str(awkward))) == 4
