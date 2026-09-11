@@ -20,6 +20,23 @@ import os
 # it equalled the binder half exactly on every row of a real run, to the last
 # digit the CSV carried. Keeping both would be one number under two names, and
 # the misleading name is the one a threshold could be pointed at by mistake.
+# The top bin of a PAE head, in Angstroms, and so the divisor that puts the PAE
+# family on 0-1. Both folders this repo uses bin to the same 31: AlphaFold's
+# max_error_bin (community_models/colabdesign/af/alphafold/model/config.py) and
+# ESM's _pae_bins default (esm/utils/structure/predicted_aligned_error.py).
+#
+# Written out by hand in a dozen places before this -- the two producers, the RF3
+# adapter and its reward, and four threshold dicts -- with nothing tying them to
+# either model's actual bin range. A model that binned to something else would
+# have left every threshold quietly wrong, since a threshold carries the divisor
+# as `scale` and has no way to ask what the number came from.
+#
+# The copy inside the vendored ColabDesign loss is deliberately left alone: it
+# runs in JAX inside the model, and importing this package from there would
+# invert the layering for one float.
+PAE_MAX_BIN = 31.0
+
+
 AF2_STAT_PRECISION = {
     "pTM": 3,
     "i_pTM": 3,

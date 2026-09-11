@@ -35,6 +35,14 @@ COMPLEX_BACKEND = "af2"
 # real row -- the binder is what varies between redesigns, the target barely.
 PRIMARY = {
     "i_pAE": [0.30, 0.10, 0.25],
+    "pAE": [0.25, 0.09, 0.20],
+    "min_ipAE": [0.05, 0.02, 0.04],
+    "min_ipSAE": [0.40, 0.74, 0.55],
+    "max_ipSAE": [0.50, 0.82, 0.63],
+    "avg_ipSAE": [0.45, 0.78, 0.59],
+    "min_ipSAE_10": [0.35, 0.70, 0.50],
+    "max_ipSAE_10": [0.45, 0.78, 0.58],
+    "avg_ipSAE_10": [0.40, 0.74, 0.54],
     "i_pTM": [0.5, 0.9, 0.6],
     "pTM": [0.6, 0.8, 0.7],
     "pLDDT": [0.80, 0.95, 0.88],
@@ -43,6 +51,14 @@ PRIMARY = {
 }
 ADVISORY = {
     "i_pAE": [0.40, 0.15, 0.35],
+    "pAE": [0.32, 0.14, 0.28],
+    "min_ipAE": [0.07, 0.03, 0.05],
+    "min_ipSAE": [0.32, 0.66, 0.47],
+    "max_ipSAE": [0.42, 0.74, 0.55],
+    "avg_ipSAE": [0.37, 0.70, 0.51],
+    "min_ipSAE_10": [0.28, 0.62, 0.43],
+    "max_ipSAE_10": [0.38, 0.70, 0.50],
+    "avg_ipSAE_10": [0.33, 0.66, 0.46],
     "i_pTM": [0.4, 0.8, 0.5],
     "pTM": [0.5, 0.7, 0.6],
     "pLDDT": [0.70, 0.93, 0.82],

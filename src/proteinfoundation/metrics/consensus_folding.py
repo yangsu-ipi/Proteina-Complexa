@@ -23,6 +23,16 @@ NOT comparable" (esmfold2 deploy/useful_binders.py). Turning any of this into a
 gate requires re-deriving thresholds against designs of known outcome, and until
 that exists these columns are for looking at, not filtering on.
 
+A note for anyone reading a CSV written before this: the PAE family here used to
+be stored in Angstroms while every other backend stored it divided by the top PAE
+bin, so ``{seq}_complex_esmfold2_i_pAE`` read 3.86 where ``..._af2_i_pAE`` read
+0.173 for the same design. It is divided now, like the rest. Over the EFNB3
+production run the medians land at 0.181 and 0.164 -- the same scale, with the
+disagreement in the upper tail that the advisory track exists to show, rather
+than a factor of 31 hiding it. The change rides along with a fold-fingerprint
+change, so no cache can serve the old units into a new run; only CSVs already
+written hold them.
+
 Adding a backend
 ----------------
 A backend is a callable::
@@ -64,7 +74,7 @@ import numpy as np
 from loguru import logger
 
 from proteinfoundation.metrics.column_names import rename
-from proteinfoundation.metrics.ensembling import mean_chain_plddt
+from proteinfoundation.metrics.ensembling import PAE_MAX_BIN, mean_chain_plddt
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 
 # Metrics a backend may report. Named to mirror the primary backend's metrics so
@@ -72,7 +82,24 @@ from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACK
 # target_pLDDT and binder_pLDDT split the complex mean the way the AF2 side does.
 # Advisory like everything else here: ESMFold2 runs on a compressed scale (see
 # above), so these are for looking at, not for filtering on.
-CONSENSUS_METRIC_SUFFIXES = ("i_pAE", "i_pTM", "pTM", "pLDDT", "target_pLDDT", "binder_pLDDT")
+CONSENSUS_METRIC_SUFFIXES = (
+    # The PAE family, on the same 0-1 scale and by the same definitions the
+    # primary backend's columns of these names carry -- see _esmfold2_metrics.
+    "i_pAE",
+    "pAE",
+    "min_ipAE",
+    "min_ipSAE",
+    "max_ipSAE",
+    "avg_ipSAE",
+    "min_ipSAE_10",
+    "max_ipSAE_10",
+    "avg_ipSAE_10",
+    "i_pTM",
+    "pTM",
+    "pLDDT",
+    "target_pLDDT",
+    "binder_pLDDT",
+)
 
 # One cache file per backend. A single shared file would thrash the moment two
 # backends are enabled together: each writes its own fingerprint, and the other's
@@ -248,12 +275,43 @@ def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
         metrics.update(mean_chain_plddt(array, target_len))
     pae = getattr(result, "pae", None)
     if pae is not None:
-        # Imported here rather than at the top of the function: it is the only
-        # metric that needs esm, and a result without a pae should not pay for
+        # Imported here rather than at the top of the function: these are the only
+        # metrics that need esm, and a result without a pae should not pay for
         # loading it.
-        from esm.models.esmfold2.interface_metrics import pae_interaction
+        from esm.models.esmfold2.interface_metrics import ipsae, pae_interaction
 
-        metrics["i_pAE"] = float(pae_interaction(_np(pae), target_len))
+        array = _np(pae)
+        # Divided by the top bin, because that is what every other backend's
+        # column of this name holds: ColabDesign divides inside its loss, the RF3
+        # adapter divides on the way in, and a threshold carries the divisor as
+        # `scale` so it can state itself in Angstroms. Left raw, i_pAE here read
+        # 3.86 beside AF2's 0.173 for the same design -- one name, 31x apart, in
+        # the column pair the advisory track exists to compare. Both heads bin to
+        # the same 31, so this is a shared convention rather than one model's
+        # scale imposed on another.
+        metrics["i_pAE"] = float(pae_interaction(array, target_len)) / PAE_MAX_BIN
+        # The binder's own rows against everything, symmetrised: ColabDesign's
+        # `pae` is get_pae_loss(mask_1d=binder_id) over (p + p.T) / 2.
+        symmetric = (array + array.T) / 2
+        metrics["pAE"] = float(symmetric[target_len:].mean()) / PAE_MAX_BIN
+        # And the single most confident target-binder pair, unsymmetrised --
+        # get_min_ipae_loss leaves its symmetrisation commented out on purpose.
+        metrics["min_ipAE"] = float(array[target_len:, :target_len].min()) / PAE_MAX_BIN
+        # ipSAE is NOT divided: it is already a TM-like 0-1, and it is computed
+        # from the PAE in Angstroms against a cutoff in Angstroms, exactly as the
+        # vendored ColabDesign computes it -- 15 A for the plain columns, 10 for
+        # the _10 ones. The fork ships its own implementation of the same
+        # algorithm (same d0, same 1/(1 + (pae/d0)^2) term, same bidirectional
+        # max-then-min/max), so this uses that rather than a third copy. They
+        # differ in one place, the floor on the d0 length -- 27 there, 26 here --
+        # so a very small interface can read slightly differently between them.
+        for cutoff, suffix in ((15.0, ""), (10.0, "_10")):
+            scored = ipsae(array, target_len, cutoff)
+            forward = float(scored["ipsae_target_binder"])
+            reverse = float(scored["ipsae_binder_target"])
+            metrics[f"min_ipSAE{suffix}"] = min(forward, reverse)
+            metrics[f"max_ipSAE{suffix}"] = max(forward, reverse)
+            metrics[f"avg_ipSAE{suffix}"] = (forward + reverse) / 2
     return metrics
 
 

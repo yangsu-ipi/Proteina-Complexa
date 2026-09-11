@@ -18,6 +18,7 @@ from loguru import logger
 if TYPE_CHECKING:  # annotations only -- this module stays free of pandas at runtime
     import pandas as pd
 
+from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
 from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold
 
 # =============================================================================
@@ -105,7 +106,7 @@ DEFAULT_PROTEIN_BINDER_THRESHOLDS = {
     "complex_i_pAE": {
         "threshold": 7.0,
         "op": "<=",
-        "scale": 31.0,  # ipae * 31 <= 7
+        "scale": PAE_MAX_BIN,  # ipae * 31 <= 7
         "column_prefix": "complex",
         "metric": "i_pAE",
     },
@@ -187,7 +188,7 @@ DEFAULT_LIGAND_BINDER_THRESHOLDS = {
     "min_ipAE": {
         "threshold": 2.0,
         "op": "<",
-        "scale": 31.0,  # min_ipae * 31 < 2
+        "scale": PAE_MAX_BIN,  # min_ipae * 31 < 2
         "column_prefix": "complex",
     },
     "scRMSD_ca": {

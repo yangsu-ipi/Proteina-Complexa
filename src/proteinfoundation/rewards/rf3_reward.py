@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from loguru import logger
 
+from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
 from proteinfoundation.metrics.ipsae import complex_ipSAE
 from proteinfoundation.rewards.base_reward import BaseRewardModel, ensure_tensor, standardize_reward
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb
@@ -81,7 +82,7 @@ class RF3RewardRunner(BaseRewardModel):
         self.normalize_pae = normalize_pae
 
         if reward_weights is None:
-            denom = 31.0 if normalize_pae else 1.0
+            denom = PAE_MAX_BIN if normalize_pae else 1.0
             reward_weights = {"min_ipAE": -1.0 / denom}
         for key in reward_weights:
             assert key in self.reward_options, (
@@ -414,7 +415,7 @@ class RF3RewardRunner(BaseRewardModel):
                 val = conf.get(key, default)
                 val = val.item() if isinstance(val, torch.Tensor) else float(val)
                 if self.normalize_pae and key in self.PAE_KEYS:
-                    val = val / 31.0
+                    val = val / PAE_MAX_BIN
             reward_components[key] = ensure_tensor(val)
 
         # total_reward = sum(component_value * weight) over all metrics

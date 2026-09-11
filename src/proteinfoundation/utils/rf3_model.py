@@ -8,6 +8,7 @@ from typing import Literal
 
 from loguru import logger
 
+from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
 from proteinfoundation.rewards.rf3_reward import RF3RewardRunner
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb
 from proteinfoundation.utils.rf3_utils import convert_cif_to_pdb_rf3, prepare_ligand_template_for_rf3
@@ -162,9 +163,9 @@ def run_rf3_eval(
             summary_conf = prediction.get("summary_confidence", [{}])[0]
             complex_metrics = {
                 "pLDDT": float(summary_conf.get("plddt", 0.0)),  # Convert to 0-1 scale
-                "i_pAE": float(summary_conf.get("ipAE", 31.0)) / 31.0,
-                "min_ipAE": float(summary_conf.get("min_ipAE", 31.0)) / 31.0,
-                "pAE": float(summary_conf.get("pAE", 31.0)) / 31.0,
+                "i_pAE": float(summary_conf.get("ipAE", PAE_MAX_BIN)) / PAE_MAX_BIN,
+                "min_ipAE": float(summary_conf.get("min_ipAE", PAE_MAX_BIN)) / PAE_MAX_BIN,
+                "pAE": float(summary_conf.get("pAE", PAE_MAX_BIN)) / PAE_MAX_BIN,
                 "min_ipSAE": float(summary_conf.get("min_ipSAE", 0.0)),
                 "max_ipSAE": float(summary_conf.get("max_ipSAE", 0.0)),
                 "avg_ipSAE": float(summary_conf.get("avg_ipSAE", 0.0)),

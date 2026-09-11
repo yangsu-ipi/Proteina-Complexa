@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
 from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold, parse_threshold_spec
 from proteinfoundation.result_analysis.binder_analysis_utils import normalize_threshold_dict
 
@@ -42,7 +43,7 @@ DEFAULT_MOTIF_PROTEIN_BINDER_SUCCESS: dict = {
         "i_pAE": {
             "threshold": 7.0,
             "op": "<=",
-            "scale": 31.0,
+            "scale": PAE_MAX_BIN,
             "column_prefix": "complex",
         },
         "pLDDT": {

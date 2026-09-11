@@ -728,3 +728,107 @@ def test_no_rows_is_empty_rather_than_zero():
     from proteinfoundation.metrics.ensembling import mean_interface_metrics
 
     assert mean_interface_metrics([]) == {}
+
+
+def _pae_result(pae):
+    class Result:
+        plddt = None
+        ptm = None
+        iptm = None
+
+    result = Result()
+    result.pae = pae
+    return result
+
+
+def test_the_advisory_pae_family_is_on_the_scale_every_other_backend_uses():
+    """One name, 31x apart, in the column pair the advisory track exists to
+    compare: self_complex_af2_i_pAE read 0.173 on a design whose
+    self_complex_esmfold2_i_pAE read 3.855. AF2 divides by the top PAE bin inside
+    its loss and RF3 divides on the way in; ESMFold2 was the one backend left in
+    Angstroms."""
+    pytest.importorskip("esm")
+    import numpy as np
+
+    from proteinfoundation.metrics.consensus_folding import _esmfold2_metrics
+    from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
+
+    pae = np.random.default_rng(0).uniform(0.5, 30.0, size=(6, 6))
+    metrics = _esmfold2_metrics(_pae_result(pae), target_len=4)
+
+    target_binder, binder_target = pae[:4, 4:], pae[4:, :4]
+    symmetric = (pae + pae.T) / 2
+
+    # Each against the definition the vendored ColabDesign loss uses, not merely
+    # against "something in [0, 1]": i_pae is the symmetrised cross-block mean,
+    # pae is the binder's rows against everything, min_ipae is unsymmetrised.
+    assert metrics["i_pAE"] == pytest.approx(
+        ((target_binder.mean() + binder_target.mean()) / 2) / PAE_MAX_BIN
+    )
+    assert metrics["pAE"] == pytest.approx(symmetric[4:].mean() / PAE_MAX_BIN)
+    assert metrics["min_ipAE"] == pytest.approx(binder_target.min() / PAE_MAX_BIN)
+    for name in ("i_pAE", "pAE", "min_ipAE"):
+        assert 0.0 <= metrics[name] <= 1.0, f"{name} is a fraction of the top bin"
+
+
+def test_ipsae_is_not_divided_because_it_is_already_a_fraction():
+    """It is a TM-like score computed FROM the PAE in Angstroms against a cutoff
+    in Angstroms -- 15 A plain, 10 A for the _10 columns, matching ColabDesign.
+    Dividing it would be applying the normalisation twice."""
+    pytest.importorskip("esm")
+    import numpy as np
+    from esm.models.esmfold2.interface_metrics import ipsae
+
+    from proteinfoundation.metrics.consensus_folding import _esmfold2_metrics
+
+    pae = np.random.default_rng(1).uniform(0.5, 30.0, size=(8, 8))
+    metrics = _esmfold2_metrics(_pae_result(pae), target_len=5)
+
+    for cutoff, suffix in ((15.0, ""), (10.0, "_10")):
+        scored = ipsae(pae, 5, cutoff)
+        forward, reverse = scored["ipsae_target_binder"], scored["ipsae_binder_target"]
+        assert metrics[f"min_ipSAE{suffix}"] == pytest.approx(min(forward, reverse))
+        assert metrics[f"max_ipSAE{suffix}"] == pytest.approx(max(forward, reverse))
+        assert metrics[f"avg_ipSAE{suffix}"] == pytest.approx((forward + reverse) / 2)
+
+
+def test_the_advisory_backend_reports_the_whole_pae_family():
+    """Emission filters on CONSENSUS_METRIC_SUFFIXES, so a metric the scorer
+    computes but the tuple omits never reaches a column."""
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_METRIC_SUFFIXES
+
+    assert {
+        "i_pAE",
+        "pAE",
+        "min_ipAE",
+        "min_ipSAE",
+        "max_ipSAE",
+        "avg_ipSAE",
+        "min_ipSAE_10",
+        "max_ipSAE_10",
+        "avg_ipSAE_10",
+    } <= set(CONSENSUS_METRIC_SUFFIXES)
+
+
+def test_the_pae_divisor_has_one_definition():
+    """It was the same float typed out in a dozen places -- the two producers,
+    the RF3 adapter and its reward, four threshold dicts -- with nothing tying
+    any of them to a model's actual bin range."""
+    import ast
+
+    from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
+
+    assert PAE_MAX_BIN == 31.0
+
+    # Parsed rather than grepped, so a docstring that spells out the number for a
+    # reader -- a config example, which cannot import anything -- is not mistaken
+    # for a second definition of it.
+    home = SRC / "src/proteinfoundation/metrics/ensembling.py"
+    offenders = []
+    for path in sorted((SRC / "src" / "proteinfoundation").rglob("*.py")):
+        if path == home:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, float) and node.value == 31.0:
+                offenders.append(f"{path.relative_to(SRC)}:{node.lineno}")
+    assert not offenders, f"the PAE divisor retyped instead of imported: {offenders}"
