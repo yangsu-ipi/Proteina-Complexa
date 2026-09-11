@@ -3202,6 +3202,19 @@ def main(cfg: DictConfig) -> None:
         # designs, and evaluate sees one design at a time.
         combined_df = add_outlier_columns(combined_df)
 
+    # The designability track had its own frozen "best" -- lowest scRMSD of the
+    # first folding model -- hardcoded in two evaluate modules. Same kind of choice
+    # as the binder headline, made in the same place now, with the ordering metric
+    # configurable rather than being whichever model came first in a list. No-op
+    # when the monomer track did not run.
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    combined_df = pick_monomer_best_sequence(
+        combined_df,
+        ranking_column=cfg_aggregation.get("monomer_ranking_column"),
+        direction=cfg_aggregation.get("monomer_ranking_direction", "minimize"),
+    )
+
     # Save combined results
     combined_csv_filename = f"RAW_{result_type}_results_{config_name}_combined.csv"
     combined_csv_path = os.path.join(results_dir, combined_csv_filename)

@@ -409,6 +409,63 @@ def pick_headline_sequence(
     return df
 
 
+def pick_monomer_best_sequence(
+    df: pd.DataFrame,
+    ranking_column: str | None = None,
+    direction: str = "minimize",
+) -> pd.DataFrame:
+    """Choose the monomer track's ``_res_mpnn_best_sequence`` from its own lists.
+
+    The designability track had its own idea of "best" -- lowest scRMSD of the
+    first folding model -- hardcoded in two places (``monomer_eval.py`` and
+    ``motif_eval_utils.py``) and frozen at evaluate, beside the binder track's
+    argmin(i_pAE) in the same row. Two rankings, two definitions, neither named in
+    the column it produced.
+
+    It is the same kind of choice as the binder headline: a formulation over
+    ``_res_mpnn_sequences`` and a per-redesign metric list, changing no
+    measurement. So it is made here, and which metric orders it is configurable
+    rather than being whichever model happened to be first in a list.
+    """
+    if "_res_mpnn_sequences" not in df.columns:
+        return df
+    if ranking_column is None:
+        candidates = [
+            c for c in df.columns
+            if c.startswith("_res_") and c.endswith("_all") and "scRMSD" in c and "co_" not in c
+        ]
+        ranking_column = sorted(candidates)[0] if candidates else None
+    if ranking_column is None or ranking_column not in df.columns:
+        logger.warning(
+            "No per-redesign column to rank monomer sequences by; "
+            "_res_mpnn_best_sequence left as the first sequence."
+        )
+
+    best = []
+    for sequences, values in zip(
+        df["_res_mpnn_sequences"],
+        df[ranking_column] if ranking_column in df.columns else [None] * len(df),
+        strict=False,
+    ):
+        if not isinstance(sequences, list) or not sequences:
+            best.append("")
+            continue
+        usable = [
+            (v, i) for i, v in enumerate(values[: len(sequences)])
+            if isinstance(values, list) and v is not None and v == v
+        ] if isinstance(values, list) else []
+        if not usable:
+            best.append(sequences[0])
+            continue
+        pick = max(usable)[1] if direction == "maximize" else min(usable)[1]
+        best.append(sequences[pick])
+    df["_res_mpnn_best_sequence"] = best
+    logger.info(
+        f"Monomer best sequence chosen by {direction} {ranking_column} over {len(df)} rows"
+    )
+    return df
+
+
 def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], success_thresholds: dict) -> pd.DataFrame:
     """Recompute ``{seq}_pass`` / ``{seq}_pass_all`` from the metric columns.
 

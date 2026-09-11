@@ -770,7 +770,6 @@ def compute_motif_metrics(
                 metrics[f"_res_scRMSD_{m}_{model}"] = []
                 metrics[f"_res_scRMSD_{m}_{model}_all"] = []
         metrics["_res_mpnn_sequences"] = []
-        metrics["_res_mpnn_best_sequence"] = []
         if do_motif_des:
             for model in des_models:
                 for m in des_modes:

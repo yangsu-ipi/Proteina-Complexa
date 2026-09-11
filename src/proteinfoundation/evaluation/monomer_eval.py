@@ -774,7 +774,10 @@ def compute_monomer_metrics(
                 metrics[f"_res_scRMSD_single_{mode}_{model}"] = []
         # Store MPNN sequences used for designability
         metrics["_res_mpnn_sequences"] = []
-        metrics["_res_mpnn_best_sequence"] = []  # Best sequence (lowest scRMSD)
+        # _res_mpnn_best_sequence is not written here any more: which redesign is
+        # "best" is a formulation over _res_mpnn_sequences and a per-redesign
+        # metric, not a measurement, so analyze chooses it and the metric is
+        # configurable -- it was hardcoded to the first folding model's scRMSD.
 
     if do_codes:
         for model in codesignability_folding_models:
@@ -913,15 +916,6 @@ def compute_monomer_metrics(
 
                 metrics["_res_mpnn_sequences"].append(des_result.sequences)
 
-                first_model = designability_folding_models[0]
-                first_mode = designability_modes[0]
-                rmsd_values = des_result.rmsd_values[first_mode].get(first_model, [])
-                if rmsd_values and des_result.sequences:
-                    best_idx = rmsd_values.index(min(rmsd_values)) if rmsd_values else 0
-                    best_idx = min(best_idx, len(des_result.sequences) - 1)
-                    metrics["_res_mpnn_best_sequence"].append(des_result.sequences[best_idx])
-                else:
-                    metrics["_res_mpnn_best_sequence"].append("")
 
             # Codesignability evaluation (PDB sequence + folding)
             if do_codes:

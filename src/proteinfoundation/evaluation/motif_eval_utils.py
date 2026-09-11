@@ -193,15 +193,10 @@ def store_des_results(
         motif_prefix="_res_des_motif_scRMSD",
     )
     # MPNN sequences + best sequence (selected by motif argmin of first mode/model)
+    # The list only. Which of these is "best" is chosen in analyze, from a
+    # configurable per-redesign metric rather than whichever folding model
+    # happened to be first here.
     metrics["_res_mpnn_sequences"].append(mpnn_seqs)
-    first_mode = des_modes[0] if des_modes else None
-    first_model = des_models[0] if des_models else None
-    best_idx = result.best_indices.get(first_mode, {}).get(first_model, 0) if first_mode and first_model else 0
-    if mpnn_seqs:
-        best_idx = min(best_idx, len(mpnn_seqs) - 1)
-        metrics["_res_mpnn_best_sequence"].append(mpnn_seqs[best_idx])
-    else:
-        metrics["_res_mpnn_best_sequence"].append("")
 
 
 def append_des_defaults(
@@ -220,7 +215,6 @@ def append_des_defaults(
         motif_prefix="_res_des_motif_scRMSD",
     )
     metrics["_res_mpnn_sequences"].append([])
-    metrics["_res_mpnn_best_sequence"].append("")
 
 
 def store_codes_results(

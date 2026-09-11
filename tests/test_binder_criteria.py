@@ -645,3 +645,45 @@ def test_a_single_sequence_type_is_unaffected():
     out = pick_headline_sequence(df, ["self"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
     assert list(out["self_best_idx"]) == [0]
     assert list(out["self_complex_af2_i_pAE"]) == [0.4]
+
+
+def test_the_monomer_best_sequence_follows_its_own_ranking():
+    """The designability track picked by the FIRST folding model's scRMSD, frozen
+    at evaluate in two places. Same kind of choice as the binder headline, so it is
+    made here and the ordering metric is configurable."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    df = pd.DataFrame({
+        "_res_mpnn_sequences": [["AAA", "CCC", "GGG"]],
+        "_res_scRMSD_ca_esmfold2_all": [[3.0, 0.5, 9.0]],
+    })
+    out = pick_monomer_best_sequence(df)
+    assert list(out["_res_mpnn_best_sequence"]) == ["CCC"]
+    out = pick_monomer_best_sequence(df, direction="maximize")
+    assert list(out["_res_mpnn_best_sequence"]) == ["GGG"]
+
+
+def test_the_monomer_pick_survives_missing_numbers():
+    """No usable metric means no ordering. The first sequence is the honest answer,
+    and an empty list is not an index error."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    df = pd.DataFrame({
+        "_res_mpnn_sequences": [["AAA", "CCC"], []],
+        "_res_scRMSD_ca_esmfold2_all": [[float("nan"), float("nan")], []],
+    })
+    out = pick_monomer_best_sequence(df)
+    assert list(out["_res_mpnn_best_sequence"]) == ["AAA", ""]
+
+
+def test_a_frame_without_the_monomer_track_is_untouched():
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    df = pd.DataFrame({"self_pass": [1]})
+    assert "_res_mpnn_best_sequence" not in pick_monomer_best_sequence(df).columns
