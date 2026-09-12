@@ -414,36 +414,40 @@ def _convert_esm_outputs_to_pdb(outputs) -> list[str]:
     return pdbs
 
 
-def colabfold_data_dir(cache_dir: str | None = None) -> str:
-    """Where ``colabfold_batch`` finds its AlphaFold parameters.
+def colabfold_data_dir(cache_dir: str | None = None) -> str | None:
+    """The ``--data`` to pass ColabFold, or None to let it decide.
 
-    It wants ``<dir>/params/params_model_*.npz``, which is exactly the tree
-    build_blackwell.sh already creates at ``community_models/ckpts/AF2`` from the
-    2022-12-06 release -- monomer, ptm and multimer sets together. So the weights
-    are normally on disk already and the only question is pointing at them.
+    ColabFold runs from its own conda environment, installed and provisioned by
+    ``_install/install-colabfold.sh``. Where that installation keeps its weights
+    is its business: it has a default (``appdirs.user_cache_dir("colabfold")``),
+    it knows how to populate it, and it records its own completion with its own
+    sentinel. Complexa's job here is to invoke the binary, not to manage another
+    tool's model store.
 
-    Order: an explicit argument, then COLABFOLD_DATA_DIR, then AF2_DIR, then
-    CACHE_DIR. Raising beats falling through, because the previous code assigned
-    ``os.environ.get("CACHE_DIR")`` OVER its own argument and, with that unset,
-    ran ``colabfold_batch ... --data None`` -- four gigabytes downloaded into a
-    directory literally named None, per design, on a compute node.
+    So there are exactly two answers. An address someone configured -- an explicit
+    argument, or COLABFOLD_DATA_DIR -- which is how an offline node points at a
+    pre-staged store. Or None, meaning omit the flag.
+
+    It used to fall through to AF2_DIR, which is Complexa's OWN parameter tree.
+    That made an apo fold write into the store the primary refold reads from: with
+    no ColabFold sentinel there, the first run streams the 2021-07-14 release over
+    this tree's 2022-12-06 monomer and ptm sets. ColabDesign loads multimer_v3 and
+    would have survived it, but a store one backend rewrites under another is not
+    an arrangement to rely on being harmless.
+
+    Returning None rather than a guess is also the real fix for the bug that
+    prompted the previous version: ``cache_dir = os.environ.get("CACHE_DIR")`` was
+    assigned OVER this function's argument, so with CACHE_DIR unset the command
+    read ``--data None`` and colabfold downloaded four gigabytes into a directory
+    literally named None. Answering "no address" and having the caller drop the
+    flag cannot express that at all.
     """
-    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR"), os.environ.get("AF2_DIR"),
-                  os.environ.get("CACHE_DIR")):
+    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR")):
         if value:
             resolved = os.path.expanduser(value)
-            if glob.glob(os.path.join(resolved, "params", "params_model_*.npz")):
-                _warn_if_download_would_retrigger(resolved)
-                return resolved
-    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR"), os.environ.get("CACHE_DIR")):
-        if value:
-            # Nothing on disk yet, but a named directory to download into.
-            return os.path.expanduser(value)
-    raise RuntimeError(
-        "ColabFold needs a parameter directory holding params/params_model_*.npz. "
-        "Set COLABFOLD_DATA_DIR, or AF2_DIR to the tree build_blackwell.sh creates at "
-        "community_models/ckpts/AF2, or CACHE_DIR to a writable directory to download into."
-    )
+            _warn_if_download_would_retrigger(resolved)
+            return resolved
+    return None
 
 
 def _warn_if_download_would_retrigger(data_dir: str) -> None:
@@ -583,8 +587,13 @@ def run_colabfold(
     # Run ColabFold batch on the directory containing individual FASTA files
     batch_command = (
         f"{colabfold_batch_command()} {fasta_dir} {path_to_colabfold_out}/structures "
-        f"--msa-mode single_sequence --data {data_dir}"
+        f"--msa-mode single_sequence"
     )
+    # Only when someone named one. Unset, ColabFold uses its own default store,
+    # which is the installation's business rather than ours -- and there is no way
+    # to spell "no address" into this flag that does not become a directory.
+    if data_dir:
+        batch_command += f" --data {data_dir}"
     if relax:
         batch_command = batch_command + " --num-relax 1 --use-gpu-relax"
 

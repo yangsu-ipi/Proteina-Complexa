@@ -860,10 +860,13 @@ def test_the_pae_divisor_has_one_definition():
     assert not offenders, f"the PAE divisor retyped instead of imported: {offenders}"
 
 
-def test_colabfold_is_pointed_at_the_parameters_the_build_already_fetched(tmp_path, monkeypatch):
-    """build_blackwell.sh puts the 2022-12-06 release at community_models/ckpts/AF2,
-    which is exactly the <dir>/params/params_model_*.npz layout colabfold_batch
-    wants -- so AF2 apo folding needs no download, only an address."""
+def test_complexa_does_not_steer_colabfolds_weights(tmp_path, monkeypatch):
+    """ColabFold runs from its own environment, provisioned by its own installer,
+    with its own default store and its own completion sentinel. Complexa's job is
+    to invoke the binary.
+
+    It used to fall through to AF2_DIR -- Complexa's OWN parameter tree -- which
+    made an apo fold write into the store the primary refold reads from."""
     from proteinfoundation.metrics.folding_models import colabfold_data_dir
 
     for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
@@ -873,28 +876,42 @@ def test_colabfold_is_pointed_at_the_parameters_the_build_already_fetched(tmp_pa
     (af2 / "params").mkdir(parents=True)
     (af2 / "params" / "params_model_1_ptm.npz").write_text("")
     monkeypatch.setenv("AF2_DIR", str(af2))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
 
-    assert colabfold_data_dir() == str(af2)
-    # An explicit argument still wins, and a directory with no parameters yet is
-    # still a legitimate place to download into.
-    empty = tmp_path / "downloads"
-    empty.mkdir()
-    assert colabfold_data_dir(str(empty)) == str(af2), "a populated tree beats an empty one"
+    assert colabfold_data_dir() is None, "neither AF2_DIR nor CACHE_DIR is ColabFold's to use"
+
+    # An address someone configured is honoured -- that is how an offline node
+    # points at a pre-staged store.
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    monkeypatch.setenv("COLABFOLD_DATA_DIR", str(staged))
+    assert colabfold_data_dir() == str(staged)
+    assert colabfold_data_dir(str(tmp_path / "explicit")) == str(tmp_path / "explicit"), (
+        "an explicit argument wins over the environment"
+    )
 
 
-def test_colabfold_refuses_to_download_into_a_directory_named_none(monkeypatch):
-    """The bug this replaced: cache_dir = os.environ.get("CACHE_DIR") was assigned
-    OVER the function's own argument, so with CACHE_DIR unset the command read
-    `--data None` and colabfold downloaded four gigabytes into ./None, per
-    design, on a compute node."""
-    import pytest as _pytest
+def test_no_address_means_no_flag_not_a_directory_named_none(monkeypatch):
+    """The bug the previous version was written against: `cache_dir =
+    os.environ.get("CACHE_DIR")` was assigned OVER the function's argument, so
+    with CACHE_DIR unset the command read `--data None` and colabfold downloaded
+    four gigabytes into a directory literally named None, on a compute node.
 
-    from proteinfoundation.metrics.folding_models import colabfold_data_dir
+    Answering "no address" and dropping the flag cannot express that at all --
+    which is a better fix than picking some directory to name."""
+    import inspect
+
+    from proteinfoundation.metrics import folding_models
 
     for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
         monkeypatch.delenv(name, raising=False)
-    with _pytest.raises(RuntimeError, match="params_model"):
-        colabfold_data_dir()
+    assert folding_models.colabfold_data_dir() is None
+
+    source = inspect.getsource(folding_models.run_colabfold)
+    assert "if data_dir:" in source, "the flag is conditional"
+    assert "--data {data_dir}" not in source.split("if data_dir:")[0], (
+        "and never formatted unconditionally, which is how None became a path"
+    )
 
 
 # ---------------------------------------------------------------------------
