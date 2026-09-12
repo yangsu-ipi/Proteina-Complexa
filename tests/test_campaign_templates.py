@@ -139,10 +139,35 @@ def test_checksums_cover_the_package_and_skip_what_a_run_produces(tmp_path):
     (pkg / "inference").mkdir()
     (pkg / "inference" / "design.pdb").write_text("ATOM\n")
 
+    # Three kinds that used to sweep in, each a run product rather than an input:
+    # MSA retrieval scratch, the .bak- copies the editing helpers leave, and the
+    # scheduler logs, which land at the package root rather than under logs/.
+    (pkg / "data" / "msa" / ".msa_work" / "target_env").mkdir(parents=True)
+    (pkg / "data" / "msa" / ".msa_work" / "target_env" / "out.tar.gz").write_text("scratch")
+    (pkg / "data" / "msa" / "target.a3m").write_text(">q\nAAA\n")
+    (pkg / "campaign.env").write_text("A=1\n")
+    (pkg / "campaign.env.bak-044641").write_text("A=0\n")
+    (pkg / "slurm-39.out").write_text("job log\n")
+    (pkg / ".DS_Store").write_text("")
+
     assert subprocess.run([sys.executable, str(pkg / "scripts" / "refresh_checksums.py")]).returncode == 0
     listed = (pkg / "CHECKSUMS.sha256").read_text()
     assert "pipeline.yaml" in listed
     assert "inference" not in listed, "run output is not part of the package"
+    # The MSA itself is an input the run folds against; the scratch that produced
+    # it is not.
+    assert "data/msa/target.a3m" in listed
+    assert ".msa_work" not in listed, "MSA scratch is rewritten per fetch"
+    assert "campaign.env\n" in listed, "the real one is still covered"
+    assert ".bak-" not in listed, "a backup is not the package"
+    assert "slurm-39.out" not in listed, "scheduler logs land at the root, not under logs/"
+    assert ".DS_Store" not in listed
+
+    # A manifest that changes on every run answers nothing, so running twice over
+    # an unchanged package must produce the same bytes.
+    first = listed
+    assert subprocess.run([sys.executable, str(pkg / "scripts" / "refresh_checksums.py")]).returncode == 0
+    assert (pkg / "CHECKSUMS.sha256").read_text() == first
 
 
 @pytest.mark.parametrize("shards,retained", [(2, 4), (4, 8)])
