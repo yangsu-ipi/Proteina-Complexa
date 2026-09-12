@@ -121,6 +121,7 @@ def validate_config(
     run_binder: bool,
     run_motif: bool = False,
     run_motif_binder: bool = False,
+    cfg_metric=None,
 ) -> None:
     """
     Validate configuration settings and evaluation compatibility.
@@ -140,10 +141,20 @@ def validate_config(
         run_binder: Whether binder evaluation is enabled
         run_motif: Whether motif (monomer_motif) evaluation is enabled
         run_motif_binder: Whether motif binder evaluation is enabled
+        cfg_metric: The metric config, for settings validated here rather than
+            where they are read. Optional so the compatibility matrix stays
+            testable on its own.
 
     Raises:
         ValueError: If configuration is invalid or evaluations are incompatible
     """
+    # Before anything folds, and before generation's output has been earned: the
+    # config mistakes this repo has actually paid for all surfaced deep inside a
+    # stage rather than at its door.
+    if cfg_metric is not None:
+        from proteinfoundation.metrics.consensus_folding import assert_single_diffusion_sample
+
+        assert_single_diffusion_sample(cfg_metric.get("consensus_cfg", {}))
     # Validate protein type
     if protein_type not in VALID_PROTEIN_TYPES:
         raise ValueError(f"Invalid protein_type '{protein_type}'. Valid options: {VALID_PROTEIN_TYPES}")
@@ -717,7 +728,9 @@ def main(cfg: DictConfig) -> None:
     run_monomer, run_binder, run_motif, run_motif_binder = get_enabled_evaluations(cfg_metric)
 
     # Validate configuration and compatibility
-    validate_config(protein_type, input_mode, run_monomer, run_binder, run_motif, run_motif_binder)
+    validate_config(
+        protein_type, input_mode, run_monomer, run_binder, run_motif, run_motif_binder, cfg_metric
+    )
 
     logger.info("")
     logger.info("=" * 70)

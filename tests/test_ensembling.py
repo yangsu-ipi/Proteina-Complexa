@@ -1284,3 +1284,64 @@ def test_the_derivation_version_moved_with_the_reduction(tmp_path):
     assert MONOMER_DERIVATION_VERSION >= 2, (
         "best-of-one-structure to mean-over-the-ensemble is a change of meaning"
     )
+
+
+def test_several_diffusion_samples_are_refused_at_the_door(tmp_path):
+    """Both knobs produce several structures and they are NOT interchangeable.
+    num_diffusion_samples draws N times from one distribution; n_esmfold2_seeds
+    builds N distributions and draws once from each. The second is the wider
+    ensemble and the one this repo buys, so the first stays at 1.
+
+    Refused during config validation, not where the folds happen: every config
+    mistake this repo has actually paid for surfaced deep inside a stage that had
+    already earned its input."""
+    from proteinfoundation.metrics.consensus_folding import assert_single_diffusion_sample
+
+    assert_single_diffusion_sample({})
+    assert_single_diffusion_sample({"num_diffusion_samples": 1})
+    assert_single_diffusion_sample(None)
+
+    with pytest.raises(ValueError) as raised:
+        assert_single_diffusion_sample({"num_diffusion_samples": 3})
+    message = str(raised.value)
+    assert "n_esmfold2_seeds" in message, "the message has to name what to raise instead"
+    assert "3" in message, "and carry the number over, so the fix is a substitution"
+
+
+def test_evaluate_validates_the_sample_count_before_anything_folds():
+    """The guard is only worth having if it runs at the door. Wired through
+    validate_config, which runs before the pipeline banner is even printed."""
+    import inspect
+
+    from proteinfoundation import evaluate as evaluate_module
+
+    source = inspect.getsource(evaluate_module.validate_config)
+    assert "assert_single_diffusion_sample" in source
+
+    with pytest.raises(ValueError):
+        evaluate_module.validate_config(
+            "binder", "generated", True, True, cfg_metric={"consensus_cfg": {"num_diffusion_samples": 2}}
+        )
+    # Absent config stays testable on its own, and a held invariant passes.
+    evaluate_module.validate_config("binder", "generated", True, True)
+    evaluate_module.validate_config("binder", "generated", True, True, cfg_metric={"consensus_cfg": {}})
+
+
+def test_advisory_samples_reduce_by_mean_not_by_the_luckiest_draw(tmp_path):
+    """Nominal with the invariant held -- a mean over one sample is that sample.
+    It earns its keep on any path the validator does not cover, where a best-of
+    would report the luckiest draw from one distribution as the prediction, in
+    the same row as seed means beside it."""
+    from proteinfoundation.metrics.consensus_folding import _mean_sample_metrics
+
+    one = {"i_pAE": 0.3, "i_pTM": 0.7, "pdb_path": "a.pdb"}
+    assert _mean_sample_metrics([one]) == one, "a mean over one sample is that sample"
+
+    two = [{"i_pAE": 0.2, "i_pTM": 0.8, "pdb_path": "a.pdb"}, {"i_pAE": 0.4, "i_pTM": 0.6, "pdb_path": "b.pdb"}]
+    reduced = _mean_sample_metrics(two)
+    assert reduced["i_pAE"] == pytest.approx(0.3), "mean, not the 0.2 a best-of would have taken"
+    assert reduced["i_pTM"] == pytest.approx(0.7)
+    assert reduced["pdb_path"] == "a.pdb", "provenance from the first, not averaged"
+
+    ragged = [{"i_pAE": 0.2}, {"i_pAE": float("nan")}]
+    assert _mean_sample_metrics(ragged)["i_pAE"] == pytest.approx(0.2), "a dead sample is dropped"

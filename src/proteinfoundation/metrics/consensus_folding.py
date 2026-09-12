@@ -260,15 +260,23 @@ def _score_esmfold2(
         return {}
     results = [r for r, _ in paired]
     scored = [m for _, m in paired]
-    # Best-of-N by interface PAE, matching how the primary backend picks a
-    # representative refold (select_best_sample_idx on i_pAE, lower is better).
-    # Falls back to i_pTM, then to the first sample.
-    if all("i_pAE" in m for m in scored):
-        best = min(range(len(scored)), key=lambda i: scored[i]["i_pAE"])
-    elif all("i_pTM" in m for m in scored):
-        best = max(range(len(scored)), key=lambda i: scored[i]["i_pTM"])
-    else:
-        best = 0
+    # Reduced by mean, never best-of. This used to take the best by i_pAE,
+    # matching how the primary backend picks a representative refold -- but a
+    # refold and a diffusion sample are not the same thing. num_diffusion_samples
+    # draws N times from ONE distribution; seeds draw from N different ones,
+    # which is why this repo takes several seeds and holds this at 1
+    # (assert_single_diffusion_sample). A best-of over draws from one
+    # distribution reports the luckiest draw as though it were the prediction,
+    # and puts a best-of in the same row as the seed means beside it.
+    #
+    # Nominal in practice: with the invariant held this is a mean over one
+    # sample, identical to the value it replaces. It earns its keep on any path
+    # the validator does not cover.
+    scored = [_mean_sample_metrics(scored)]
+    # Sample 0's structure, not a ranked winner: with one sample it is the only
+    # one, and with several no structure is the mean of the others, so an
+    # arbitrary-but-stated choice beats a flattering one.
+    best = 0
 
     if out_pdb_path:
         # Write the sample the metrics describe, so a disagreement with the
@@ -512,6 +520,49 @@ def _esmfold2_model(cfg: dict):
     from proteinfoundation.metrics.esmfold2_loader import load_esmfold2
 
     return load_esmfold2(_esmfold2_model_id(cfg), cuda=bool(cfg.get("cuda", True)))
+
+
+def _mean_sample_metrics(scored: list[dict]) -> dict:
+    """One fold's metrics, meaned over the diffusion samples that produced them.
+
+    Non-numeric entries are taken from the first sample -- provenance, identical
+    by construction -- the way :func:`mean_interface_metrics` treats the SASA
+    engine. A sample that produced no usable number for a metric is dropped
+    rather than counted, so one NaN cannot cost the others.
+    """
+    if len(scored) <= 1:
+        return dict(scored[0]) if scored else {}
+    out: dict = {}
+    for key in scored[0]:
+        values = [m.get(key) for m in scored]
+        numbers = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+        out[key] = sum(numbers) / len(numbers) if numbers else values[0]
+    return out
+
+
+def assert_single_diffusion_sample(consensus_cfg) -> None:
+    """ESMFold2 draws once per fold here, and the ensemble comes from seeds.
+
+    Both knobs produce several structures, and they are not interchangeable.
+    ``num_diffusion_samples`` draws N times from ONE distribution; N seeds build
+    N different distributions and draw once from each. The second is the wider
+    ensemble and the one this repo buys -- ``n_esmfold2_seeds`` -- so
+    num_diffusion_samples stays at 1 and every ESMFold2 path can assume a fold
+    returns one structure.
+
+    Checked at the top of evaluate rather than where the folds happen, because
+    the alternative is discovering it after hours of generation: the config
+    errors this repo has actually been bitten by all surfaced deep in a stage
+    that had already earned its input.
+    """
+    requested = int((consensus_cfg or {}).get("num_diffusion_samples", 1) or 1)
+    if requested != 1:
+        raise ValueError(
+            f"consensus_cfg.num_diffusion_samples={requested}, but ESMFold2 in this repo folds one "
+            f"sample per seed. Several samples come from one distribution; several seeds come from "
+            f"several, which is the ensemble worth paying for -- so raise n_esmfold2_seeds to "
+            f"{requested} instead and leave num_diffusion_samples at 1."
+        )
 
 
 def _esmfold2_model_id(cfg: dict) -> str:

@@ -323,8 +323,20 @@ def run_esmfold2(
     out_paths = []
     for i, result in enumerate(results):
         # fold_batch returns one entry per input, but an entry is itself a list
-        # when num_diffusion_samples > 1. Take the first sample: this path wants a
-        # structure to measure scRMSD against, not a ranked best-of-N.
+        # when num_diffusion_samples > 1 -- which this repo holds at 1, because
+        # its ESMFold2 ensemble comes from SEEDS (several distributions, one draw
+        # each) rather than samples (one distribution, several draws). See
+        # assert_single_diffusion_sample, which is where that is enforced.
+        #
+        # So this is the only sample, not the first of several, and there is
+        # nothing to reduce. Said aloud rather than assumed: a structure cannot be
+        # meaned, so if the invariant ever breaks on a path the validator does not
+        # cover, this silently measures scRMSD against one arbitrary draw.
+        if isinstance(result, list) and len(result) > 1:
+            logger.warning(
+                f"ESMFold2 returned {len(result)} diffusion samples for sequence {i + 1}; measuring "
+                f"against the first. Ensemble over seeds (n_esmfold2_seeds), not samples."
+            )
         single = result[0] if isinstance(result, list) else result
         if single is None:
             # None, not dropped. The caller zips these paths against the input
