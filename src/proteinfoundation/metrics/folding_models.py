@@ -1,3 +1,4 @@
+import functools
 import glob
 import json
 import os
@@ -441,6 +442,50 @@ def colabfold_batch_command() -> str:
     return os.environ.get("COLABFOLD_EXEC_PATH") or "colabfold_batch"
 
 
+@functools.lru_cache(maxsize=8)
+def _alphafold_missing_from(command: str) -> str | None:
+    """The env of ``command``'s interpreter, if it has colabfold but not alphafold.
+
+    A bare ``colabfold_batch`` on PATH is not evidence of a folder. ColabFold is
+    routinely installed WITHOUT its ``[alphafold]`` extra for MSA retrieval
+    alone -- `colabfold_search` needs no AF2 -- and that install puts a
+    `colabfold_batch` shim in the same environment Complexa runs in. It is
+    earlier on PATH than any other, so an unset COLABFOLD_EXEC_PATH silently
+    selects the one install that cannot fold.
+
+    Its failure is worse than unhelpful: ColabFold raises "alphafold is not
+    installed. Please run `pip install colabfold[alphafold]`", and following
+    that instruction pulls the extra into THIS environment -- downgrading
+    absl-py, biopython and chex and pinning a jax a Blackwell card cannot use,
+    which is the exact breakage the separate env exists to prevent.
+
+    Checked on the filesystem rather than by running anything: a console script
+    names its interpreter in the shebang, and the interpreter's site-packages
+    either holds alphafold or does not. Returns None whenever the layout is not
+    one this can read -- an unreadable env is not evidence of a broken one.
+    """
+    resolved = command if os.sep in command else shutil.which(command)
+    if not resolved or not os.path.exists(resolved):
+        return None
+    try:
+        with open(resolved, "rb") as handle:
+            first = handle.readline(512).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    interpreter = first[2:].strip().split()[0] if first[2:].strip() else ""
+    env_root = os.path.dirname(os.path.dirname(interpreter))
+    site_packages = glob.glob(os.path.join(env_root, "lib", "python*", "site-packages"))
+    if not site_packages:
+        return None
+    if any(os.path.exists(os.path.join(sp, "colabfold")) for sp in site_packages) and not any(
+        os.path.exists(os.path.join(sp, "alphafold")) for sp in site_packages
+    ):
+        return env_root
+    return None
+
+
 def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: str) -> None:
     """Copy pTM and PAE out of ColabFold's own scores file into a sidecar.
 
@@ -500,6 +545,18 @@ def run_colabfold(
     if cache_dir:
         logger.debug("run_colabfold ignores cache_dir; ColabFold's installation owns its parameter store")
 
+    command_name = colabfold_batch_command()
+    msa_only_env = _alphafold_missing_from(command_name)
+    if msa_only_env and not os.environ.get("COLABFOLD_EXEC_PATH"):
+        raise RuntimeError(
+            f"{command_name} resolves to {msa_only_env}, a ColabFold installed without its "
+            f"[alphafold] extra -- MSA retrieval only, it cannot fold. Set COLABFOLD_EXEC_PATH to "
+            f"a colabfold_batch that can (install-colabfold.sh builds one in envs/colabfold). Do "
+            f"NOT pip install colabfold[alphafold] into this environment as ColabFold's own error "
+            f"suggests: it downgrades absl-py, biopython and chex and pins a jax that a Blackwell "
+            f"card cannot use, which is why the folder lives in an environment of its own."
+        )
+
     # Create individual FASTA files using the unified function
     fasta_dir = os.path.join(path_to_colabfold_out, "individual_fastas")
     create_individual_fasta_files(sequences, fasta_dir, format_type="simple")
@@ -509,7 +566,7 @@ def run_colabfold(
 
     # Run ColabFold batch on the directory containing individual FASTA files
     batch_command = (
-        f"{colabfold_batch_command()} {fasta_dir} {path_to_colabfold_out}/structures "
+        f"{command_name} {fasta_dir} {path_to_colabfold_out}/structures "
         f"--msa-mode single_sequence"
     )
     if relax:

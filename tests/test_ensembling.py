@@ -1038,3 +1038,85 @@ def test_the_colabfold_binary_can_be_named_rather_than_found_on_path(monkeypatch
 
     monkeypatch.setenv("COLABFOLD_EXEC_PATH", "/data/shared/miniforge3/envs/colabfold/bin/colabfold_batch")
     assert colabfold_batch_command().endswith("envs/colabfold/bin/colabfold_batch")
+
+
+def _fake_env(root, *, with_alphafold: bool):
+    """A conda-env-shaped tree with a colabfold_batch console script in it."""
+    bindir = root / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "python3.12").write_text("")
+    sp = root / "lib" / "python3.12" / "site-packages"
+    (sp / "colabfold").mkdir(parents=True)
+    if with_alphafold:
+        (sp / "alphafold").mkdir()
+    script = bindir / "colabfold_batch"
+    script.write_text(f"#!{bindir / 'python3.12'}\nfrom colabfold.batch import main\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_an_msa_only_colabfold_on_path_is_refused_by_name(tmp_path, monkeypatch):
+    """ColabFold is routinely installed WITHOUT [alphafold] for MSA retrieval,
+    and that install puts a colabfold_batch shim in the very environment
+    Complexa runs in -- first on PATH. So a bare name is not evidence of a
+    folder, and on the EphA3 box it resolved to exactly that install.
+
+    Letting it run is worse than useless: ColabFold says "pip install
+    colabfold[alphafold]", and doing that downgrades absl-py, biopython and chex
+    and pins a jax a Blackwell card cannot use -- breaking the environment the
+    PRIMARY refold runs in, to fix the advisory one."""
+    from proteinfoundation.metrics import folding_models
+
+    folding_models._alphafold_missing_from.cache_clear()
+    script = _fake_env(tmp_path / "msa-only", with_alphafold=False)
+    monkeypatch.delenv("COLABFOLD_EXEC_PATH", raising=False)
+    monkeypatch.setenv("PATH", str(script.parent), prepend=False)
+
+    with pytest.raises(RuntimeError) as raised:
+        folding_models.run_colabfold(["MKV"], str(tmp_path / "out"))
+    message = str(raised.value)
+    assert "COLABFOLD_EXEC_PATH" in message, "the message has to name the fix"
+    assert "Do NOT pip install" in message, (
+        "and countermand ColabFold's own suggestion, which breaks this environment"
+    )
+
+
+def test_a_real_folder_is_not_refused(tmp_path, monkeypatch):
+    """The guard reads site-packages, so it must not fire on an install that has
+    alphafold -- nor on a layout it cannot read, where absence of evidence is
+    not evidence of absence."""
+    from proteinfoundation.metrics import folding_models
+
+    folding_models._alphafold_missing_from.cache_clear()
+    complete = _fake_env(tmp_path / "colabfold", with_alphafold=True)
+    assert folding_models._alphafold_missing_from(str(complete)) is None
+
+    folding_models._alphafold_missing_from.cache_clear()
+    opaque = tmp_path / "opaque_colabfold_batch"
+    opaque.write_text("ELF-ish, no shebang\n")
+    assert folding_models._alphafold_missing_from(str(opaque)) is None
+
+    folding_models._alphafold_missing_from.cache_clear()
+    assert folding_models._alphafold_missing_from(str(tmp_path / "absent")) is None
+
+
+def test_an_explicitly_named_binary_is_the_operators_call(tmp_path, monkeypatch):
+    """COLABFOLD_EXEC_PATH set is someone having answered this question. A
+    wrapper script that execs the real binary has no site-packages of its own,
+    and must not be second-guessed into a refusal."""
+    from proteinfoundation.metrics import folding_models
+
+    folding_models._alphafold_missing_from.cache_clear()
+    script = _fake_env(tmp_path / "msa-only", with_alphafold=False)
+    monkeypatch.setenv("COLABFOLD_EXEC_PATH", str(script))
+
+    seen: dict = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        raise RuntimeError("stop once the command is built")
+
+    monkeypatch.setattr(folding_models.subprocess, "run", fake_run)
+    with contextlib.suppress(Exception):
+        folding_models.run_colabfold(["MKV"], str(tmp_path / "out"))
+    assert str(script) in seen.get("command", ""), seen
