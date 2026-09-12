@@ -109,11 +109,43 @@ class DesignabilityResult:
 # generating them. This mirrors binder_eval_cache, which stores its
 # sequences_dict for the same reason.
 
-MONOMER_FOLD_CACHE_TEMPLATE = "monomer_fold_cache_{suffix}.json"
+# One cache file per backend, for the reason metrics/consensus_folding.py gives
+# for doing the same: a single shared file carries a single fingerprint over
+# every model in it, so enabling a second backend discards the first one's folds.
+# That is not a hypothetical -- adding ColabFold to apo_folding_models invalidated
+# ~13,000 cached ESMFold2 apo folds per campaign, for a reason that has nothing to
+# do with how ESMFold2 folded them.
+#
+# The per-model fingerprint is the same function called with a one-element list,
+# so a legacy single-model cache hashes to exactly the value its model asks for
+# and is adopted without being rewritten or refolded.
+MONOMER_FOLD_CACHE_TEMPLATE = "monomer_fold_cache_{suffix}_{model}.json"
+LEGACY_MONOMER_FOLD_CACHE_TEMPLATE = "monomer_fold_cache_{suffix}.json"
 
 
-def monomer_fold_cache_path(output_dir: str, suffix: str) -> str:
-    return os.path.join(output_dir, MONOMER_FOLD_CACHE_TEMPLATE.format(suffix=suffix))
+def monomer_fold_cache_path(output_dir: str, suffix: str, model: str | None = None) -> str:
+    """Where one backend's folds for this design live.
+
+    *model* omitted gives the pre-split path, which is where a campaign that ran
+    before this still has its folds. Readers try the per-model path first and
+    fall back; writers only ever write the per-model one.
+    """
+    if model is None:
+        return os.path.join(output_dir, LEGACY_MONOMER_FOLD_CACHE_TEMPLATE.format(suffix=suffix))
+    return os.path.join(output_dir, MONOMER_FOLD_CACHE_TEMPLATE.format(suffix=suffix, model=model))
+
+
+def monomer_fold_cache_paths(output_dir: str, suffix: str, model: str | None = None) -> list[str]:
+    """The paths a reader should try, in order: this backend's, then the legacy
+    shared one. The legacy file is only ever accepted when its fingerprint
+    matches the model-scoped one being asked for, which is true exactly when it
+    was written for this single model."""
+    if model is None:
+        return [monomer_fold_cache_path(output_dir, suffix)]
+    return [
+        monomer_fold_cache_path(output_dir, suffix, model),
+        monomer_fold_cache_path(output_dir, suffix),
+    ]
 
 
 def monomer_fold_fingerprint(
@@ -269,7 +301,7 @@ def derive_for_result(result) -> dict[str, dict[str, list]]:
 
 
 def refresh_monomer_derivation(
-    output_dir: str, suffix: str, fingerprint: str, folds: dict[int, dict]
+    output_dir: str, suffix: str, fingerprint: str, folds: dict[int, dict], model: str | None = None
 ) -> dict[int, dict]:
     """Fill in what is read off the kept apo structures, re-reading not refolding.
 
@@ -286,12 +318,16 @@ def refresh_monomer_derivation(
     """
     if not MONOMER_DERIVED_SUFFIXES or not folds:
         return folds
-    path = monomer_fold_cache_path(output_dir, suffix)
+    # Read from wherever this backend's folds are, write to its own file.
+    path = monomer_fold_cache_path(output_dir, suffix, model)
+    read_from = next(
+        (p for p in monomer_fold_cache_paths(output_dir, suffix, model) if os.path.exists(p)), path
+    )
     current = monomer_derivation_fingerprint()
     stored = None
-    if os.path.exists(path):
+    if os.path.exists(read_from):
         try:
-            with open(path) as handle:
+            with open(read_from) as handle:
                 stored = json.load(handle).get("derivation")
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             stored = None
@@ -299,7 +335,7 @@ def refresh_monomer_derivation(
 
     changed = _derive_into(folds, stale)
     if changed or stale:
-        _rewrite_monomer_derivation(path, fingerprint, folds, current)
+        _rewrite_monomer_derivation(path, fingerprint, folds, current, read_from=read_from)
     return folds
 
 
@@ -337,12 +373,21 @@ def _derive_into(folds: dict, stale: bool) -> bool:
     return changed
 
 
-def _rewrite_monomer_derivation(path: str, fingerprint: str, folds: dict[int, dict], derivation: str) -> None:
-    """Persist the derived values beside the folds they were read from."""
+def _rewrite_monomer_derivation(
+    path: str, fingerprint: str, folds: dict[int, dict], derivation: str, read_from: str | None = None
+) -> None:
+    """Persist the derived values beside the folds they were read from.
+
+    *read_from* is where the folds came from, which is the legacy shared file the
+    first time a backend is split out of one. Seeding from it keeps the folds
+    that are not being re-derived instead of writing a file holding only the ones
+    that are.
+    """
     try:
         existing = {}
-        if os.path.exists(path):
-            with open(path) as handle:
+        source = read_from if (read_from and os.path.exists(read_from)) else path
+        if os.path.exists(source):
+            with open(source) as handle:
                 blob = json.load(handle)
             if blob.get("fingerprint") == fingerprint:
                 existing = dict(blob.get("folds") or {})
@@ -442,6 +487,56 @@ def _fold_seeds(name: str, suffix: str, sequences: list[str], folding_models: li
 
     n = max(1, int(count)) if "esmfold2" in (folding_models or []) else 1
     return deterministic_seeds(name, suffix, *sequences, count=n)
+
+
+def merge_model_folds(per_model: dict[str, dict]) -> dict:
+    """One design's folds from several backends, in the shape one backend gives.
+
+    Each backend is cached, seeded and averaged on its own now, so what arrives
+    here is one averaged entry per model. Every field below the top level is
+    already keyed by model -- rmsd_values by mode then model, plddt/confidence/
+    folded_paths/derived by model -- so combining them is a union rather than an
+    arithmetic, and nothing downstream can tell the difference between this and
+    the single file it used to read.
+
+    The sequences must agree: they are an input to the apo path and an output of
+    one inverse-folder run on the designability path, so two backends disagreeing
+    about them means the caches describe different designs and neither should be
+    served.
+    """
+    usable = {m: e for m, e in (per_model or {}).items() if e}
+    if not usable:
+        return {}
+
+    sequences = None
+    for model, entry in usable.items():
+        seqs = list(entry.get("sequences") or [])
+        if sequences is None:
+            sequences = seqs
+        elif seqs and seqs != sequences:
+            logger.error(
+                f"Backend '{model}' cached a different sequence set than the backends beside it; "
+                f"dropping it rather than pairing one model's folds with another's sequences"
+            )
+            usable = {m: e for m, e in usable.items() if m != model}
+    if not usable:
+        return {}
+
+    merged: dict = {"sequences": sequences or []}
+    for keyed_by_mode in ("rmsd_values", "best_rmsd"):
+        by_mode: dict[str, dict] = {}
+        for entry in usable.values():
+            for mode, by_model in (entry.get(keyed_by_mode) or {}).items():
+                by_mode.setdefault(mode, {}).update(by_model)
+        merged[keyed_by_mode] = by_mode
+    for keyed_by_model in ("plddt", "confidence", "folded_paths", "derived"):
+        combined: dict = {}
+        for entry in usable.values():
+            combined.update(entry.get(keyed_by_model) or {})
+        if combined:
+            merged[keyed_by_model] = combined
+    merged["structures_kept"] = all(e.get("structures_kept") for e in usable.values())
+    return merged
 
 
 def per_model_plddt(plddt: dict | None, folding_models: list[str], n: int) -> dict[str, list[float]]:
@@ -613,7 +708,7 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
 
 
 def read_monomer_folds(
-    output_dir: str, suffix: str, fingerprint: str, name: str | None = None
+    output_dir: str, suffix: str, fingerprint: str, name: str | None = None, model: str | None = None
 ) -> dict[int, dict] | None:
     """Every stored fold for this design, as ``{seed: fold}``, or None.
 
@@ -634,8 +729,8 @@ def read_monomer_folds(
     would ever ask for. The symptom was four entries for three seeds: three folded
     fresh, one orphan unreachable.
     """
-    path = monomer_fold_cache_path(output_dir, suffix)
-    if not os.path.exists(path):
+    path = next((p for p in monomer_fold_cache_paths(output_dir, suffix, model) if os.path.exists(p)), None)
+    if path is None:
         return None
     try:
         with open(path) as handle:
@@ -663,7 +758,12 @@ def read_monomer_folds(
 
 
 def read_monomer_fold_cache(
-    output_dir: str, suffix: str, fingerprint: str, seeds: list[int] | None = None, name: str | None = None
+    output_dir: str,
+    suffix: str,
+    fingerprint: str,
+    seeds: list[int] | None = None,
+    name: str | None = None,
+    model: str | None = None,
 ) -> dict | None:
     """Cached refold results for this design, or None. Never raises.
 
@@ -682,8 +782,8 @@ def read_monomer_fold_cache(
     Without *seeds*, returns the single fold a schema-1 cache holds, for callers
     not yet asking per seed.
     """
-    path = monomer_fold_cache_path(output_dir, suffix)
-    if not os.path.exists(path):
+    path = next((p for p in monomer_fold_cache_paths(output_dir, suffix, model) if os.path.exists(p)), None)
+    if path is None:
         return None
     try:
         with open(path) as handle:
@@ -735,8 +835,14 @@ def write_monomer_fold_cache(
     seed: int | None = None,
     seed_index: int | None = None,
     name: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Persist refold results. Never raises.
+
+    *model* names the backend whose file this is. Writes always go to the
+    per-model path, even when the folds were read from the legacy shared one:
+    the legacy file stays as it is, readable by an older checkout, and this run's
+    folds land where a run with a second backend enabled can still find them.
 
     Values are always stored -- they are a few floats per sequence, so they cost
     nothing even when outputs are being reclaimed. Structure paths are stored only
@@ -769,15 +875,21 @@ def write_monomer_fold_cache(
     }
     from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION, deterministic_seed
 
-    path = monomer_fold_cache_path(output_dir, suffix)
+    path = monomer_fold_cache_path(output_dir, suffix, model)
+    # Seeded from the legacy file when this backend has no file of its own yet,
+    # so the first write after the split keeps the folds it just reused instead
+    # of starting empty and refolding them on the next resume.
+    seed_from = next(
+        (p for p in monomer_fold_cache_paths(output_dir, suffix, model) if os.path.exists(p)), path
+    )
     try:
         # MERGE, never replace. Growing three seeds to five must add two entries
         # and keep three, so a write has to read what is there first. A stale
         # fingerprint discards the lot: those folds answered a different request.
         folds = {}
-        if os.path.exists(path):
+        if os.path.exists(seed_from):
             try:
-                with open(path) as handle:
+                with open(seed_from) as handle:
                     existing = json.load(handle)
                 if existing.get("fingerprint") == fingerprint:
                     folds = dict(existing.get("folds") or {})

@@ -38,6 +38,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     _fold_seeds,
     average_folds,
     folded_paths_by_model,
+    merge_model_folds,
     monomer_fold_fingerprint,
     read_monomer_folds,
     write_monomer_fold_cache,
@@ -409,9 +410,34 @@ def _result_from_folds(folds: dict[int, dict], rmsd_modes: list[str], pdb_path: 
     entry per sequence, and the new mode is averaged over seeds exactly as the
     cached one was.
     """
-    filled = {seed: _fill_missing_modes(entry, rmsd_modes, pdb_path) for seed, entry in (folds or {}).items()}
-    averaged = average_folds(filled)
+    averaged = _averaged_entry(folds, rmsd_modes, pdb_path)
     return _result_from_cache(averaged, rmsd_modes, pdb_path) if averaged else None
+
+
+def _averaged_entry(folds: dict[int, dict], rmsd_modes: list[str], pdb_path: str) -> dict:
+    """One backend's seeds, each filled in and then averaged into one entry."""
+    filled = {seed: _fill_missing_modes(entry, rmsd_modes, pdb_path) for seed, entry in (folds or {}).items()}
+    return average_folds(filled) or {}
+
+
+def _result_from_model_folds(
+    per_model: dict[str, dict[int, dict]], rmsd_modes: list[str], pdb_path: str
+):
+    """One result from several backends, each averaged over its own seeds first.
+
+    Seeds are a property of a backend -- a sampler wants several, a deterministic
+    folder wants one -- so averaging has to happen per backend and the merge
+    after it. Doing it the other way round would average a three-seed ESMFold2
+    mean with a single ColabFold value as though they were two draws of one
+    thing.
+    """
+    averaged = {}
+    for model, folds in (per_model or {}).items():
+        one = _averaged_entry(folds, rmsd_modes, pdb_path)
+        if one:
+            averaged[model] = one
+    merged = merge_model_folds(averaged)
+    return _result_from_cache(merged, rmsd_modes, pdb_path) if merged else None
 
 
 def _fill_missing_modes(entry: dict, rmsd_modes: list[str], reference_pdb_path: str) -> dict:
@@ -598,37 +624,63 @@ def evaluate_self_consistency(
             [binder_chain if binder_chain is not None else "A"],
         )
 
-    fingerprint = monomer_fold_fingerprint(
-        reference_pdb_path=pdb_path,
-        suffix=suffix,
-        folding_models=list(folding_models),
-        model_identities={m: folding_model_identity(m) for m in folding_models},
-        num_seq_per_target=num_seq_per_target,
-        pmpnn_sampling_temp=pmpnn_sampling_temp,
-        binder_chain=binder_chain,
-        mpnn_context_chains=context_chains,
-        mpnn_seed_value=seed_value,
-        # Without this, flipping inverse_folding_model would serve designability
-        # numbers computed from the previous model's redesigns: same design, same
-        # folding backend, sequences from a different inverse folder entirely.
-        inverse_folding_model=None if use_pdb_seq else inverse_folding_model,
-    )
+    # One fingerprint and one cache file per backend, so enabling a second one
+    # does not discard the first one's folds for a reason that has nothing to do
+    # with how it folded them. The per-model fingerprint is this same function
+    # called with a one-element list, which is byte-identical to what a
+    # single-backend run has already written.
+    def fingerprint_for(model: str) -> str:
+        return monomer_fold_fingerprint(
+            reference_pdb_path=pdb_path,
+            suffix=suffix,
+            folding_models=[model],
+            model_identities={model: folding_model_identity(model)},
+            num_seq_per_target=num_seq_per_target,
+            pmpnn_sampling_temp=pmpnn_sampling_temp,
+            binder_chain=binder_chain,
+            mpnn_context_chains=context_chains,
+            mpnn_seed_value=seed_value,
+            # Without this, flipping inverse_folding_model would serve designability
+            # numbers computed from the previous model's redesigns: same design, same
+            # folding backend, sequences from a different inverse folder entirely.
+            inverse_folding_model=None if use_pdb_seq else inverse_folding_model,
+        )
+
+    fingerprints = {m: fingerprint_for(m) for m in folding_models}
     # Folds are stored per seed, so this reads the whole map and derives the
     # seeds from the sequences it holds. Deriving first is impossible: the seed
     # comes from the redesigned sequences, which are an output of the inverse
     # folder -- the expensive step the cache exists to skip. Read-then-derive
     # keeps that skip; derive-then-read would re-run ProteinMPNN on every resume.
-    stored = read_monomer_folds(output_dir, suffix, fingerprint) if reuse_cache else None
+    stored_by_model = {
+        m: (read_monomer_folds(output_dir, suffix, fingerprints[m], model=m) if reuse_cache else None)
+        for m in folding_models
+    }
     sequences = None
-    if stored:
-        sequences = next(iter(stored.values())).get("sequences")
-        wanted = _fold_seeds(name, suffix, sequences, folding_models, n_esmfold2_seeds)
-        have = {seed: stored[seed] for seed in wanted if seed in stored}
-        if len(have) == len(wanted):
-            reused = _result_from_folds(have, rmsd_modes, pdb_path)
+    for by_seed in stored_by_model.values():
+        if by_seed:
+            sequences = next(iter(by_seed.values())).get("sequences")
+            if sequences:
+                break
+    if sequences:
+        # A full hit needs every backend complete, not just the first one: a run
+        # that added a backend has the sequences already and still has folding to
+        # do.
+        complete = True
+        for model in folding_models:
+            wanted = _fold_seeds(name, suffix, sequences, [model], n_esmfold2_seeds)
+            have = {s for s in wanted if (stored_by_model.get(model) or {}).get(s)}
+            if len(have) != len(wanted):
+                complete = False
+                logger.info(
+                    f"{len(have)}/{len(wanted)} seeds cached for {name} ({suffix}, {model}); folding the rest"
+                )
+        if complete:
+            reused = _result_from_model_folds(
+                {m: stored_by_model[m] or {} for m in folding_models}, rmsd_modes, pdb_path
+            )
             if reused is not None:
                 return reused
-        logger.info(f"{len(have)}/{len(wanted)} seeds cached for {name} ({suffix}); folding the rest")
 
     # Step 1: Get sequences -- unless the cache already holds them, in which case
     # the inverse folder does not need running to add a seed.
@@ -649,39 +701,55 @@ def evaluate_self_consistency(
     # work rather than an extra structure to average at the end, because that is
     # what the cache stores -- so adding a seed later folds and scores only the
     # ones that are new.
-    seeds = _fold_seeds(name, suffix, sequences, folding_models, n_esmfold2_seeds)
-    per_seed: dict[int, dict] = {}
-    for seed in seeds:
-        if stored and seed in stored:
-            per_seed[seed] = stored[seed]
-            continue
-        folding_results = fold_sequences(
-            sequences=sequences,
-            output_dir=output_dir,
-            name=name,
-            folding_models=folding_models,
-            suffix=suffix,
-            cache_dir=cache_dir,
-            keep_outputs=keep_outputs,
-            seed=seed,
-        )
-        scored = compute_scrmsd_from_folded(
-            reference_pdb_path=pdb_path,
-            folding_results=folding_results,
-            rmsd_modes=rmsd_modes,
-        )
-        scored.sequences = sequences
-        write_monomer_fold_cache(
-            output_dir, suffix, fingerprint, scored, keep_outputs, seed=seed, seed_index=seeds.index(seed)
-        )
-        per_seed[seed] = {
-            "sequences": list(scored.sequences),
-            "rmsd_values": scored.rmsd_values,
-            "best_rmsd": scored.best_rmsd,
-            "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
-        }
+    per_model_seeds: dict[str, dict[int, dict]] = {}
+    for model in folding_models:
+        stored = stored_by_model.get(model) or {}
+        # A deterministic folder gets one seed however many a sampler beside it
+        # wants -- which is only expressible once the seeds are derived per model.
+        seeds = _fold_seeds(name, suffix, sequences, [model], n_esmfold2_seeds)
+        per_seed: dict[int, dict] = {}
+        for seed in seeds:
+            if seed in stored:
+                per_seed[seed] = stored[seed]
+                continue
+            folding_results = fold_sequences(
+                sequences=sequences,
+                output_dir=output_dir,
+                name=name,
+                folding_models=[model],
+                suffix=suffix,
+                cache_dir=cache_dir,
+                keep_outputs=keep_outputs,
+                seed=seed,
+            )
+            scored = compute_scrmsd_from_folded(
+                reference_pdb_path=pdb_path,
+                folding_results=folding_results,
+                rmsd_modes=rmsd_modes,
+            )
+            scored.sequences = sequences
+            write_monomer_fold_cache(
+                output_dir,
+                suffix,
+                fingerprints[model],
+                scored,
+                keep_outputs,
+                seed=seed,
+                seed_index=seeds.index(seed),
+                model=model,
+            )
+            per_seed[seed] = {
+                "sequences": list(scored.sequences),
+                "rmsd_values": scored.rmsd_values,
+                "best_rmsd": scored.best_rmsd,
+                "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
+                "plddt": scored.plddt,
+                "confidence": scored.confidence,
+                "structures_kept": bool(keep_outputs),
+            }
+        per_model_seeds[model] = per_seed
 
-    result = _result_from_folds(per_seed, rmsd_modes, pdb_path)
+    result = _result_from_model_folds(per_model_seeds, rmsd_modes, pdb_path)
 
     # Cleanup if not keeping outputs
     if not keep_outputs:

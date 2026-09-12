@@ -337,67 +337,89 @@ def apo_refold(
         )
 
     suffix = f"apo_{seq_type}"
-    fingerprint = apo_fold_fingerprint(
-        binder_pdb_path=binder_pdb_path,
-        sequences=sequences,
-        folding_models=list(folding_models),
-        model_identities={m: folding_model_identity(m) for m in folding_models},
+    from proteinfoundation.evaluation.monomer_eval_utils import (
+        _fold_seeds,
+        average_folds,
+        merge_model_folds,
+        read_monomer_folds,
     )
-    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds, average_folds, read_monomer_folds
 
     name = f"{pdb_name_from_path(binder_pdb_path)}_{suffix}"
-    # Sequences are an argument here rather than an output, so the seeds can be
-    # derived up front -- unlike the codesignability path, where they come out of
-    # the inverse folder and the cache has to be read first.
-    seeds = _fold_seeds(name, suffix, list(sequences), folding_models, n_esmfold2_seeds)
-    stored = read_monomer_folds(sample_root_path, suffix, fingerprint, name=name) if reuse_cache else None
-    per_seed = {seed: stored[seed] for seed in seeds if stored and seed in stored}
-    if len(per_seed) < len(seeds):
-        logger.info(f"{len(per_seed)}/{len(seeds)} apo seeds cached for {name}; folding the rest")
 
-    for seed in seeds:
-        if seed in per_seed:
-            continue
-        folded = fold_sequences(
+    # One backend at a time, each against its own cache, its own fingerprint and
+    # its own seeds. A shared fingerprint made a second backend discard the
+    # first one's folds for a reason that had nothing to do with how it folded
+    # them, and a shared seed list gave a deterministic folder three seeds
+    # because a sampler beside it wanted three -- three identical structures,
+    # averaged with themselves.
+    per_model: dict[str, dict] = {}
+    for model in folding_models:
+        fingerprint = apo_fold_fingerprint(
+            binder_pdb_path=binder_pdb_path,
             sequences=sequences,
-            output_dir=sample_root_path,
-            name=name,
-            folding_models=folding_models,
-            suffix=suffix,
-            cache_dir=None,
-            keep_outputs=keep_outputs,
-            seed=seed,
+            folding_models=[model],
+            model_identities={model: folding_model_identity(model)},
         )
-        scored = compute_scrmsd_from_folded(
-            reference_pdb_path=binder_pdb_path,
-            folding_results=folded,
-            rmsd_modes=rmsd_modes,
+        # Sequences are an argument here rather than an output, so the seeds can
+        # be derived up front -- unlike the codesignability path, where they come
+        # out of the inverse folder and the cache has to be read first.
+        seeds = _fold_seeds(name, suffix, list(sequences), [model], n_esmfold2_seeds)
+        stored = (
+            read_monomer_folds(sample_root_path, suffix, fingerprint, name=name, model=model)
+            if reuse_cache
+            else None
         )
-        scored.sequences = sequences
-        write_monomer_fold_cache(
-            sample_root_path,
-            suffix,
-            fingerprint,
-            scored,
-            keep_outputs,
-            seed=seed,
-            seed_index=seeds.index(seed),
-            name=name,
-        )
-        per_seed[seed] = {
-            "sequences": list(scored.sequences),
-            "rmsd_values": scored.rmsd_values,
-            "best_rmsd": scored.best_rmsd,
-            "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
-            "plddt": scored.plddt,
-            "confidence": scored.confidence,
-        }
+        per_seed = {seed: stored[seed] for seed in seeds if stored and seed in stored}
+        if len(per_seed) < len(seeds):
+            logger.info(
+                f"{len(per_seed)}/{len(seeds)} apo seeds cached for {name} ({model}); folding the rest"
+            )
 
-    # What the kept structures say about themselves, filled in on the run that
-    # produced them rather than the one after. Re-reads PDBs, never refolds.
-    per_seed = refresh_monomer_derivation(sample_root_path, suffix, fingerprint, per_seed)
+        for seed in seeds:
+            if seed in per_seed:
+                continue
+            folded = fold_sequences(
+                sequences=sequences,
+                output_dir=sample_root_path,
+                name=name,
+                folding_models=[model],
+                suffix=suffix,
+                cache_dir=None,
+                keep_outputs=keep_outputs,
+                seed=seed,
+            )
+            scored = compute_scrmsd_from_folded(
+                reference_pdb_path=binder_pdb_path,
+                folding_results=folded,
+                rmsd_modes=rmsd_modes,
+            )
+            scored.sequences = sequences
+            write_monomer_fold_cache(
+                sample_root_path,
+                suffix,
+                fingerprint,
+                scored,
+                keep_outputs,
+                seed=seed,
+                seed_index=seeds.index(seed),
+                name=name,
+                model=model,
+            )
+            per_seed[seed] = {
+                "sequences": list(scored.sequences),
+                "rmsd_values": scored.rmsd_values,
+                "best_rmsd": scored.best_rmsd,
+                "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
+                "plddt": scored.plddt,
+                "confidence": scored.confidence,
+            }
 
-    averaged = average_folds(per_seed) or {}
+        # What the kept structures say about themselves, filled in on the run that
+        # produced them rather than the one after. Re-reads PDBs, never refolds.
+        per_seed = refresh_monomer_derivation(sample_root_path, suffix, fingerprint, per_seed, model=model)
+        per_model[model] = average_folds(per_seed) or {}
+
+    averaged = merge_model_folds(per_model)
     values = averaged.get("rmsd_values", {})
     rmsds = {
         (mode, m): values.get(mode, {}).get(m, [float("inf")] * len(sequences))

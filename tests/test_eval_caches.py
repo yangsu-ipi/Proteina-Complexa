@@ -10,6 +10,7 @@ A cache key is only as good as what it refuses. These tests are mostly
 key that is too coarse fails silently and looks like a speedup.
 """
 
+import json
 import os
 
 import pytest
@@ -382,3 +383,151 @@ def test_an_averaged_entry_is_never_measured_directly(monkeypatch, tmp_path):
     monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
     assert monomer_eval._fill_missing_modes(averaged, ["ca", "bb3"], "/design.pdb") is averaged
     assert monomer_eval._result_from_cache(averaged, ["ca", "bb3"], "/design.pdb") is None
+
+
+# ---------------------------------------------------------------------------
+# One cache per backend. A shared fingerprint made enabling a second folder
+# discard the first one's folds for a reason that had nothing to do with how it
+# folded them -- ~13,000 cached ESMFold2 apo folds per campaign, thrown away by
+# adding ColabFold beside them.
+# ---------------------------------------------------------------------------
+
+
+def test_a_backends_fingerprint_does_not_mention_the_backends_beside_it():
+    """The property the split turns on: what identifies an ESMFold2 fold cannot
+    change because ColabFold was enabled. Nothing about ColabFold went into
+    producing that structure."""
+    from proteinfoundation.evaluation.binder_eval_utils import apo_fold_fingerprint
+
+    def fp(models):
+        return apo_fold_fingerprint(
+            binder_pdb_path="/d/x_binder.pdb",
+            sequences=["AAA", "CCC"],
+            folding_models=models,
+            model_identities={m: f"id-{m}" for m in models},
+        )
+
+    assert fp(["esmfold2"]) != fp(["esmfold2", "colabfold"]), "the old, shared key"
+    assert fp(["esmfold2"]) == fp(["esmfold2"]), "and the per-model one is stable"
+    assert fp(["colabfold"]) != fp(["esmfold2"]), "two backends are two caches"
+
+
+def test_a_single_backend_cache_is_adopted_by_that_backend(tmp_path):
+    """What makes the split free rather than a migration: the per-model
+    fingerprint is the same function with a one-element list, so a campaign that
+    ran with one backend already wrote exactly the bytes that backend now asks
+    for. Its folds are reused, not recomputed."""
+    from proteinfoundation.evaluation.monomer_eval_utils import (
+        monomer_fold_cache_path,
+        read_monomer_folds,
+    )
+
+    # A cache as a pre-split run left it: the legacy shared filename.
+    legacy = monomer_fold_cache_path(str(tmp_path), "apo_mpnn")
+    assert legacy.endswith("monomer_fold_cache_apo_mpnn.json")
+    per_model = monomer_fold_cache_path(str(tmp_path), "apo_mpnn", "esmfold2")
+    assert per_model.endswith("monomer_fold_cache_apo_mpnn_esmfold2.json")
+
+    with open(legacy, "w") as handle:
+        json.dump(
+            {
+                "fingerprint": "FP",
+                "schema": 3,
+                "folds": {"7": {"sequences": ["AAA"], "rmsd_values": {"ca": {"esmfold2": [1.0]}}}},
+            },
+            handle,
+        )
+
+    adopted = read_monomer_folds(str(tmp_path), "apo_mpnn", "FP", model="esmfold2")
+    assert adopted and 7 in adopted, "the legacy file answers for the backend that wrote it"
+    assert read_monomer_folds(str(tmp_path), "apo_mpnn", "OTHER", model="colabfold") is None
+
+
+def test_the_first_write_after_the_split_keeps_what_it_reused(tmp_path):
+    """Otherwise the adoption undoes itself: the folds are reused in memory,
+    written to a file that does not contain them, and refolded on the next
+    resume -- every run, forever."""
+    from proteinfoundation.evaluation.monomer_eval_utils import (
+        monomer_fold_cache_path,
+        read_monomer_folds,
+        write_monomer_fold_cache,
+    )
+
+    legacy = monomer_fold_cache_path(str(tmp_path), "apo_mpnn")
+    with open(legacy, "w") as handle:
+        json.dump(
+            {
+                "fingerprint": "FP",
+                "schema": 3,
+                "folds": {"7": {"sequences": ["AAA"], "rmsd_values": {"ca": {"esmfold2": [1.0]}}}},
+            },
+            handle,
+        )
+
+    write_monomer_fold_cache(
+        str(tmp_path), "apo_mpnn", "FP", result([2.0]), False, seed=9, seed_index=1, model="esmfold2"
+    )
+
+    got = read_monomer_folds(str(tmp_path), "apo_mpnn", "FP", model="esmfold2")
+    assert got is not None and set(got) == {7, 9}, "the reused seed and the new one"
+    assert os.path.exists(monomer_fold_cache_path(str(tmp_path), "apo_mpnn", "esmfold2"))
+
+
+def test_a_deterministic_folder_is_not_asked_for_three_seeds():
+    """Seeds are a property of a backend. Derived over the whole model list, a
+    deterministic folder got however many a sampler beside it wanted -- three
+    identical ColabFold structures per design, averaged with themselves, at the
+    cost of three folds."""
+    from proteinfoundation.evaluation.monomer_eval_utils import _fold_seeds
+
+    seqs = ["AAA", "CCC"]
+    assert len(_fold_seeds("d", "apo_mpnn", seqs, ["esmfold2"], 3)) == 3
+    assert len(_fold_seeds("d", "apo_mpnn", seqs, ["colabfold"], 3)) == 1
+    # The shared list is what made the deterministic one expensive.
+    assert len(_fold_seeds("d", "apo_mpnn", seqs, ["esmfold2", "colabfold"], 3)) == 3
+
+
+def test_two_backends_merge_into_the_shape_one_backend_gives():
+    """Every field below the top level is already keyed by model, so combining
+    two backends is a union -- and nothing downstream can tell that it did not
+    come from one file."""
+    from proteinfoundation.evaluation.monomer_eval_utils import merge_model_folds
+
+    merged = merge_model_folds(
+        {
+            "esmfold2": {
+                "sequences": ["AAA"],
+                "rmsd_values": {"ca": {"esmfold2": [1.0]}},
+                "best_rmsd": {"ca": {"esmfold2": 1.0}},
+                "plddt": {"esmfold2": [0.7]},
+                "folded_paths": {"esmfold2": ["/a.pdb"]},
+                "structures_kept": True,
+            },
+            "colabfold": {
+                "sequences": ["AAA"],
+                "rmsd_values": {"ca": {"colabfold": [2.0]}},
+                "best_rmsd": {"ca": {"colabfold": 2.0}},
+                "plddt": {"colabfold": [0.9]},
+                "folded_paths": {"colabfold": ["/b.pdb"]},
+                "structures_kept": True,
+            },
+        }
+    )
+    assert merged["rmsd_values"]["ca"] == {"esmfold2": [1.0], "colabfold": [2.0]}
+    assert set(merged["plddt"]) == {"esmfold2", "colabfold"}
+    assert set(merged["folded_paths"]) == {"esmfold2", "colabfold"}
+
+
+def test_backends_that_disagree_about_the_sequences_are_not_merged():
+    """Two caches describing different sequences describe different designs, and
+    pairing one model's folds with another's sequences is the one failure the
+    apo columns must not introduce."""
+    from proteinfoundation.evaluation.monomer_eval_utils import merge_model_folds
+
+    merged = merge_model_folds(
+        {
+            "esmfold2": {"sequences": ["AAA"], "rmsd_values": {"ca": {"esmfold2": [1.0]}}},
+            "colabfold": {"sequences": ["DIFFERENT"], "rmsd_values": {"ca": {"colabfold": [2.0]}}},
+        }
+    )
+    assert set(merged["rmsd_values"]["ca"]) == {"esmfold2"}, "the disagreeing backend is dropped"
