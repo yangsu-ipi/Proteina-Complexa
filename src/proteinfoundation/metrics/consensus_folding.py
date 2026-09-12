@@ -287,7 +287,12 @@ def _score_esmfold2(
                 getattr(results[best], "pae", None),
                 chain_lengths=[len(x) for x in target_seqs] + [len(binder_seq)],
                 backend="esmfold2",
-                model=str(cfg.get("model_id") or ""),
+                # Resolved the same way the fold resolved it, not read off a cfg
+                # key the campaigns do not set: consensus_cfg carries model_id
+                # only when someone overrides the checkpoint, so this recorded an
+                # empty string on every real run -- a stored matrix that could not
+                # say which model produced it.
+                model=_esmfold2_model_id(cfg),
                 seed=seed,
             )
         except Exception as exc:
@@ -504,10 +509,16 @@ def _esmfold2_model(cfg: dict):
     setting the fork's own deploy scripts use their "critic" model for. Monomer
     refolding uses Fast instead -- see ``esmfold2_loader``.
     """
-    from proteinfoundation.metrics.esmfold2_loader import complex_model_id, load_esmfold2
+    from proteinfoundation.metrics.esmfold2_loader import load_esmfold2
 
-    model_id = str(cfg.get("model_id") or complex_model_id())
-    return load_esmfold2(model_id, cuda=bool(cfg.get("cuda", True)))
+    return load_esmfold2(_esmfold2_model_id(cfg), cuda=bool(cfg.get("cuda", True)))
+
+
+def _esmfold2_model_id(cfg: dict) -> str:
+    """Which checkpoint :func:`_esmfold2_model` will load for this cfg."""
+    from proteinfoundation.metrics.esmfold2_loader import complex_model_id
+
+    return str(cfg.get("model_id") or complex_model_id())
 
 
 def clear_consensus_model_cache() -> None:

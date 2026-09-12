@@ -363,3 +363,16 @@ def test_the_ipsae_cutoffs_drive_the_column_list():
         assert "min_ipSAE_10" not in names
     finally:
         cf.IPSAE_CUTOFFS = original
+
+
+def test_a_stored_matrix_names_the_checkpoint_that_made_it():
+    """The advisory sidecar recorded an empty model string on every real run: it
+    read consensus_cfg["model_id"], which campaigns only set when overriding the
+    checkpoint. A stored PAE that cannot say which model produced it is a matrix
+    nobody can compare against another run's."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.esmfold2_loader import complex_model_id
+
+    assert cf._esmfold2_model_id({}) == complex_model_id(), "the default, not an empty string"
+    assert cf._esmfold2_model_id({"model_id": "someone/else"}) == "someone/else"
+    assert cf._esmfold2_model_id({}), "never empty"
