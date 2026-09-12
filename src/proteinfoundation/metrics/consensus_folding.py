@@ -84,24 +84,59 @@ from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACK
 # target_pLDDT and binder_pLDDT split the complex mean the way the AF2 side does.
 # Advisory like everything else here: ESMFold2 runs on a compressed scale (see
 # above), so these are for looking at, not for filtering on.
-CONSENSUS_METRIC_SUFFIXES = (
-    # The PAE family, on the same 0-1 scale and by the same definitions the
-    # primary backend's columns of these names carry -- see _esmfold2_metrics.
-    "i_pAE",
-    "pAE",
-    "min_ipAE",
-    "min_ipSAE",
-    "max_ipSAE",
-    "avg_ipSAE",
-    "min_ipSAE_10",
-    "max_ipSAE_10",
-    "avg_ipSAE_10",
+# Confidence the folder reports and nothing on disk can reproduce. These, and
+# only these, belong in the fold fingerprint.
+CONSENSUS_CONFIDENCE_SUFFIXES = (
     "i_pTM",
     "pTM",
     "pLDDT",
     "target_pLDDT",
     "binder_pLDDT",
 )
+
+# The KINDS of number the PAE family produces, without the cutoffs that
+# instantiate them. This is the family's identity for fingerprinting: whether
+# ipSAE is reported at all is a property of the backend, while the distances it
+# is reported at are a property of the request. Conflating them put "_10" in the
+# fold fingerprint, where adding a third cutoff would have refolded a campaign to
+# recompute arithmetic over a matrix already on disk.
+PAE_BASE_METRICS = (
+    "i_pAE",
+    "pAE",
+    "min_ipAE",
+    "min_ipSAE",
+    "max_ipSAE",
+    "avg_ipSAE",
+)
+
+# The distance cutoffs the ipSAE columns are scored at, in Angstroms, each with
+# the suffix its columns carry: the plain ones at 15, the "_10" ones at 10.
+#
+# Changing this list costs a re-read of the stored PAE matrices and nothing more.
+# Cutoffs already computed for a structure are reused, so rounds of comparison
+# with overlapping cutoffs pay only for what is new -- see
+# :func:`missing_pae_cutoffs`.
+IPSAE_CUTOFFS: tuple[tuple[float, str], ...] = ((15.0, ""), (10.0, "_10"))
+
+
+def ipsae_suffixes(cutoffs: tuple[tuple[float, str], ...] | None = None) -> tuple[str, ...]:
+    """The ipSAE column names a set of cutoffs produces."""
+    return tuple(
+        f"{kind}ipSAE{suffix}"
+        for _, suffix in (IPSAE_CUTOFFS if cutoffs is None else cutoffs)
+        for kind in ("min_", "max_", "avg_")
+    )
+
+
+def consensus_metric_suffixes(cutoffs: tuple[tuple[float, str], ...] | None = None) -> tuple[str, ...]:
+    """Every column a backend reports, at the cutoffs this run asks for."""
+    return ("i_pAE", "pAE", "min_ipAE", *ipsae_suffixes(cutoffs), *CONSENSUS_CONFIDENCE_SUFFIXES)
+
+
+# The columns of the current request. A module-level name because most readers
+# want exactly this; anything that must not move when a cutoff changes uses
+# CONSENSUS_CONFIDENCE_SUFFIXES and PAE_BASE_METRICS instead.
+CONSENSUS_METRIC_SUFFIXES = consensus_metric_suffixes()
 
 # One cache file per backend. A single shared file would thrash the moment two
 # backends are enabled together: each writes its own fingerprint, and the other's
@@ -268,27 +303,37 @@ def _score_esmfold2(
     return scored[best]
 
 
-# The distance cutoffs the ipSAE columns are scored at, in Angstroms: the plain
-# columns at 15, the _10 ones at 10. Named rather than written inline at the one
-# call site because they are now part of the derivation fingerprint -- changing
-# one has to re-read the stored PAE matrices, and a literal buried in a function
-# body could be changed without anything noticing that the cached columns no
-# longer mean what their names say.
-IPSAE_CUTOFFS: tuple[tuple[float, str], ...] = ((15.0, ""), (10.0, "_10"))
-
-
-def pae_family(pae, target_len: int) -> dict[str, float]:
+def pae_family(
+    pae,
+    target_len: int,
+    cutoffs: tuple[tuple[float, str], ...] | None = None,
+    include_base: bool = True,
+) -> dict[str, float]:
     """Every metric that is a pure function of the PAE matrix.
 
     One definition, two callers: the backend computes these while it still holds
     the folder's output, and the derivation recomputes them from the matrix
-    stored beside the structure when a cutoff changes. Two copies of this
-    arithmetic would be two answers to "what is min_ipSAE".
+    stored beside the structure. Two copies of this arithmetic would be two
+    answers to "what is min_ipSAE".
+
+    *cutoffs* defaults to the whole request. Passing a subset is how a round of
+    comparison pays only for the cutoffs it does not already have, and
+    *include_base* drops i_pAE / pAE / min_ipAE, which no cutoff affects.
     """
     from esm.models.esmfold2.interface_metrics import ipsae, pae_interaction
 
     array = _np(pae)
     metrics: dict[str, float] = {}
+    if not include_base:
+        # Skip straight to the cutoff-dependent half.
+        for cutoff, suffix in (IPSAE_CUTOFFS if cutoffs is None else cutoffs):
+            scored = ipsae(array, target_len, cutoff)
+            forward = float(scored["ipsae_target_binder"])
+            reverse = float(scored["ipsae_binder_target"])
+            metrics[f"min_ipSAE{suffix}"] = min(forward, reverse)
+            metrics[f"max_ipSAE{suffix}"] = max(forward, reverse)
+            metrics[f"avg_ipSAE{suffix}"] = (forward + reverse) / 2
+        return metrics
     # Divided by the top bin, because that is what every other backend's column
     # of this name holds: ColabDesign divides inside its loss, the RF3 adapter
     # divides on the way in, and a threshold carries the divisor as `scale` so it
@@ -311,7 +356,7 @@ def pae_family(pae, target_len: int) -> dict[str, float]:
     # max-then-min/max), so this uses that rather than a third copy. They differ
     # in one place, the floor on the d0 length -- 27 there, 26 here -- so a very
     # small interface can read slightly differently between them.
-    for cutoff, suffix in IPSAE_CUTOFFS:
+    for cutoff, suffix in (IPSAE_CUTOFFS if cutoffs is None else cutoffs):
         scored = ipsae(array, target_len, cutoff)
         forward = float(scored["ipsae_target_binder"])
         reverse = float(scored["ipsae_binder_target"])
@@ -321,15 +366,30 @@ def pae_family(pae, target_len: int) -> dict[str, float]:
     return metrics
 
 
-# What :func:`pae_family` produces. These are folder-reported at fold time and
-# recomputable from a stored matrix afterwards, which is the whole point of
-# keeping one.
-PAE_FAMILY_SUFFIXES: tuple[str, ...] = (
-    "i_pAE",
-    "pAE",
-    "min_ipAE",
-    *(f"{k}ipSAE{sfx}" for _, sfx in IPSAE_CUTOFFS for k in ("min_", "max_", "avg_")),
-)
+# Where an entry records which distance produced each ipSAE suffix, so a suffix
+# reused from an earlier round is known to have been computed at the cutoff this
+# round is asking for -- and a suffix whose cutoff moved is recomputed rather
+# than silently kept. Not a metric; carried alongside pdb_path.
+PAE_CUTOFF_KEY = "pae_cutoffs"
+
+
+def missing_pae_cutoffs(entry: dict, cutoffs: tuple[tuple[float, str], ...] | None = None) -> tuple:
+    """The (cutoff, suffix) pairs this entry cannot already answer.
+
+    Presence of the columns is not enough: a suffix is only reusable if it was
+    produced at the distance now being asked for. ``_10`` written at 10 A stays
+    valid when a round adds 12; the plain suffix written at 15 does not when a
+    round redefines it to 12, even though the column name is unchanged.
+    """
+    produced = entry.get(PAE_CUTOFF_KEY) or {}
+    wanted = IPSAE_CUTOFFS if cutoffs is None else cutoffs
+    out = []
+    for cutoff, suffix in wanted:
+        names = (f"min_ipSAE{suffix}", f"max_ipSAE{suffix}", f"avg_ipSAE{suffix}")
+        if produced.get(suffix) == float(cutoff) and all(n in entry for n in names):
+            continue
+        out.append((cutoff, suffix))
+    return tuple(out)
 
 
 def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
@@ -666,7 +726,13 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
             # consensus_derivation_fingerprint instead, where a change re-reads
             # the file rather than spending minutes per complex reproducing a
             # structure the folder would return unchanged.
-            "metrics": sorted(CONSENSUS_METRIC_SUFFIXES),
+            # The KINDS of number the folder is asked for, not the cutoffs they
+            # are instantiated at. With the PAE matrix stored beside every
+            # structure, a cutoff is answerable by re-reading a file, so putting
+            # one here would refold a campaign to recompute arithmetic. What
+            # still belongs is whether a metric is reported at all: a cache
+            # written before ipSAE existed holds no way to produce it.
+            "metrics": sorted((*CONSENSUS_CONFIDENCE_SUFFIXES, *PAE_BASE_METRICS)),
         },
         sort_keys=True,
         default=str,
@@ -767,13 +833,15 @@ def consensus_derivation_fingerprint(include_tmol: bool = False) -> str:
         {
             "derived": sorted(consensus_derived_suffixes(include_tmol)),
             "version": CONSENSUS_DERIVATION_VERSION,
-            # The ipSAE distance cutoffs. They used to be a literal inside
-            # _esmfold2_metrics, covered by nothing: changing 15 to 12 would have
-            # left every cached column untouched and renamed nothing, so the run
-            # after would have served ipSAE-at-15 under a name that now means
-            # ipSAE-at-12. Here, a change re-reads the stored PAE matrices --
-            # which is why they are stored.
-            "ipsae_cutoffs": [[float(c), s] for c, s in IPSAE_CUTOFFS],
+            # The ipSAE cutoffs are deliberately NOT here. Hashing them made any
+            # change re-derive every structure-read metric -- SASA, shape
+            # complementarity, secondary structure, the RMSDs -- to recompute a
+            # number that takes under a millisecond, ~2 hours of re-reading on
+            # CBLN1 for ~13 seconds of arithmetic. Worse, it recomputed cutoffs
+            # the entry already held, so rounds of comparison with overlapping
+            # cutoffs paid for the overlap every time. Each entry records which
+            # distance produced each suffix instead, so a round pays only for
+            # what is new: see missing_pae_cutoffs.
         },
         sort_keys=True,
     )
@@ -812,6 +880,7 @@ def derive_from_structure(
     n_target_chains: int,
     reference_pdb_path: str | None = None,
     include_tmol: bool = False,
+    have: dict | None = None,
 ) -> dict[str, float]:
     """Read the registered derived metrics off one advisory structure.
 
@@ -825,55 +894,76 @@ def derive_from_structure(
     registration for the reasons on :data:`CONSENSUS_TMOL_SUFFIXES`, and it must
     match the flag the caller hashed into the derivation fingerprint.
 
+    *have* is what the entry already holds. Anything already answered is skipped,
+    which is what keeps a round that only adds an ipSAE cutoff from re-reading
+    the structure: opening the PDB and scoring its interface costs ~0.3 s and the
+    new cutoff costs under a millisecond. Pass ``{}`` -- or leave it out -- when
+    the derivation fingerprint moved and everything must be computed again.
+
     Returns ``{}`` while nothing is registered, which is what makes the split
     inert until a caller opts in. Raises nothing of its own: a caller treats a
     failure as "not derivable for this structure" and leaves the columns absent,
     so one unreadable PDB does not cost a refold of everything.
     """
     wanted_suffixes = consensus_derived_suffixes(include_tmol)
-    if not wanted_suffixes:
-        return {}
-    from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
+    held = have or {}
+    derived: dict[str, float] = {}
 
-    # The chain ids this module wrote. Derived rather than sniffed so the mapping
-    # stays with the writer: advisory_chain_ids puts the binder last.
-    chains = advisory_chain_ids(n_target_chains)
-    scores, _, _ = pr_alternative_score_interface(
-        pdb_path,
-        binder_chain=chains[-1],
-        target_chain=",".join(chains[:-1]),
-    )
-    derived = {name: scores[name] for name in wanted_suffixes if name in scores}
-    wanted = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(wanted_suffixes)
-    if reference_pdb_path and wanted:
-        derived.update(
-            {k: v for k, v in rmsd_against_design(pdb_path, reference_pdb_path).items() if k in wanted}
+    # Everything below reads the structure; skip each part whose answers are
+    # already in hand.
+    from_structure = [n for n in wanted_suffixes if n not in held]
+    geometry = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(from_structure)
+    scored_names = [n for n in from_structure if n not in geometry]
+    if scored_names:
+        from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
+
+        # The chain ids this module wrote. Derived rather than sniffed so the
+        # mapping stays with the writer: advisory_chain_ids puts the binder last.
+        chains = advisory_chain_ids(n_target_chains)
+        scores, _, _ = pr_alternative_score_interface(
+            pdb_path,
+            binder_chain=chains[-1],
+            target_chain=",".join(chains[:-1]),
         )
-    if include_tmol:
+        derived.update({name: scores[name] for name in scored_names if name in scores})
+    if reference_pdb_path and geometry:
+        derived.update(
+            {k: v for k, v in rmsd_against_design(pdb_path, reference_pdb_path).items() if k in geometry}
+        )
+    if include_tmol and any(n not in held for n in CONSENSUS_TMOL_SUFFIXES):
         # By the same function and the same scorer the generated complex is read
         # through, on a structure whose chains this module wrote. TMOL works the
         # chains out itself, so an advisory complex needs no special casing.
         derived.update(tmol_interface_metrics(pdb_path))
-    derived.update(pae_family_from_store(pdb_path, n_target_chains))
+    derived.update(pae_family_from_store(pdb_path, n_target_chains, have=held))
     return derived
 
 
-def pae_family_from_store(pdb_path: str, n_target_chains: int) -> dict[str, float]:
+def pae_family_from_store(pdb_path: str, n_target_chains: int, have: dict | None = None) -> dict[str, float]:
     """The PAE family recomputed from the matrix stored beside a structure.
 
-    This is what makes a cutoff change cost a re-read. The folder reported these
-    when it folded, and the values are in the cache; when the derivation
-    fingerprint moves -- because a cutoff changed -- the cache's copies are
-    stale, and the stored matrix is the only thing on disk that can produce new
-    ones without predicting the complex again.
+    This is what makes a cutoff change cost a re-read. Only the cutoffs *have*
+    cannot already answer are computed, and the base metrics -- i_pAE, pAE,
+    min_ipAE, which no cutoff affects -- only when they are absent. So a second
+    round of comparison that keeps 15 A and adds 12 pays for 12 alone, and a
+    third round that asks for 10, 12 and 15 together pays for nothing at all.
+
+    The returned dict carries :data:`PAE_CUTOFF_KEY`, the record of which
+    distance produced each suffix. Without it, reuse would be by column name,
+    and a round that redefined the plain suffix from 15 A to 12 would keep the
+    15 A numbers under a name that had come to mean something else.
 
     Empty when no matrix was stored, which is every fold from before the store
-    existed. Those entries keep their folder-reported values, which under a
-    changed cutoff are the old question's answer: :func:`score_binders` drops
-    them rather than serving them, because a column that silently means
-    something other than its name is worse than a missing one.
+    existed. Those entries keep their folder-reported values -- nothing on disk
+    can move them -- and :func:`score_binders` counts them in a warning.
     """
     from proteinfoundation.metrics.pae_store import load_pae
+
+    held = have or {}
+    needed = missing_pae_cutoffs(held)
+    needs_base = any(name not in held for name in ("i_pAE", "pAE", "min_ipAE"))
+    if not needed and not needs_base:
+        return {}
 
     stored = load_pae(pdb_path)
     if not stored:
@@ -893,10 +983,15 @@ def pae_family_from_store(pdb_path: str, n_target_chains: int) -> dict[str, floa
         )
         return {}
     try:
-        return pae_family(stored["pae"], target_len)
+        computed = pae_family(stored["pae"], target_len, cutoffs=needed, include_base=needs_base)
     except Exception as exc:
         logger.warning(f"Could not recompute the PAE family from the stored matrix at {pdb_path}: {exc}")
         return {}
+    if needed:
+        produced = dict(held.get(PAE_CUTOFF_KEY) or {})
+        produced.update({suffix: float(cutoff) for cutoff, suffix in needed})
+        computed[PAE_CUTOFF_KEY] = produced
+    return computed
 
 
 def read_consensus_cache(
@@ -1136,11 +1231,12 @@ def score_binders(
         )
 
     # Re-read the kept structures for metrics that are read off them, rather than
-    # refolding. Runs when the derivation changed, and also when an entry simply
-    # lacks a derived key -- an entry cached before its structure existed heals
-    # itself once the PDB is there, instead of staying blank forever behind a
-    # derivation fingerprint that already matches.
-    if scores and wanted_suffixes and cache_dir:
+    # refolding. Runs when the derivation changed, when an entry simply lacks a
+    # derived key -- an entry cached before its structure existed heals itself
+    # once the PDB is there, instead of staying blank forever behind a derivation
+    # fingerprint that already matches -- and when a cutoff this run asks for is
+    # one the entry has not been scored at.
+    if scores and cache_dir:
         rederived: dict[str, dict[int, dict[str, float | str]]] = {}
         failed = 0
         # Entries whose PAE family the stored matrix could not refresh. Only
@@ -1150,14 +1246,24 @@ def score_binders(
         unrefreshable_pae = 0
         for seq, by_seed in scores.items():
             for seed, metrics in by_seed.items():
-                if not derivation_stale and all(k in metrics for k in wanted_suffixes):
+                complete = all(k in metrics for k in wanted_suffixes) and not missing_pae_cutoffs(metrics)
+                if not derivation_stale and complete:
                     continue
                 pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, seed)
                 if not (isinstance(pdb, str) and os.path.exists(pdb)):
                     continue
                 try:
                     derived = derive_from_structure(
-                        pdb, len(target_seqs), reference_pdb_path, include_tmol=derive_tmol
+                        pdb,
+                        len(target_seqs),
+                        reference_pdb_path,
+                        include_tmol=derive_tmol,
+                        # A moved derivation fingerprint means the numbers
+                        # themselves changed meaning, so nothing may be reused;
+                        # otherwise only what is genuinely absent is computed,
+                        # which is what makes adding a cutoff cost a millisecond
+                        # rather than a re-read of the structure.
+                        have={} if derivation_stale else metrics,
                     )
                 except Exception as exc:
                     failed += 1
@@ -1171,8 +1277,12 @@ def score_binders(
                     for k, v in derived.items()
                     if isinstance(v, (list, tuple, str)) or (isinstance(v, (int, float)) and v == v)
                 }
-                if derivation_stale and not any(k in derived for k in PAE_FAMILY_SUFFIXES):
+                if missing_pae_cutoffs(metrics) and PAE_CUTOFF_KEY not in derived:
                     unrefreshable_pae += 1
+                if PAE_CUTOFF_KEY in derived:
+                    # Not a metric, so it does not survive the filter above; kept
+                    # explicitly, the way pdb_path is.
+                    usable[PAE_CUTOFF_KEY] = derived[PAE_CUTOFF_KEY]
                 if usable:
                     metrics.update(usable)
                     rederived.setdefault(seq, {})[seed] = metrics
@@ -1186,10 +1296,10 @@ def score_binders(
             logger.warning(f"Advisory re-derivation failed for {failed} structures; their columns stay absent")
         if unrefreshable_pae:
             logger.warning(
-                f"{unrefreshable_pae} advisory structures have no stored PAE matrix, so their "
-                f"{', '.join(PAE_FAMILY_SUFFIXES[:3])}... columns keep the values the folder reported "
-                f"when they were folded. If the ipSAE cutoffs changed, those describe the previous "
-                f"cutoffs; only a refold can move them. Folds made from now on store the matrix."
+                f"{unrefreshable_pae} advisory structures have no stored PAE matrix, so their ipSAE "
+                f"columns keep the values the folder reported when they were folded, at whatever "
+                f"cutoffs were current then. Only a refold can score them at "
+                f"{[c for c, _ in IPSAE_CUTOFFS]} A. Folds made from now on store the matrix."
             )
 
     # A cached score does not imply the structure this run asked for. An earlier
@@ -1230,6 +1340,11 @@ def score_binders(
                 logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
                 continue
             usable = {k: float(v) for k, v in metrics.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
+            if any(k.endswith("ipSAE") or "ipSAE_" in k for k in usable):
+                # Which distances the folder just scored at, recorded the same
+                # way a re-derivation records them -- so a later round asking for
+                # one of these reuses it instead of reading the matrix back.
+                usable[PAE_CUTOFF_KEY] = {suffix: float(cutoff) for cutoff, suffix in IPSAE_CUTOFFS}
             if usable:
                 # pdb_path rides along in the same entry; it is not a metric, so
                 # column emission filters on CONSENSUS_METRIC_SUFFIXES and picks

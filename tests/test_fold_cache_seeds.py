@@ -452,7 +452,10 @@ def test_adding_an_advisory_metric_invalidates_the_advisory_cache(monkeypatch):
 
     cfg, target = {"n_seeds": 3}, ["MKV"]
     before = consensus_folding.consensus_fingerprint("esmfold2", cfg, target)
-    monkeypatch.setattr(consensus_folding, "CONSENSUS_METRIC_SUFFIXES", ("i_pAE", "pLDDT"))
+    # What the folder is asked for, not the ipSAE cutoffs those answers are
+    # instantiated at -- a cutoff is answerable from the stored PAE matrix, so it
+    # is a request rather than part of the scorer's identity.
+    monkeypatch.setattr(consensus_folding, "CONSENSUS_CONFIDENCE_SUFFIXES", ("pLDDT",))
     assert consensus_folding.consensus_fingerprint("esmfold2", cfg, target) != before
 
 
@@ -569,12 +572,21 @@ def test_a_folder_metric_change_still_refolds(tmp_path):
 
     target = ["MTARGET"]
     before = cf.consensus_fingerprint("esmfold2", {}, target)
-    original = cf.CONSENSUS_METRIC_SUFFIXES
+    original = cf.CONSENSUS_CONFIDENCE_SUFFIXES
     try:
-        cf.CONSENSUS_METRIC_SUFFIXES = original + ("new_folder_metric",)
+        cf.CONSENSUS_CONFIDENCE_SUFFIXES = original + ("new_folder_metric",)
         assert cf.consensus_fingerprint("esmfold2", {}, target) != before
     finally:
-        cf.CONSENSUS_METRIC_SUFFIXES = original
+        cf.CONSENSUS_CONFIDENCE_SUFFIXES = original
+
+    # The PAE family's KINDS count too -- a cache written before ipSAE existed
+    # holds no matrix and no way to produce it. Only the cutoffs are exempt.
+    base = cf.PAE_BASE_METRICS
+    try:
+        cf.PAE_BASE_METRICS = base + ("new_pae_statistic",)
+        assert cf.consensus_fingerprint("esmfold2", {}, target) != before
+    finally:
+        cf.PAE_BASE_METRICS = base
 
 
 def test_a_derived_metric_change_does_not_touch_the_fold_fingerprint(tmp_path):

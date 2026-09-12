@@ -967,6 +967,26 @@ Written to `binder_results_*.csv` by binder evaluation with `binder_folding_meth
 | `{seq}_complex_min_ipSAE` | Minimum interface pSAE (higher = better) |
 | `{seq}_complex_avg_ipSAE` | Average interface pSAE |
 | `{seq}_complex_max_ipSAE` | Maximum interface pSAE |
+
+**Changing an ipSAE distance cutoff.** The cutoffs live in
+`consensus_folding.IPSAE_CUTOFFS` as `(distance, column suffix)` pairs -- 15 Å for
+the plain columns, 10 Å for the `_10` ones. Editing that list is the whole
+change: every fold stores its PAE matrix beside the structure, so a new cutoff is
+recomputed from the file rather than predicted again, and the cutoffs are in
+neither the fold nor the derivation fingerprint.
+
+Reuse is per cutoff and recorded per entry, so rounds of comparison with
+overlapping cutoffs pay only for what is new. Asking for 15 and 10, then 15 and
+12, then all three, computes two cutoffs, then one, then none — measured at
+0.73 ms for the second round and 0.01 ms for the third, against minutes per
+complex to refold. A suffix whose *distance* changes is recomputed even though
+its column name did not, because the record is keyed on the distance.
+
+Two things this does not do. Folds made before the PAE store keep the values the
+folder reported at whatever cutoffs were then current; they are counted in a
+warning, and only a refold moves them. And a cutoff dropped from the list stops
+being emitted but its values stay in the cache, which is what makes returning to
+it free.
 | `{seq}_complex_ranking_score` | RF3 composite ranking score |
 | `{seq}_complex_has_clash` | 1.0 if clash detected, 0.0 otherwise |
 

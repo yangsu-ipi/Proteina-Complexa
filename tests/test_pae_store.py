@@ -163,32 +163,34 @@ def test_a_non_square_matrix_is_refused(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_the_ipsae_cutoffs_are_in_the_derivation_fingerprint():
-    """They were a literal inside _esmfold2_metrics, covered by nothing. Changing
-    15 to 12 would have left every cached column untouched and renamed nothing,
-    so the next run would have served ipSAE-at-15 under a name that had come to
-    mean ipSAE-at-12 -- and, because the cutoffs are not in the FOLD fingerprint
-    either, would never have refolded to find out."""
+def test_a_cutoff_is_a_request_not_an_identity():
+    """The cutoffs were a literal inside _esmfold2_metrics, covered by nothing:
+    changing 15 to 12 renamed nothing and invalidated nothing. They are in
+    neither fingerprint now either -- but for the opposite reason. The fold
+    fingerprint must not see them because the structure does not depend on them,
+    and the derivation fingerprint must not either because hashing them made
+    every cutoff change re-derive every structure-read metric for every cutoff.
+    Reuse is per cutoff, recorded per entry."""
     from proteinfoundation.metrics import consensus_folding as cf
 
-    before = cf.consensus_derivation_fingerprint()
     original = cf.IPSAE_CUTOFFS
+    fold = cf.consensus_fingerprint("esmfold2", {}, ["AAA"])
+    derivation = cf.consensus_derivation_fingerprint()
     try:
-        cf.IPSAE_CUTOFFS = ((12.0, ""), (10.0, "_10"))
-        assert cf.consensus_derivation_fingerprint() != before, "a cutoff change must re-derive"
+        cf.IPSAE_CUTOFFS = ((12.0, "_12"),)
+        assert cf.consensus_fingerprint("esmfold2", {}, ["AAA"]) == fold
+        assert cf.consensus_derivation_fingerprint() == derivation
     finally:
         cf.IPSAE_CUTOFFS = original
-    assert cf.consensus_derivation_fingerprint() == before
 
-    # And it must NOT re-fold: the folder returns the same structure either way.
-    fold_before = cf.consensus_fingerprint("esmfold2", {}, ["AAA"])
+    # What IS in the fold fingerprint is whether the family is reported at all:
+    # a cache written before ipSAE existed cannot produce it from anything.
+    base = cf.PAE_BASE_METRICS
     try:
-        cf.IPSAE_CUTOFFS = ((12.0, ""), (10.0, "_10"))
-        assert cf.consensus_fingerprint("esmfold2", {}, ["AAA"]) == fold_before, (
-            "the structure is unchanged, so nothing may refold"
-        )
+        cf.PAE_BASE_METRICS = tuple(x for x in base if x != "min_ipSAE")
+        assert cf.consensus_fingerprint("esmfold2", {}, ["AAA"]) != fold
     finally:
-        cf.IPSAE_CUTOFFS = original
+        cf.PAE_BASE_METRICS = base
 
 
 def test_the_family_is_recomputed_from_the_stored_matrix(tmp_path, monkeypatch):
@@ -202,15 +204,16 @@ def test_the_family_is_recomputed_from_the_stored_matrix(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_family(matrix, target_len):
+    def fake_family(matrix, target_len, cutoffs=None, include_base=True):
         seen["target_len"] = target_len
         seen["matrix"] = np.asarray(matrix)
+        seen["cutoffs"] = cutoffs
         return {"i_pAE": 0.123, "min_ipSAE": 0.4}
 
     monkeypatch.setattr(cf, "pae_family", fake_family)
     got = cf.pae_family_from_store(structure, n_target_chains=1)
 
-    assert got == {"i_pAE": 0.123, "min_ipSAE": 0.4}
+    assert got["i_pAE"] == 0.123 and got["min_ipSAE"] == 0.4
     assert seen["target_len"] == 30, "the chain lengths in the sidecar place the interface"
     assert np.abs(seen["matrix"] - pae).max() <= PAE_QUANT_STEP / 2 + 1e-6
 
@@ -244,6 +247,119 @@ def test_one_definition_of_the_family():
     body = source.split("def _esmfold2_metrics")[1].split("\ndef ")[0]
     assert "pae_family(" in body, "the backend delegates rather than reimplementing"
     assert "ipsae(" not in body, "and holds no second copy of the arithmetic"
-    assert set(cf.PAE_FAMILY_SUFFIXES) <= set(cf.CONSENSUS_METRIC_SUFFIXES), (
-        "everything the family produces is a column the backend already declares"
+    assert set(cf.ipsae_suffixes()) <= set(cf.CONSENSUS_METRIC_SUFFIXES), (
+        "every cutoff the request names produces columns the backend declares"
     )
+
+
+# ---------------------------------------------------------------------------
+# Rounds of comparison with overlapping cutoffs. The question is not whether a
+# cutoff can be changed -- it is whether changing it twice costs twice.
+# ---------------------------------------------------------------------------
+
+
+def test_a_cutoff_already_scored_is_not_scored_again():
+    """Round 1 asks for 15 and 10, round 2 for 15 and 12, round 3 for all three.
+    Only what is new is computed each time; the overlap is reused."""
+    from proteinfoundation.metrics.consensus_folding import PAE_CUTOFF_KEY, missing_pae_cutoffs
+
+    entry = {}
+    round1 = ((15.0, ""), (10.0, "_10"))
+    assert missing_pae_cutoffs(entry, round1) == round1, "nothing cached yet"
+
+    # After round 1 the entry holds both, and records what produced them.
+    entry.update({f"{k}ipSAE{s}": 0.5 for _, s in round1 for k in ("min_", "max_", "avg_")})
+    entry[PAE_CUTOFF_KEY] = {"": 15.0, "_10": 10.0}
+    assert missing_pae_cutoffs(entry, round1) == ()
+
+    round2 = ((15.0, ""), (12.0, "_12"))
+    assert missing_pae_cutoffs(entry, round2) == ((12.0, "_12"),), "15 is reused, 12 is new"
+
+    entry.update({f"{k}ipSAE_12": 0.4 for k in ("min_", "max_", "avg_")})
+    entry[PAE_CUTOFF_KEY]["_12"] = 12.0
+    round3 = ((15.0, ""), (10.0, "_10"), (12.0, "_12"))
+    assert missing_pae_cutoffs(entry, round3) == (), "a round that unions earlier ones is free"
+
+
+def test_a_suffix_whose_cutoff_moved_is_recomputed():
+    """The reason reuse is keyed on the distance and not the column name. A round
+    that redefines the plain suffix from 15 A to 12 must not keep the 15 A
+    numbers under a name that has come to mean something else."""
+    from proteinfoundation.metrics.consensus_folding import PAE_CUTOFF_KEY, missing_pae_cutoffs
+
+    entry = {f"{k}ipSAE": 0.5 for k in ("min_", "max_", "avg_")}
+    entry[PAE_CUTOFF_KEY] = {"": 15.0}
+    assert missing_pae_cutoffs(entry, ((15.0, ""),)) == ()
+    assert missing_pae_cutoffs(entry, ((12.0, ""),)) == ((12.0, ""),)
+
+
+def test_columns_present_without_a_record_are_not_trusted():
+    """An entry folded before the record existed has the columns but cannot say
+    at what distance. Recomputing is cheap; assuming is how a comparison of two
+    cutoffs quietly becomes a comparison of one with itself."""
+    from proteinfoundation.metrics.consensus_folding import missing_pae_cutoffs
+
+    entry = {f"{k}ipSAE": 0.5 for k in ("min_", "max_", "avg_")}
+    assert missing_pae_cutoffs(entry, ((15.0, ""),)) == ((15.0, ""),)
+
+
+def test_adding_a_cutoff_does_not_refold_and_does_not_reread_the_structure(tmp_path, monkeypatch):
+    """The two costs a cutoff change must not pay. Refolding is minutes per
+    complex; re-reading the structure to rescore its interface is ~0.3 s against
+    the ~1 ms the cutoff itself takes, which over CBLN1's 22,000 advisory
+    structures is two hours against half a minute."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    fold_before = cf.consensus_fingerprint("esmfold2", {}, ["AAA"])
+    derivation_before = cf.consensus_derivation_fingerprint()
+    original = cf.IPSAE_CUTOFFS
+    try:
+        cf.IPSAE_CUTOFFS = ((15.0, ""), (10.0, "_10"), (12.0, "_12"))
+        assert cf.consensus_fingerprint("esmfold2", {}, ["AAA"]) == fold_before, "no refold"
+        assert cf.consensus_derivation_fingerprint() == derivation_before, (
+            "and no re-derivation of SASA, shape complementarity or the RMSDs either"
+        )
+    finally:
+        cf.IPSAE_CUTOFFS = original
+
+    # And the structure is not opened when only a cutoff is missing.
+    pae = realistic_pae(target_len=30, binder_len=12)
+    structure = str(tmp_path / "c.pdb")
+    save_pae(structure, pae, chain_lengths=[30, 12])
+
+    def explode(*args, **kwargs):
+        raise AssertionError("the structure must not be rescored to add a cutoff")
+
+    monkeypatch.setattr(
+        "proteinfoundation.utils.pr_alternative_utils.pr_alternative_score_interface", explode
+    )
+    held = dict.fromkeys(cf.consensus_derived_suffixes(False), 0.0)
+    held.update({"i_pAE": 0.1, "pAE": 0.2, "min_ipAE": 0.3})
+    held.update({f"{k}ipSAE": 0.5 for k in ("min_", "max_", "avg_")})
+    held[cf.PAE_CUTOFF_KEY] = {"": 15.0}
+
+    try:
+        cf.IPSAE_CUTOFFS = ((15.0, ""), (10.0, "_10"))
+        got = cf.derive_from_structure(structure, 1, reference_pdb_path=None, have=held)
+    finally:
+        cf.IPSAE_CUTOFFS = original
+
+    assert "min_ipSAE_10" in got, "the new cutoff was computed"
+    assert "min_ipSAE" not in got, "and the one already held was not"
+    assert got[cf.PAE_CUTOFF_KEY] == {"": 15.0, "_10": 10.0}, "the record accumulates"
+
+
+def test_the_ipsae_cutoffs_drive_the_column_list():
+    """Adding a cutoff has to add columns. The names were a hardcoded tuple
+    beside the cutoffs, so a third cutoff would have been computed and then never
+    emitted."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    original = cf.IPSAE_CUTOFFS
+    try:
+        cf.IPSAE_CUTOFFS = ((15.0, ""), (12.0, "_12"))
+        names = cf.consensus_metric_suffixes()
+        assert "min_ipSAE_12" in names and "avg_ipSAE_12" in names
+        assert "min_ipSAE_10" not in names
+    finally:
+        cf.IPSAE_CUTOFFS = original
