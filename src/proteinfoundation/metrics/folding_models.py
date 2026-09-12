@@ -546,8 +546,19 @@ def run_colabfold(
         logger.debug("run_colabfold ignores cache_dir; ColabFold's installation owns its parameter store")
 
     command_name = colabfold_batch_command()
+    named = bool(os.environ.get("COLABFOLD_EXEC_PATH"))
+    if not named and not shutil.which(command_name):
+        raise RuntimeError(
+            f"apo folding asked for colabfold, but there is no {command_name} on PATH and "
+            f"COLABFOLD_EXEC_PATH is unset. ColabFold's folder lives in an environment of its "
+            f"own (install-colabfold.sh builds one in envs/colabfold); set COLABFOLD_EXEC_PATH "
+            f"to its colabfold_batch. Installing colabfold[alphafold] into THIS environment is "
+            f"not the alternative: it downgrades absl-py, biopython and chex and pins a jax that "
+            f"a Blackwell card cannot use. To run apo on ESMFold2 alone instead, drop colabfold "
+            f"from apo_folding_models."
+        )
     msa_only_env = _alphafold_missing_from(command_name)
-    if msa_only_env and not os.environ.get("COLABFOLD_EXEC_PATH"):
+    if msa_only_env and not named:
         raise RuntimeError(
             f"{command_name} resolves to {msa_only_env}, a ColabFold installed without its "
             f"[alphafold] extra -- MSA retrieval only, it cannot fold. Set COLABFOLD_EXEC_PATH to "

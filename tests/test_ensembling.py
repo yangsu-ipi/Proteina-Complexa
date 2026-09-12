@@ -1081,6 +1081,27 @@ def test_an_msa_only_colabfold_on_path_is_refused_by_name(tmp_path, monkeypatch)
     )
 
 
+def test_no_colabfold_at_all_says_so_rather_than_failing_as_a_shell_error(tmp_path, monkeypatch):
+    """build_blackwell.sh now deletes the four broken console scripts colabfold
+    --no-deps leaves behind, so the ordinary state of a fresh env is no
+    colabfold_batch on PATH at all. Reaching the subprocess then fails as exit
+    127, which names nothing. Configuring apo folding is the actual fix, and the
+    message has to carry both ways out -- point at the other environment, or
+    stop asking for this backend."""
+    from proteinfoundation.metrics import folding_models
+
+    folding_models._alphafold_missing_from.cache_clear()
+    monkeypatch.delenv("COLABFOLD_EXEC_PATH", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    with pytest.raises(RuntimeError) as raised:
+        folding_models.run_colabfold(["MKV"], str(tmp_path / "out"))
+    message = str(raised.value)
+    assert "COLABFOLD_EXEC_PATH" in message
+    assert "apo_folding_models" in message, "the other way out is to stop asking for the backend"
+    assert "not the alternative" in message, "and the tempting wrong fix stays countermanded"
+
+
 def test_a_real_folder_is_not_refused(tmp_path, monkeypatch):
     """The guard reads site-packages, so it must not fire on an install that has
     alphafold -- nor on a layout it cannot read, where absence of evidence is
