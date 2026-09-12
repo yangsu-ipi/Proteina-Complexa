@@ -35,6 +35,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     MONOMER_CONFIDENCE_SUFFIXES,
     DesignabilityResult,
     FoldingResult,
+    _derive_into,
     _fold_seeds,
     average_folds,
     folded_paths_by_model,
@@ -414,14 +415,29 @@ def _result_from_folds(folds: dict[int, dict], rmsd_modes: list[str], pdb_path: 
     return _result_from_cache(averaged, rmsd_modes, pdb_path) if averaged else None
 
 
-def _averaged_entry(folds: dict[int, dict], rmsd_modes: list[str], pdb_path: str) -> dict:
-    """One backend's seeds, each filled in and then averaged into one entry."""
+def _averaged_entry(
+    folds: dict[int, dict], rmsd_modes: list[str], pdb_path: str, derive: bool = False
+) -> dict:
+    """One backend's seeds, each filled in and then averaged into one entry.
+
+    *derive* reads the registered structure metrics off each seed's structures
+    before averaging, which is the only moment they can be read: ``average_folds``
+    concatenates the paths, so a three-seed entry holds one sequence and three
+    structures and the one-path-per-sequence alignment every reader checks is
+    gone. ``average_folds`` then averages the derived values over seeds exactly
+    as it does the confidences.
+
+    Off by default because it costs a PDB re-read per seed per backend, and the
+    designability track that shares this function has no use for the columns.
+    """
     filled = {seed: _fill_missing_modes(entry, rmsd_modes, pdb_path) for seed, entry in (folds or {}).items()}
+    if derive and filled:
+        _derive_into(filled, stale=False)
     return average_folds(filled) or {}
 
 
 def _result_from_model_folds(
-    per_model: dict[str, dict[int, dict]], rmsd_modes: list[str], pdb_path: str
+    per_model: dict[str, dict[int, dict]], rmsd_modes: list[str], pdb_path: str, derive: bool = False
 ):
     """One result from several backends, each averaged over its own seeds first.
 
@@ -433,7 +449,7 @@ def _result_from_model_folds(
     """
     averaged = {}
     for model, folds in (per_model or {}).items():
-        one = _averaged_entry(folds, rmsd_modes, pdb_path)
+        one = _averaged_entry(folds, rmsd_modes, pdb_path, derive=derive)
         if one:
             averaged[model] = one
     merged = merge_model_folds(averaged)
@@ -536,6 +552,10 @@ def _result_from_cache(
             sequences=sequences,
             plddt=dict(cached.get("plddt") or {}),
             confidence=dict(cached.get("confidence") or {}),
+            # Carried across this boundary, not recomputed beyond it: the entry
+            # is an average whose paths are a seed-major concatenation, so this
+            # is the last place the per-seed derivation survives.
+            derived={str(m): dict(v) for m, v in (cached.get("derived") or {}).items()},
         )
 
     why = (
@@ -565,6 +585,7 @@ def evaluate_self_consistency(
     target_chains: list[str] | None = None,
     inverse_folding_model: str = "protein_mpnn",
     n_esmfold2_seeds: int = 1,
+    derive_structure_metrics: bool = False,
 ) -> DesignabilityResult:
     """
     Unified function to evaluate designability/codesignability.
@@ -596,6 +617,12 @@ def evaluate_self_consistency(
         target_chains: Target chain IDs in *mpnn_pdb_path*.
         inverse_folding_model: Which inverse folder produces the redesigns.
             Ignored when use_pdb_seq is True.
+        derive_structure_metrics: Also read the registered metrics off the folded
+            structures (SASA, secondary structure, surface hydrophobicity). Done
+            per seed, before averaging, which is the only point at which there is
+            one structure per sequence to read. Off by default: it costs a PDB
+            re-read per seed per backend, and the designability track does not
+            report those columns. The apo track does, which is why it asks.
 
     Returns:
         DesignabilityResult with all RMSD values
@@ -677,7 +704,10 @@ def evaluate_self_consistency(
                 )
         if complete:
             reused = _result_from_model_folds(
-                {m: stored_by_model[m] or {} for m in folding_models}, rmsd_modes, pdb_path
+                {m: stored_by_model[m] or {} for m in folding_models},
+                rmsd_modes,
+                pdb_path,
+                derive=derive_structure_metrics,
             )
             if reused is not None:
                 return reused
@@ -749,7 +779,9 @@ def evaluate_self_consistency(
             }
         per_model_seeds[model] = per_seed
 
-    result = _result_from_model_folds(per_model_seeds, rmsd_modes, pdb_path)
+    result = _result_from_model_folds(
+        per_model_seeds, rmsd_modes, pdb_path, derive=derive_structure_metrics
+    )
 
     # Cleanup if not keeping outputs
     if not keep_outputs:

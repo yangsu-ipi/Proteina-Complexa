@@ -89,6 +89,13 @@ class DesignabilityResult:
     # a fold cached before the sidecars existed leaves them absent for good,
     # unless it is folded again.
     confidence: dict[str, dict[str, list[float]]] = field(default_factory=dict)
+    # model -> metric -> per-sequence value, for what is read OFF the structures
+    # rather than reported by the folder (SASA, secondary structure, surface
+    # hydrophobicity). Filled per seed and then averaged, like the confidences --
+    # never after averaging, because averaging concatenates the paths and there
+    # is then no structure-per-sequence left to read. Empty unless the caller
+    # asked, since deriving costs a PDB re-read per seed.
+    derived: dict[str, dict[str, list]] = field(default_factory=dict)
 
 
 # =============================================================================
@@ -290,6 +297,12 @@ def derive_for_result(result) -> dict[str, dict[str, list]]:
     """
     if not MONOMER_DERIVED_SUFFIXES:
         return {}
+    # A result averaged over several seeds has already derived per seed, which is
+    # the only point at which its paths were one-per-sequence. Re-deriving here
+    # would find len(paths) == seeds * len(sequences) and silently skip.
+    already = getattr(result, "derived", None)
+    if already:
+        return {str(m): dict(v) for m, v in already.items()}
     entry = {
         "sequences": list(getattr(result, "sequences", []) or []),
         "rmsd_values": getattr(result, "rmsd_values", {}) or {},

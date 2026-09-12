@@ -836,3 +836,83 @@ def test_an_apo_structure_has_no_interface_metrics():
         assert "dSASA" not in name, f"{name} needs two chains"
     assert "binder_surface_hydrophobicity" in MONOMER_DERIVED_SUFFIXES
     assert "binder_ss_counts" in MONOMER_DERIVED_SUFFIXES
+
+
+def test_multi_seed_derivation_survives_averaging(tmp_path, monkeypatch):
+    """The self apo gap: three esmfold2 seeds produced three structures for one
+    sequence, `average_folds` concatenated the paths as it is meant to, and the
+    derivation's own alignment check -- len(paths) == len(sequences) -- then
+    skipped silently. Only `self` + a seeded backend lost the columns: the mpnn
+    path already derives per seed before averaging, and a one-seed backend never
+    trips the check.
+
+    So derive per seed, then let average_folds average the values over seeds the
+    way it already averages the confidences."""
+    from proteinfoundation.evaluation import monomer_eval
+    from proteinfoundation.evaluation.monomer_eval_utils import MONOMER_DERIVED_SUFFIXES
+
+    if not MONOMER_DERIVED_SUFFIXES:
+        pytest.skip("nothing registered to derive")
+    name = sorted(MONOMER_DERIVED_SUFFIXES)[0]
+
+    seeds = [11, 22, 33]
+    values = {11: 10.0, 22: 20.0, 33: 30.0}
+    paths = {}
+    for seed in seeds:
+        pdb = tmp_path / f"fold_seed{seed}.pdb"
+        pdb.write_text("ATOM\n")
+        paths[seed] = str(pdb)
+
+    monkeypatch.setattr(
+        monomer_eval,
+        "derive_from_monomer_structure",
+        lambda path: {name: values[int(path.rsplit("seed", 1)[1].split(".")[0])]},
+        raising=False,
+    )
+    import proteinfoundation.evaluation.monomer_eval_utils as utils
+
+    monkeypatch.setattr(
+        utils, "derive_from_monomer_structure", lambda path: {name: values[int(path.rsplit("seed", 1)[1].split(".")[0])]}
+    )
+
+    folds = {
+        seed: {
+            "sequences": ["MKV"],
+            "rmsd_values": {"ca": {"esmfold2": [1.0]}},
+            "best_rmsd": {"ca": {"esmfold2": 1.0}},
+            "folded_paths": {"esmfold2": [paths[seed]]},
+            "structures_kept": True,
+        }
+        for seed in seeds
+    }
+
+    without = monomer_eval._averaged_entry(dict(folds), ["ca"], str(tmp_path / "ref.pdb"))
+    assert not (without.get("derived") or {}), "the designability track pays nothing it does not use"
+    assert len(without["folded_paths"]["esmfold2"]) == 3, (
+        "averaging still concatenates paths -- that is deliberate and unchanged"
+    )
+
+    with_derived = monomer_eval._averaged_entry(
+        dict(folds), ["ca"], str(tmp_path / "ref.pdb"), derive=True
+    )
+    derived = (with_derived.get("derived") or {}).get("esmfold2") or {}
+    assert name in derived, "three seeds must not lose the column one seed would have kept"
+    assert derived[name] == [pytest.approx(20.0)], (
+        "and the value is the mean over seeds, one entry per sequence"
+    )
+
+
+def test_derive_for_result_does_not_redo_what_averaging_carried(tmp_path):
+    """Once a result carries per-seed derivations, re-deriving from it would see
+    len(paths) == seeds * len(sequences) and skip -- turning a filled column back
+    into an absent one."""
+    from proteinfoundation.evaluation.monomer_eval_utils import DesignabilityResult, derive_for_result
+
+    result = DesignabilityResult(
+        rmsd_values={"ca": {"esmfold2": [1.0]}},
+        best_rmsd={"ca": {"esmfold2": 1.0}},
+        folded_paths={"esmfold2": ["a.pdb", "b.pdb", "c.pdb"]},
+        sequences=["MKV"],
+        derived={"esmfold2": {"binder_sasa": [20.0]}},
+    )
+    assert derive_for_result(result) == {"esmfold2": {"binder_sasa": [20.0]}}

@@ -307,6 +307,11 @@ def apo_refold(
             keep_outputs=keep_outputs,
             reuse_cache=reuse_cache,
             n_esmfold2_seeds=n_esmfold2_seeds,
+            # The apo track reports what is read off the structures, and the
+            # designability track it shares this fold with does not. Asking here
+            # gets it derived per seed, before averaging concatenates the paths
+            # and leaves nothing aligned one-per-sequence to read.
+            derive_structure_metrics=True,
         )
         # The sequence read off the PDB should be the one whose holo metrics sit on
         # this row. If it is not, the apo and holo columns would describe different
