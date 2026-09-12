@@ -268,6 +268,70 @@ def _score_esmfold2(
     return scored[best]
 
 
+# The distance cutoffs the ipSAE columns are scored at, in Angstroms: the plain
+# columns at 15, the _10 ones at 10. Named rather than written inline at the one
+# call site because they are now part of the derivation fingerprint -- changing
+# one has to re-read the stored PAE matrices, and a literal buried in a function
+# body could be changed without anything noticing that the cached columns no
+# longer mean what their names say.
+IPSAE_CUTOFFS: tuple[tuple[float, str], ...] = ((15.0, ""), (10.0, "_10"))
+
+
+def pae_family(pae, target_len: int) -> dict[str, float]:
+    """Every metric that is a pure function of the PAE matrix.
+
+    One definition, two callers: the backend computes these while it still holds
+    the folder's output, and the derivation recomputes them from the matrix
+    stored beside the structure when a cutoff changes. Two copies of this
+    arithmetic would be two answers to "what is min_ipSAE".
+    """
+    from esm.models.esmfold2.interface_metrics import ipsae, pae_interaction
+
+    array = _np(pae)
+    metrics: dict[str, float] = {}
+    # Divided by the top bin, because that is what every other backend's column
+    # of this name holds: ColabDesign divides inside its loss, the RF3 adapter
+    # divides on the way in, and a threshold carries the divisor as `scale` so it
+    # can state itself in Angstroms. Left raw, i_pAE here read 3.86 beside AF2's
+    # 0.173 for the same design -- one name, 31x apart, in the column pair the
+    # advisory track exists to compare. Both heads bin to the same 31, so this is
+    # a shared convention rather than one model's scale imposed on another.
+    metrics["i_pAE"] = float(pae_interaction(array, target_len)) / PAE_MAX_BIN
+    # The binder's own rows against everything, symmetrised: ColabDesign's `pae`
+    # is get_pae_loss(mask_1d=binder_id) over (p + p.T) / 2.
+    symmetric = (array + array.T) / 2
+    metrics["pAE"] = float(symmetric[target_len:].mean()) / PAE_MAX_BIN
+    # And the single most confident target-binder pair, unsymmetrised --
+    # get_min_ipae_loss leaves its symmetrisation commented out on purpose.
+    metrics["min_ipAE"] = float(array[target_len:, :target_len].min()) / PAE_MAX_BIN
+    # ipSAE is NOT divided: it is already a TM-like 0-1, and it is computed from
+    # the PAE in Angstroms against a cutoff in Angstroms, exactly as the vendored
+    # ColabDesign computes it. The fork ships its own implementation of the same
+    # algorithm (same d0, same 1/(1 + (pae/d0)^2) term, same bidirectional
+    # max-then-min/max), so this uses that rather than a third copy. They differ
+    # in one place, the floor on the d0 length -- 27 there, 26 here -- so a very
+    # small interface can read slightly differently between them.
+    for cutoff, suffix in IPSAE_CUTOFFS:
+        scored = ipsae(array, target_len, cutoff)
+        forward = float(scored["ipsae_target_binder"])
+        reverse = float(scored["ipsae_binder_target"])
+        metrics[f"min_ipSAE{suffix}"] = min(forward, reverse)
+        metrics[f"max_ipSAE{suffix}"] = max(forward, reverse)
+        metrics[f"avg_ipSAE{suffix}"] = (forward + reverse) / 2
+    return metrics
+
+
+# What :func:`pae_family` produces. These are folder-reported at fold time and
+# recomputable from a stored matrix afterwards, which is the whole point of
+# keeping one.
+PAE_FAMILY_SUFFIXES: tuple[str, ...] = (
+    "i_pAE",
+    "pAE",
+    "min_ipAE",
+    *(f"{k}ipSAE{sfx}" for _, sfx in IPSAE_CUTOFFS for k in ("min_", "max_", "avg_")),
+)
+
+
 def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
     """Reduce one MolecularComplexResult to advisory metrics.
 
@@ -289,43 +353,10 @@ def _esmfold2_metrics(result, target_len: int) -> dict[str, float]:
         metrics.update(mean_chain_plddt(array, target_len))
     pae = getattr(result, "pae", None)
     if pae is not None:
-        # Imported here rather than at the top of the function: these are the only
-        # metrics that need esm, and a result without a pae should not pay for
-        # loading it.
-        from esm.models.esmfold2.interface_metrics import ipsae, pae_interaction
-
-        array = _np(pae)
-        # Divided by the top bin, because that is what every other backend's
-        # column of this name holds: ColabDesign divides inside its loss, the RF3
-        # adapter divides on the way in, and a threshold carries the divisor as
-        # `scale` so it can state itself in Angstroms. Left raw, i_pAE here read
-        # 3.86 beside AF2's 0.173 for the same design -- one name, 31x apart, in
-        # the column pair the advisory track exists to compare. Both heads bin to
-        # the same 31, so this is a shared convention rather than one model's
-        # scale imposed on another.
-        metrics["i_pAE"] = float(pae_interaction(array, target_len)) / PAE_MAX_BIN
-        # The binder's own rows against everything, symmetrised: ColabDesign's
-        # `pae` is get_pae_loss(mask_1d=binder_id) over (p + p.T) / 2.
-        symmetric = (array + array.T) / 2
-        metrics["pAE"] = float(symmetric[target_len:].mean()) / PAE_MAX_BIN
-        # And the single most confident target-binder pair, unsymmetrised --
-        # get_min_ipae_loss leaves its symmetrisation commented out on purpose.
-        metrics["min_ipAE"] = float(array[target_len:, :target_len].min()) / PAE_MAX_BIN
-        # ipSAE is NOT divided: it is already a TM-like 0-1, and it is computed
-        # from the PAE in Angstroms against a cutoff in Angstroms, exactly as the
-        # vendored ColabDesign computes it -- 15 A for the plain columns, 10 for
-        # the _10 ones. The fork ships its own implementation of the same
-        # algorithm (same d0, same 1/(1 + (pae/d0)^2) term, same bidirectional
-        # max-then-min/max), so this uses that rather than a third copy. They
-        # differ in one place, the floor on the d0 length -- 27 there, 26 here --
-        # so a very small interface can read slightly differently between them.
-        for cutoff, suffix in ((15.0, ""), (10.0, "_10")):
-            scored = ipsae(array, target_len, cutoff)
-            forward = float(scored["ipsae_target_binder"])
-            reverse = float(scored["ipsae_binder_target"])
-            metrics[f"min_ipSAE{suffix}"] = min(forward, reverse)
-            metrics[f"max_ipSAE{suffix}"] = max(forward, reverse)
-            metrics[f"avg_ipSAE{suffix}"] = (forward + reverse) / 2
+        # By the same function the re-derivation uses, so a column computed while
+        # the folder's output was in hand and one recomputed from the stored
+        # matrix are the same number by construction rather than by review.
+        metrics.update(pae_family(pae, target_len))
     return metrics
 
 
@@ -736,6 +767,13 @@ def consensus_derivation_fingerprint(include_tmol: bool = False) -> str:
         {
             "derived": sorted(consensus_derived_suffixes(include_tmol)),
             "version": CONSENSUS_DERIVATION_VERSION,
+            # The ipSAE distance cutoffs. They used to be a literal inside
+            # _esmfold2_metrics, covered by nothing: changing 15 to 12 would have
+            # left every cached column untouched and renamed nothing, so the run
+            # after would have served ipSAE-at-15 under a name that now means
+            # ipSAE-at-12. Here, a change re-reads the stored PAE matrices --
+            # which is why they are stored.
+            "ipsae_cutoffs": [[float(c), s] for c, s in IPSAE_CUTOFFS],
         },
         sort_keys=True,
     )
@@ -816,7 +854,49 @@ def derive_from_structure(
         # through, on a structure whose chains this module wrote. TMOL works the
         # chains out itself, so an advisory complex needs no special casing.
         derived.update(tmol_interface_metrics(pdb_path))
+    derived.update(pae_family_from_store(pdb_path, n_target_chains))
     return derived
+
+
+def pae_family_from_store(pdb_path: str, n_target_chains: int) -> dict[str, float]:
+    """The PAE family recomputed from the matrix stored beside a structure.
+
+    This is what makes a cutoff change cost a re-read. The folder reported these
+    when it folded, and the values are in the cache; when the derivation
+    fingerprint moves -- because a cutoff changed -- the cache's copies are
+    stale, and the stored matrix is the only thing on disk that can produce new
+    ones without predicting the complex again.
+
+    Empty when no matrix was stored, which is every fold from before the store
+    existed. Those entries keep their folder-reported values, which under a
+    changed cutoff are the old question's answer: :func:`score_binders` drops
+    them rather than serving them, because a column that silently means
+    something other than its name is worse than a missing one.
+    """
+    from proteinfoundation.metrics.pae_store import load_pae
+
+    stored = load_pae(pdb_path)
+    if not stored:
+        return {}
+    lengths = stored.get("chain_lengths")
+    if lengths and len(lengths) >= 2:
+        target_len = int(sum(lengths[:-1]))
+    else:
+        # Nothing said where the binder starts. Guessing would put the interface
+        # block in the wrong place and produce plausible, wrong numbers.
+        logger.warning(f"Stored PAE for {pdb_path} records no chain lengths; cannot place the interface")
+        return {}
+    if n_target_chains and len(lengths) - 1 != n_target_chains:
+        logger.warning(
+            f"Stored PAE for {pdb_path} describes {len(lengths) - 1} target chain(s), not {n_target_chains}; "
+            f"leaving the PAE family to the folder-reported values"
+        )
+        return {}
+    try:
+        return pae_family(stored["pae"], target_len)
+    except Exception as exc:
+        logger.warning(f"Could not recompute the PAE family from the stored matrix at {pdb_path}: {exc}")
+        return {}
 
 
 def read_consensus_cache(
@@ -1063,6 +1143,11 @@ def score_binders(
     if scores and wanted_suffixes and cache_dir:
         rederived: dict[str, dict[int, dict[str, float | str]]] = {}
         failed = 0
+        # Entries whose PAE family the stored matrix could not refresh. Only
+        # interesting when the derivation moved: their folder-reported values
+        # then answer the question the cutoffs used to ask, and no file on disk
+        # can produce the new answer without predicting the complex again.
+        unrefreshable_pae = 0
         for seq, by_seed in scores.items():
             for seed, metrics in by_seed.items():
                 if not derivation_stale and all(k in metrics for k in wanted_suffixes):
@@ -1086,6 +1171,8 @@ def score_binders(
                     for k, v in derived.items()
                     if isinstance(v, (list, tuple, str)) or (isinstance(v, (int, float)) and v == v)
                 }
+                if derivation_stale and not any(k in derived for k in PAE_FAMILY_SUFFIXES):
+                    unrefreshable_pae += 1
                 if usable:
                     metrics.update(usable)
                     rederived.setdefault(seq, {})[seed] = metrics
@@ -1097,6 +1184,13 @@ def score_binders(
             )
         if failed:
             logger.warning(f"Advisory re-derivation failed for {failed} structures; their columns stay absent")
+        if unrefreshable_pae:
+            logger.warning(
+                f"{unrefreshable_pae} advisory structures have no stored PAE matrix, so their "
+                f"{', '.join(PAE_FAMILY_SUFFIXES[:3])}... columns keep the values the folder reported "
+                f"when they were folded. If the ipSAE cutoffs changed, those describe the previous "
+                f"cutoffs; only a refold can move them. Folds made from now on store the matrix."
+            )
 
     # A cached score does not imply the structure this run asked for. An earlier
     # run with keep_folding_outputs=false cached metrics and wrote no PDB, so

@@ -156,3 +156,94 @@ def test_a_non_square_matrix_is_refused(tmp_path):
     structure = str(tmp_path / "c.pdb")
     assert save_pae(structure, np.zeros((4, 7), dtype=np.float32)) is None
     assert load_pae(structure) is None
+
+
+# ---------------------------------------------------------------------------
+# The point of storing it: changing an ipSAE cutoff must cost a re-read.
+# ---------------------------------------------------------------------------
+
+
+def test_the_ipsae_cutoffs_are_in_the_derivation_fingerprint():
+    """They were a literal inside _esmfold2_metrics, covered by nothing. Changing
+    15 to 12 would have left every cached column untouched and renamed nothing,
+    so the next run would have served ipSAE-at-15 under a name that had come to
+    mean ipSAE-at-12 -- and, because the cutoffs are not in the FOLD fingerprint
+    either, would never have refolded to find out."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    before = cf.consensus_derivation_fingerprint()
+    original = cf.IPSAE_CUTOFFS
+    try:
+        cf.IPSAE_CUTOFFS = ((12.0, ""), (10.0, "_10"))
+        assert cf.consensus_derivation_fingerprint() != before, "a cutoff change must re-derive"
+    finally:
+        cf.IPSAE_CUTOFFS = original
+    assert cf.consensus_derivation_fingerprint() == before
+
+    # And it must NOT re-fold: the folder returns the same structure either way.
+    fold_before = cf.consensus_fingerprint("esmfold2", {}, ["AAA"])
+    try:
+        cf.IPSAE_CUTOFFS = ((12.0, ""), (10.0, "_10"))
+        assert cf.consensus_fingerprint("esmfold2", {}, ["AAA"]) == fold_before, (
+            "the structure is unchanged, so nothing may refold"
+        )
+    finally:
+        cf.IPSAE_CUTOFFS = original
+
+
+def test_the_family_is_recomputed_from_the_stored_matrix(tmp_path, monkeypatch):
+    """What the store buys. The derivation reads the matrix beside the structure
+    and produces the columns again, at whatever cutoffs are current."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    pae = realistic_pae(target_len=30, binder_len=12)
+    structure = str(tmp_path / "c.pdb")
+    save_pae(structure, pae, chain_lengths=[30, 12], backend="esmfold2")
+
+    seen = {}
+
+    def fake_family(matrix, target_len):
+        seen["target_len"] = target_len
+        seen["matrix"] = np.asarray(matrix)
+        return {"i_pAE": 0.123, "min_ipSAE": 0.4}
+
+    monkeypatch.setattr(cf, "pae_family", fake_family)
+    got = cf.pae_family_from_store(structure, n_target_chains=1)
+
+    assert got == {"i_pAE": 0.123, "min_ipSAE": 0.4}
+    assert seen["target_len"] == 30, "the chain lengths in the sidecar place the interface"
+    assert np.abs(seen["matrix"] - pae).max() <= PAE_QUANT_STEP / 2 + 1e-6
+
+
+def test_a_fold_with_no_stored_matrix_yields_nothing_rather_than_a_guess(tmp_path):
+    """Every fold from before the store. Placing the interface by guessing would
+    produce plausible, wrong numbers -- worse than the absence."""
+    from proteinfoundation.metrics.consensus_folding import pae_family_from_store
+
+    assert pae_family_from_store(str(tmp_path / "never.pdb"), 1) == {}
+
+    # A matrix stored without chain lengths cannot say where the binder starts.
+    bare = str(tmp_path / "bare.pdb")
+    save_pae(bare, realistic_pae(20, 8), chain_lengths=None)
+    assert pae_family_from_store(bare, 1) == {}
+
+    # And one describing a different number of target chains is not this complex.
+    two = str(tmp_path / "two.pdb")
+    save_pae(two, realistic_pae(20, 8), chain_lengths=[10, 10, 8])
+    assert pae_family_from_store(two, n_target_chains=1) == {}
+
+
+def test_one_definition_of_the_family():
+    """The fold-time path and the re-derivation must be the same arithmetic, or
+    a column recomputed from the store would differ from the one it replaces."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    source = (
+        __import__("pathlib").Path("src/proteinfoundation/metrics/consensus_folding.py").read_text()
+    )
+    body = source.split("def _esmfold2_metrics")[1].split("\ndef ")[0]
+    assert "pae_family(" in body, "the backend delegates rather than reimplementing"
+    assert "ipsae(" not in body, "and holds no second copy of the arithmetic"
+    assert set(cf.PAE_FAMILY_SUFFIXES) <= set(cf.CONSENSUS_METRIC_SUFFIXES), (
+        "everything the family produces is a column the backend already declares"
+    )
