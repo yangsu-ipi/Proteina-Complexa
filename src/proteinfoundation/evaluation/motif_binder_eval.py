@@ -54,8 +54,8 @@ from proteinfoundation.evaluation.motif_eval import (
 from proteinfoundation.evaluation.motif_eval_utils import MotifInfo
 from proteinfoundation.evaluation.utils import maybe_tqdm
 from proteinfoundation.metrics.column_names import DEFAULT_COMPLEX_BACKEND, rename
-from proteinfoundation.result_analysis.binder_analysis_utils import complex_backend_of
 from proteinfoundation.metrics.metric_utils import rmsd_metric
+from proteinfoundation.result_analysis.binder_analysis_utils import complex_backend_of
 from proteinfoundation.utils.motif_utils import extract_motif_from_pdb
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb
 
