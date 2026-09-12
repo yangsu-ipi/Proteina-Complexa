@@ -198,3 +198,46 @@ def test_a_deleted_structure_is_regenerated(tmp_path, monkeypatch):
     calls.clear()
     cf.score_binders("esmfold2", keep_structures=True, **args)
     assert len(calls) == 1 and os.path.exists(path)
+
+
+def test_the_self_mismatch_guard_returns_what_the_caller_unpacks(monkeypatch, tmp_path):
+    """The guard that drops apo columns must not drop them by raising.
+
+    ``apo_refold`` for ``self`` delegates to codesignability and then checks that
+    the sequence read off the binder PDB is the one whose holo metrics sit on the
+    row. When it is not, it returns empties. It returned two of them while every
+    other exit returned three, and the caller's unpack sits outside the try that
+    turns a failed refold into NaN -- so the mismatch guard, whose whole purpose
+    is to drop the columns gracefully, would instead take the design's row down
+    with a ValueError. The one path nobody folds a structure to reach is the one
+    path a test has to cover.
+    """
+    from proteinfoundation.evaluation import binder_eval, monomer_eval
+    from proteinfoundation.evaluation.monomer_eval_utils import DesignabilityResult
+
+    monkeypatch.setattr(
+        monomer_eval,
+        "evaluate_self_consistency",
+        lambda **kwargs: DesignabilityResult(
+            rmsd_values={"ca": {"esmfold2": [1.0]}},
+            best_rmsd={"ca": {"esmfold2": 1.0}},
+            sequences=["WHAT THE PDB SAYS"],
+            plddt={"esmfold2": [0.8]},
+        ),
+        raising=False,
+    )
+
+    returned = binder_eval.apo_refold(
+        seq_type="self",
+        sequences=["WHAT THE ROW SAYS"],
+        binder_pdb_path=str(tmp_path / "d_binder.pdb"),
+        sample_root_path=str(tmp_path),
+        folding_models=["esmfold2"],
+        rmsd_modes=["ca"],
+        keep_outputs=False,
+        reuse_cache=False,
+    )
+
+    assert len(returned) == 3, "the caller unpacks three"
+    rmsds, plddt, derived = returned
+    assert not rmsds and not plddt and not derived, "a mispaired fold contributes nothing"

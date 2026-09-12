@@ -254,7 +254,11 @@ def apo_refold(
     keep_outputs: bool,
     reuse_cache: bool,
     n_esmfold2_seeds: int = 1,
-) -> dict[tuple[str, str], list[float]]:
+) -> tuple[
+    dict[tuple[str, str], list[float]],
+    dict[str, list[float]],
+    dict[str, dict[str, list]],
+]:
     """Fold each sequence alone and measure it against the designed backbone.
 
     The holo track asks whether a sequence folds as designed *with* its target.
@@ -312,7 +316,10 @@ def apo_refold(
                 f"{result.sequences} but the row reports {sequences}. Dropping the apo columns for "
                 f"this design rather than pairing a fold with another sequence's metrics."
             )
-            return {}, {}
+            # Three empties, like every other return here: the caller unpacks
+            # three, and a guard that dropped columns by raising would be worse
+            # than the mispairing it exists to prevent.
+            return {}, {}, {}
         return (
             {
                 (mode, m): result.rmsd_values.get(mode, {}).get(m, [float("inf")] * len(sequences))
