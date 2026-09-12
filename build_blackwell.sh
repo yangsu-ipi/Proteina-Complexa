@@ -224,9 +224,6 @@ echo "  set in .env: UV_FOLDSEEK_EXEC=$ENV_DIR/bin/foldseek  UV_MMSEQS_EXEC=$ENV
 #   which the fork does not. Both are required -- installing only one leaves import errors that
 #   surface at first fold, not at build.
 #
-#   Plus colabfold, --no-deps and for one function, so a campaign can fetch the target MSA that
-#   ESMFold2's complex folding optionally takes. See the note at its install line.
-#
 #   WITH_ESMFOLD2 and ESM_SRC are resolved and validated in [0].
 if [ "$WITH_ESMFOLD2" != "0" ]; then
   # Freeze what [1]/[6]/[6b] fought for, and install everything below under it. These deps reach
@@ -282,55 +279,28 @@ PYEOF
   "$PIP" install -c "$CONS" huggingface_hub safetensors psutil pyyaml packaging
   "$PIP" install -c "$CONS" rdkit msgpack-numpy brotli attrs cloudpathlib \
     httpx tenacity zstd ipywidgets ipython py3dmol boto3 pygtrie dna_features_viewer
-  # ColabFold, for ONE function: `colabfold.colabfold.run_mmseqs2`, which is how
-  # scripts/prepare_target_msa.py fetches a target MSA from the public MMseqs2 server.
-  # It belongs inside [6e] because consensus_folding.py is the only thing in this repo
-  # that reads an a3m, so a WITH_ESMFOLD2=0 env has no use for it.
+  # ColabFold is NOT installed here, deliberately, and the absence is the point.
   #
-  # --no-deps, and not for tidiness: colabfold caps `biopython <1.86` and this env is on
-  # 1.88, so a plain install DOWNGRADES it -- measured, `Would install appdirs-1.4.4
-  # biopython-1.85 colabfold-1.6.2 importlib_metadata-8.9.0 orjson-3.12.0`. Nothing here
-  # requires >=1.86 (protein-interface's >=1.83 is the tightest floor), so pip check would
-  # stay quiet while Bio.PDB moved three releases under the evaluation path that uses
-  # PDBParser and Superimposer. --no-deps installs the wheel and nothing else.
+  # It used to be, --no-deps, for one function: `colabfold.colabfold.run_mmseqs2`,
+  # which is how scripts/prepare_target_msa.py fetched a target MSA from the public
+  # MMseqs2 server. Three costs came with it. It caps `biopython <1.86` against this
+  # env's 1.88, so the install carried a deliberate `pip check` complaint and needed
+  # appdirs/importlib-metadata/orjson given back by hand. And it installs four console
+  # scripts that fail at import without the [alphafold] extra this env must never have
+  # -- one of them `colabfold_batch`, which then shadowed the real folder on PATH once
+  # apo folding gained a colabfold backend, so the advice a user was shown was `pip
+  # install colabfold[alphafold]` into THIS environment: dm-tree>=0.1.9 against
+  # pyproject's 0.1.8, alphafold-colabfold beside the vendored colabdesign carrying
+  # this branch's jax-0.10 patches.
   #
-  # Safe because run_mmseqs2 lives in colabfold/colabfold.py, whose module-level imports are
-  # requests, tqdm, numpy and matplotlib plus stdlib -- all present -- and whose `import jax`
-  # sits in a try/except. colabfold/__init__.py is empty.
+  # prepare_target_msa.py now shells out to `colabfold_batch --msa-only` instead,
+  # named by COLABFOLD_EXEC_PATH -- the same variable apo folding reads, because it is
+  # the same question. It queries the same server, writes the same a3m, touches no
+  # weights, and asks a shared tool a question rather than importing its internals. So
+  # there is one ColabFold per box, in an environment of its own, and this env has no
+  # opinion about where its weights live or which of its scripts work.
   #
-  # NEVER add the [alphafold] or [alphafold-minus-jax] extra: it wants dm-tree>=0.1.9 against
-  # pyproject's dm-tree==0.1.8, and alphafold-colabfold==2.3.18 beside the vendored
-  # colabdesign that carries this branch's jax-0.10 patches.
-  #
-  # The four console scripts it installs (colabfold_batch, _relax, _search, _split_msas) all
-  # fail at import without that extra. They used to be harmless collateral -- nothing called
-  # them -- and that stopped being true when apo folding gained a colabfold backend: it runs
-  # `colabfold_batch` as a subprocess, and THIS env's broken shim is first on PATH. What the
-  # user then sees is ColabFold's own "alphafold is not installed. Please run `pip install
-  # colabfold[alphafold]`", which is the one instruction that must never be followed here --
-  # see the NEVER note above. So delete the shims and keep the library: console scripts are
-  # standalone files in bin/, unrelated to the package in site-packages, and `from
-  # colabfold.colabfold import run_mmseqs2` is unaffected. The folder that CAN fold lives in
-  # its own environment and is named by COLABFOLD_EXEC_PATH.
-  "$PIP" install -c "$CONS" --no-deps colabfold==1.6.2
-  rm -f "$ENV_DIR/bin/colabfold_batch" "$ENV_DIR/bin/colabfold_relax" \
-        "$ENV_DIR/bin/colabfold_search" "$ENV_DIR/bin/colabfold_split_msas"
-  "$PY" -c "from colabfold.colabfold import run_mmseqs2" || {
-    echo "ERROR: removing the console scripts broke the one colabfold import this env needs." >&2
-    exit 1
-  }
-  # Then give back the core deps --no-deps skipped, same as the accelerate/pydssp pair above.
-  # These three are absent from the env and depend on nothing that is pinned, so they are pure
-  # additions; matplotlib, numpy, pandas, requests and tqdm already satisfy their ranges. Adding
-  # them leaves `pip check` with exactly ONE new complaint -- the biopython cap -- which is the
-  # deliberate one. Every other line in that output is accounted for somewhere in this script,
-  # and three unexplained ones would erode that.
-  #
-  # importlib-metadata carries its bound explicitly: colabfold is installed but not part of
-  # this resolve, so pip does not consult its requirements, and a bare name took 9.0.1 against
-  # colabfold's <9.0.0 -- trading three pip-check lines for a different one. Observed, not
-  # feared. appdirs and orjson have no upper bound worth restating.
-  "$PIP" install -c "$CONS" appdirs "importlib-metadata>=8.6.1,<9" orjson
+  # If you are tempted to add it back: measure what `pip check` says first.
   # [6b]'s jax verification ran BEFORE this step, so nothing here has yet re-checked that jax
   # still works -- a check that runs before the thing that can break it. AF2 reward guidance is
   # used by generation, not just evaluation, so a jax broken here takes the whole pipeline down
@@ -401,14 +371,10 @@ try:
     from esm.utils.msa import MSA  # noqa: F401
 except Exception as e:
     bad.append(f"esm package: {type(e).__name__}: {e}")
-# The one symbol prepare_target_msa.py needs. Installed --no-deps, so this is exactly the
-# check that matters: a missing runtime import would surface at the top of a campaign, in a
-# prepare step, rather than here. Not fatal to the rest of the env -- a campaign that passes
-# no target_msa never reaches it -- but it is a build that cannot do what it says it can.
-try:
-    from colabfold.colabfold import run_mmseqs2  # noqa: F401
-except Exception as e:
-    bad.append(f"colabfold (target MSA retrieval): {type(e).__name__}: {e}")
+# Target MSA retrieval is a SUBPROCESS now, not an import: prepare_target_msa.py runs
+# `colabfold_batch --msa-only` from ColabFold's own environment, named by
+# COLABFOLD_EXEC_PATH. So there is nothing for this build to verify -- and an import
+# check here would have to install the package whose absence is the point.
 # The [6] canary ran while transformers was still 5.x. Every build now ends on 4.57.6, so re-check
 # the repo imports downstream of it rather than assuming a downgrade is transparent.
 try:

@@ -33,6 +33,11 @@ deferred to campaign execution: this module imports nothing but the standard
 library at import time, `--help` works anywhere, and a missing dependency is
 reported by name at the moment it is actually needed.
 
+Retrieval is now a SUBPROCESS -- `colabfold_batch --msa-only`, named by
+COLABFOLD_EXEC_PATH -- rather than an in-process import, so nothing here needs
+ColabFold installed beside `proteinfoundation` at all. Validation still does need
+`proteinfoundation`, which is the environment this runs in anyway.
+
 THE PUBLIC SERVER IS A SHARED FREE RESOURCE
 -------------------------------------------
 `https://api.colabfold.com` is run for the community. This script queries it once
@@ -84,32 +89,101 @@ def target_sequence(pdb: str, chain: str) -> str:
     return seq
 
 
+def colabfold_batch() -> str:
+    """The `colabfold_batch` to run, named the way the pipeline names it.
+
+    Same variable the apo folding backend reads, because it is the same question
+    -- which ColabFold installation -- and answering it twice is how two answers
+    start to disagree. ColabFold lives in an environment of its own (its
+    `[alphafold]` extra downgrades absl-py, biopython and chex and pins a jax a
+    Blackwell card cannot use), so this is a subprocess and an absolute path is
+    what reaches it.
+    """
+    import os
+    import shutil
+
+    named = os.environ.get("COLABFOLD_EXEC_PATH")
+    if named:
+        return named
+    found = shutil.which("colabfold_batch")
+    if found:
+        return found
+    raise SystemExit(
+        "error: fetching an MSA needs colabfold_batch, which is not on PATH and\n"
+        "  COLABFOLD_EXEC_PATH is unset. ColabFold lives in an environment of its own;\n"
+        "  set COLABFOLD_EXEC_PATH to its colabfold_batch (the same variable apo folding\n"
+        "  reads). Do not pip install colabfold into the complexa environment for this."
+    )
+
+
+def _supports(binary: str, flag: str) -> bool:
+    """Whether `binary --help` mentions *flag*. False if it cannot be asked."""
+    import subprocess
+
+    try:
+        helped = subprocess.run([binary, "--help"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return flag in (helped.stdout or "") + (helped.stderr or "")
+
+
 def fetch_a3m(seq: str, work_prefix: Path, host_url: str, user_agent: str, use_env: bool) -> str:
     """One alignment for one sequence, from the MMseqs2 API.
 
-    `run_mmseqs2` returns a list of a3m texts, one per unique query, and caches its
-    download under `{prefix}_{mode}` -- which it creates with `os.mkdir`, not
-    `makedirs`, so the parent has to exist before the call.
+    Shelled out to `colabfold_batch --msa-only`, which queries the same public
+    server and writes `{jobname}.a3m` beside its other outputs without folding
+    anything -- no weights are touched. This used to import
+    `colabfold.colabfold.run_mmseqs2` in-process, which is why the complexa
+    environment carried a `--no-deps colabfold` for one function, at the cost of
+    a biopython cap it did not want and four broken console scripts, one of
+    which then shadowed the real folder on PATH. A shared tool answers for
+    itself; this script asks it a question instead of importing its internals.
+
+    The query is written as a FASTA whose record id is the job name, because
+    that is what names the output file.
     """
+    import subprocess
+
+    job = work_prefix.name
+    work = work_prefix.parent / f"{job}_msa"
+    work.mkdir(parents=True, exist_ok=True)
+    fasta = work / f"{job}.fasta"
+    fasta.write_text(f">{job}\n{seq}\n")
+
+    binary = colabfold_batch()
+    command = [
+        binary, "--msa-only",
+        # unpaired, with the environmental databases unless asked otherwise.
+        # Pairing is for paired chains of one complex, not a single chain;
+        # templates are a separate feature and ESMFold2 takes none.
+        "--msa-mode", "mmseqs2_uniref_env" if use_env else "mmseqs2_uniref",
+        "--host-url", host_url,
+    ]
+    # The library function took a user_agent; the CLI did not gain one until
+    # after 1.6.1, where passing it is an argparse error rather than a warning.
+    # Asked rather than assumed, so this works either side of that change and a
+    # contact still reaches the server wherever it can.
+    if _supports(binary, "--user-agent"):
+        command += ["--user-agent", user_agent]
+    else:
+        print(f"  note: {Path(binary).name} takes no --user-agent; the contact "
+              f"{user_agent!r} will not reach {host_url}")
+    command += [str(fasta), str(work / "out")]
     try:
-        from colabfold.colabfold import run_mmseqs2
-    except ImportError as exc:
-        raise missing("colabfold", "fetching an MSA",
-                      f"pip install colabfold  ({exc})") from exc
-    work_prefix.parent.mkdir(parents=True, exist_ok=True)
-    out = run_mmseqs2(
-        seq,
-        str(work_prefix),
-        use_env=use_env,
-        use_filter=True,
-        use_templates=False,   # templates are a separate feature; ESMFold2 takes none
-        use_pairing=False,     # pairing is for paired chains of one complex, not this
-        host_url=host_url,
-        user_agent=user_agent,
-    )
-    if not out:
+        subprocess.run(command, check=True)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"error: cannot run {command[0]}: {exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"error: {command[0]} --msa-only failed (exit {exc.returncode}) against {host_url}"
+        ) from exc
+
+    produced = sorted((work / "out").glob("*.a3m"))
+    if not produced:
         raise SystemExit(f"error: {host_url} returned no alignment for a {len(seq)}-residue query")
-    return out[0]
+    # Named for the job when there is one; otherwise whatever single file appeared.
+    exact = work / "out" / f"{job}.a3m"
+    return (exact if exact.exists() else produced[0]).read_text()
 
 
 def validate(path: Path, seq: str, max_sequences: int):
