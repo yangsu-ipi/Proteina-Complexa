@@ -241,3 +241,144 @@ def test_the_self_mismatch_guard_returns_what_the_caller_unpacks(monkeypatch, tm
     assert len(returned) == 3, "the caller unpacks three"
     rmsds, plddt, derived = returned
     assert not rmsds and not plddt and not derived, "a mispaired fold contributes nothing"
+
+
+def _cached_fold(tmp_path, paths, modes=("ca",)):
+    kept = str(tmp_path / "kept.pdb")
+    open(kept, "w").close()
+    return {
+        "sequences": ["AAA", "CCC"],
+        "rmsd_values": {m: {"esmfold2": [1.0, 2.0]} for m in modes},
+        "best_rmsd": {m: {"esmfold2": 1.0} for m in modes},
+        "folded_paths": {"esmfold2": [kept if p else None for p in paths]},
+        "structures_kept": True,
+        "plddt": {"esmfold2": [0.7, 0.6]},
+    }
+
+
+def test_adding_a_mode_reads_the_kept_structures_instead_of_refolding(monkeypatch, tmp_path):
+    """The payoff for keeping structures: apo geometry went from one mode to four,
+    and that must cost a re-read. Modes are deliberately absent from the fold
+    fingerprint so this path is reachable at all."""
+    from proteinfoundation.evaluation import monomer_eval
+
+    seen = {}
+
+    def fake(reference_pdb_path, folding_results, rmsd_modes):
+        seen["modes"] = list(rmsd_modes)
+        seen["results"] = folding_results
+        return DesignabilityResult(
+            rmsd_values={m: {"esmfold2": [3.0, 4.0]} for m in rmsd_modes},
+            best_rmsd={m: {"esmfold2": 3.0} for m in rmsd_modes},
+        )
+
+    monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
+    out = monomer_eval._result_from_cache(
+        _cached_fold(tmp_path, [True, True]), ["ca", "bb3", "all_atom"], "/design.pdb"
+    )
+
+    assert out is not None, "the kept structures answer this"
+    assert seen["modes"] == ["bb3", "all_atom"], "only the modes the cache lacks"
+    assert out.rmsd_values["ca"]["esmfold2"] == [1.0, 2.0], "the cached mode is not recomputed"
+
+
+def test_one_failed_fold_does_not_force_a_refold_of_the_rest(monkeypatch, tmp_path):
+    """A None slot is a fold that failed, not a structure that went missing -- its
+    RMSD is inf in every mode, so a new mode costs nothing for it. Requiring every
+    slot to be a readable file sent the whole design back through the folder the
+    first time a mode was added, which is the one moment refolding is the thing
+    being avoided."""
+    from proteinfoundation.evaluation import monomer_eval
+
+    seen = {}
+
+    def fake(reference_pdb_path, folding_results, rmsd_modes):
+        seen["results"] = folding_results
+        return DesignabilityResult(
+            rmsd_values={m: {"esmfold2": [3.0, float("inf")]} for m in rmsd_modes},
+            best_rmsd={m: {"esmfold2": 3.0} for m in rmsd_modes},
+        )
+
+    monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
+    out = monomer_eval._result_from_cache(
+        _cached_fold(tmp_path, [True, False]), ["ca", "all_atom"], "/design.pdb"
+    )
+
+    assert out is not None, "one failed sequence must not refold the design"
+    success = [r.success for r in seen["results"]["esmfold2"]]
+    assert success == [True, False], "the failed slot is handed on as failed, not as a path"
+
+
+def test_a_structure_deleted_since_the_fold_still_refolds(tmp_path):
+    """The relaxation above must not swallow the case it was carved out of: a path
+    that names a file which is no longer there cannot answer for a new mode."""
+    from proteinfoundation.evaluation import monomer_eval
+
+    cached = _cached_fold(tmp_path, [True, True])
+    os.remove(cached["folded_paths"]["esmfold2"][0])
+    assert monomer_eval._result_from_cache(cached, ["ca", "all_atom"], "/design.pdb") is None
+
+
+def test_a_new_mode_is_averaged_over_seeds_like_the_cached_one(monkeypatch, tmp_path):
+    """Found on the real CBLN1 apo caches. average_folds reduces the RMSDs over
+    seeds to one value per sequence but CONCATENATES the structures, so a
+    three-seed entry holds two RMSDs and six paths. Measuring a new mode on the
+    averaged entry produced six values against two sequences -- a list three
+    times too long, aligned with nothing, in a column whose whole contract is
+    that position i is sequence i. Modes are filled per seed, then averaged."""
+    from proteinfoundation.evaluation import monomer_eval
+
+    kept = str(tmp_path / "kept.pdb")
+    open(kept, "w").close()
+
+    def fold(seed, ca):
+        return {
+            "sequences": ["AAA", "CCC"],
+            "rmsd_values": {"ca": {"esmfold2": list(ca)}},
+            "best_rmsd": {"ca": {"esmfold2": min(ca)}},
+            "folded_paths": {"esmfold2": [kept, kept]},
+            "structures_kept": True,
+        }
+
+    per_seed = {1: fold(1, [1.0, 2.0]), 2: fold(2, [3.0, 4.0]), 3: fold(3, [5.0, 6.0])}
+
+    def fake(reference_pdb_path, folding_results, rmsd_modes):
+        n = len(folding_results["esmfold2"])
+        return DesignabilityResult(
+            rmsd_values={m: {"esmfold2": [7.0] * n} for m in rmsd_modes},
+            best_rmsd={m: {"esmfold2": 7.0} for m in rmsd_modes},
+        )
+
+    monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
+    out = monomer_eval._result_from_folds(per_seed, ["ca", "all_atom"], "/design.pdb")
+
+    assert out is not None
+    assert out.rmsd_values["ca"]["esmfold2"] == pytest.approx([3.0, 4.0]), "the seeds averaged"
+    assert len(out.rmsd_values["all_atom"]["esmfold2"]) == len(out.rmsd_values["ca"]["esmfold2"]) == 2, (
+        "one value per sequence, whatever the seed count"
+    )
+
+
+def test_an_averaged_entry_is_never_measured_directly(monkeypatch, tmp_path):
+    """The guard that keeps the shape above honest: more structures than
+    sequences means the entry is an average of several seeds, and measuring it
+    would produce a list of the wrong length rather than a wrong number, which no
+    downstream check looks for."""
+    from proteinfoundation.evaluation import monomer_eval
+
+    kept = str(tmp_path / "kept.pdb")
+    open(kept, "w").close()
+    averaged = {
+        "sequences": ["AAA", "CCC"],
+        "rmsd_values": {"ca": {"esmfold2": [1.0, 2.0]}},
+        "best_rmsd": {"ca": {"esmfold2": 1.0}},
+        "folded_paths": {"esmfold2": [kept] * 6},
+        "structures_kept": True,
+    }
+
+    def fake(**kwargs):
+        raise AssertionError("an averaged entry must not be measured")
+
+    monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
+    assert monomer_eval._fill_missing_modes(averaged, ["ca", "bb3"], "/design.pdb") is averaged
+    assert monomer_eval._result_from_cache(averaged, ["ca", "bb3"], "/design.pdb") is None

@@ -42,7 +42,10 @@ metric:
   # community_models/ckpts/AF2 (see colabfold_data_dir).
   compute_apo_metrics: true
   apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
-  apo_rmsd_modes: [ca]            # ca, bb3o, all_atom
+  # Every mode the holo side reports, so apo and holo geometry are the same
+  # measurement one slot apart. Modes are not in the fold fingerprint: adding
+  # one re-measures the kept structures instead of refolding them.
+  apo_rmsd_modes: [ca, bb3, bb3o, all_atom]   # ca, bb3, bb3o, all_atom
   reuse_cached_apo_folds: true
   
   #esm metrics

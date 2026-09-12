@@ -32,6 +32,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     get_binder_chain_from_complex,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
+    MONOMER_CONFIDENCE_SUFFIXES,
     DesignabilityResult,
     FoldingResult,
     _fold_seeds,
@@ -44,6 +45,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
+from proteinfoundation.metrics.folding_models import read_fold_confidence
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
@@ -298,7 +300,7 @@ def fold_sequences(
 def compute_scrmsd_from_folded(
     reference_pdb_path: str,
     folding_results: dict[str, list[FoldingResult]],
-    rmsd_modes: list[Literal["ca", "bb3o", "all_atom"]] = ["ca"],
+    rmsd_modes: list[Literal["ca", "bb3", "bb3o", "all_atom"]] = ["ca"],
 ) -> DesignabilityResult:
     """
     Compute scRMSD from pre-folded structures.
@@ -321,6 +323,10 @@ def compute_scrmsd_from_folded(
 
     rmsd_values = {mode: {} for mode in rmsd_modes}
     plddt: dict[str, list[float]] = {}
+    # Folder-reported, so unlike pLDDT they cannot be recovered from the
+    # structure: they come from the sidecar the backend wrote beside it, and are
+    # NaN wherever there is none.
+    confidence: dict[str, dict[str, list[float]]] = {}
     # Keyed by model, one slot per sequence, None where a fold failed. It used to
     # be one flat list appended model by model with failures skipped, which threw
     # away the only thing that says which structure belongs to which sequence and
@@ -332,6 +338,7 @@ def compute_scrmsd_from_folded(
         for mode in rmsd_modes:
             rmsd_values[mode][model_name] = []
         plddt[model_name] = []
+        confidence[model_name] = {name: [] for name in MONOMER_CONFIDENCE_SUFFIXES}
         folded_paths[model_name] = []
 
         for result in results:
@@ -339,10 +346,15 @@ def compute_scrmsd_from_folded(
                 for mode in rmsd_modes:
                     rmsd_values[mode][model_name].append(float("inf"))
                 plddt[model_name].append(float("nan"))
+                for name in MONOMER_CONFIDENCE_SUFFIXES:
+                    confidence[model_name][name].append(float("nan"))
                 folded_paths[model_name].append(None)
                 continue
 
             folded_paths[model_name].append(result.pdb_path)
+            reported = read_fold_confidence(result.pdb_path)
+            for name in MONOMER_CONFIDENCE_SUFFIXES:
+                confidence[model_name][name].append(float(reported.get(name, float("nan"))))
             # Read here because this is already the one place that opens every
             # folded structure. The backends write per-residue pLDDT into the
             # B-factor column, so it costs a parse of a file being parsed anyway.
@@ -381,13 +393,87 @@ def compute_scrmsd_from_folded(
         best_rmsd=best_rmsd,
         folded_paths=folded_paths,
         plddt=plddt,
+        confidence=confidence,
     )
 
 
 def _result_from_folds(folds: dict[int, dict], rmsd_modes: list[str], pdb_path: str):
-    """Average per-seed folds into one result, or None if none are usable."""
-    averaged = average_folds(folds)
+    """Average per-seed folds into one result, or None if none are usable.
+
+    Missing modes are filled in per SEED and then averaged, never the other way
+    round. ``average_folds`` reduces the RMSDs over seeds to one value per
+    sequence but concatenates the structures, so an averaged three-seed entry
+    holds two RMSDs and six paths: measuring a new mode there produced six
+    values against two sequences, and the list that reached the row was three
+    times too long and aligned with nothing. Filling first keeps every list one
+    entry per sequence, and the new mode is averaged over seeds exactly as the
+    cached one was.
+    """
+    filled = {seed: _fill_missing_modes(entry, rmsd_modes, pdb_path) for seed, entry in (folds or {}).items()}
+    averaged = average_folds(filled)
     return _result_from_cache(averaged, rmsd_modes, pdb_path) if averaged else None
+
+
+def _fill_missing_modes(entry: dict, rmsd_modes: list[str], reference_pdb_path: str) -> dict:
+    """One fold's missing RMSD modes, measured from the structures it kept.
+
+    This is the payoff for keeping them: adding a mode costs a reload rather than
+    a refold. Returns the entry unchanged when its structures cannot answer --
+    they were not kept, they are gone from disk, or there is not exactly one per
+    sequence -- and the caller then decides to refold. The last of those is what
+    keeps an averaged multi-seed entry out of here; see :func:`_result_from_folds`.
+
+    A None slot is a fold that failed, not a structure that went missing: its
+    RMSD is inf in every mode, so a new mode costs nothing for it and refolding
+    it would only fail again. Requiring every slot to be a readable file meant
+    one failed sequence forced a full refold of its design the first time a mode
+    was added -- which is exactly when refolding is the thing being avoided.
+    """
+    have = entry.get("rmsd_values") or {}
+    missing = [m for m in rmsd_modes if m not in have]
+    if not missing:
+        return entry
+
+    sequences = list(entry.get("sequences") or [])
+    paths = folded_paths_by_model(entry)
+    present = [pth for by_model in paths.values() for pth in by_model if pth]
+    aligned = bool(paths) and all(len(by_model) == len(sequences) for by_model in paths.values())
+    if not (entry.get("structures_kept") and paths and aligned and all(os.path.exists(p) for p in present)):
+        return entry
+
+    synthetic = {
+        model: [
+            FoldingResult(
+                pdb_path=pth,
+                sequence=seq,
+                model_name=model,
+                success=pth is not None,
+                error=None if pth else "Folding failed",
+            )
+            for pth, seq in zip(by_model, sequences, strict=True)
+        ]
+        for model, by_model in paths.items()
+    }
+    try:
+        extra = compute_scrmsd_from_folded(
+            reference_pdb_path=reference_pdb_path,
+            folding_results=synthetic,
+            rmsd_modes=missing,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not measure mode(s) {missing} from {len(present)} kept structure(s): {exc}")
+        return entry
+
+    logger.info(f"Cached refold lacked mode(s) {missing}; measured from {len(present)} kept structure(s)")
+    filled = dict(entry)
+    filled["rmsd_values"] = {**have, **extra.rmsd_values}
+    filled["best_rmsd"] = {**(entry.get("best_rmsd") or {}), **extra.best_rmsd}
+    # The re-read opened every structure, so it also read the confidence sidecars:
+    # a fold kept before those existed gains its pTM and PAE here without being
+    # folded again, wherever the backend has since written one.
+    if extra.confidence and not entry.get("confidence"):
+        filled["confidence"] = extra.confidence
+    return filled
 
 
 def _result_from_cache(
@@ -397,17 +483,19 @@ def _result_from_cache(
 ) -> DesignabilityResult | None:
     """Rebuild a result from cache, or None to recompute.
 
-    Three outcomes. A full hit needs every requested mode present. A partial hit
-    -- a mode is missing but the folded structures were kept and still exist --
-    computes only the missing modes from those structures, which is the payoff for
-    caching them: adding an RMSD mode costs a reload rather than a refold. Anything
-    else recomputes.
+    Two outcomes once :func:`_fill_missing_modes` has had its turn: every
+    requested mode is present and the entry is rebuilt, or one is still missing
+    and the caller refolds.
 
     The partial path used to be limited to a single folding model, because
     folded_paths was flat across models and could not be split back apart -- so
     with two models a partial miss refolded. Schema 3 keys the paths by model, and
     the restriction is gone with it.
     """
+    # A single-fold entry is already one structure per sequence, so it can be
+    # filled here; a multi-seed average cannot, and _result_from_folds has
+    # filled its seeds before averaging them.
+    cached = _fill_missing_modes(cached, rmsd_modes, reference_pdb_path)
     have = cached["rmsd_values"]
     missing = [m for m in rmsd_modes if m not in have]
     sequences = list(cached.get("sequences") or [])
@@ -421,53 +509,25 @@ def _result_from_cache(
             folded_paths=paths,
             sequences=sequences,
             plddt=dict(cached.get("plddt") or {}),
+            confidence=dict(cached.get("confidence") or {}),
         )
 
-    on_disk = paths and all(
-        pth and os.path.exists(pth) for by_model in paths.values() for pth in by_model
+    why = (
+        "structures were not kept"
+        if not cached.get("structures_kept")
+        else "structures are missing from disk or do not match the sequences one for one"
+        if paths
+        else "no kept structures could be attributed to a model"
     )
-    reusable = cached.get("structures_kept") and on_disk
-    if not reusable:
-        why = (
-            "structures were not kept"
-            if not cached.get("structures_kept")
-            else "structures are missing from disk"
-            if paths
-            else "no kept structures could be attributed to a model"
-        )
-        logger.info(f"Cached refold lacks mode(s) {missing} and {why}; refolding")
-        return None
-
-    total = sum(len(v) for v in paths.values())
-    logger.info(f"Cached refold lacks mode(s) {missing}; computing them from {total} kept structure(s)")
-    synthetic = {
-        model: [
-            FoldingResult(pdb_path=pth, sequence=seq, model_name=model, success=True)
-            for pth, seq in zip(by_model, sequences + [""] * len(by_model), strict=False)
-        ]
-        for model, by_model in paths.items()
-    }
-    extra = compute_scrmsd_from_folded(
-        reference_pdb_path=reference_pdb_path,
-        folding_results=synthetic,
-        rmsd_modes=missing,
-    )
-    merged_values = {**{m: have[m] for m in rmsd_modes if m in have}, **extra.rmsd_values}
-    merged_best = {**{m: cached["best_rmsd"][m] for m in rmsd_modes if m in have}, **extra.best_rmsd}
-    return DesignabilityResult(
-        rmsd_values={m: merged_values[m] for m in rmsd_modes},
-        best_rmsd={m: merged_best[m] for m in rmsd_modes},
-        folded_paths=paths,
-        sequences=sequences,
-        plddt=dict(cached.get("plddt") or {}) or extra.plddt,
-    )
+    logger.info(f"Cached refold lacks mode(s) {missing} and {why}; refolding")
+    return None
 
 
 def evaluate_self_consistency(
     pdb_path: str,
     output_dir: str,
     use_pdb_seq: bool = False,
-    rmsd_modes: list[Literal["ca", "bb3o", "all_atom"]] = ["ca"],
+    rmsd_modes: list[Literal["ca", "bb3", "bb3o", "all_atom"]] = ["ca"],
     folding_models: list[Literal["esmfold", "colabfold"]] = ["esmfold"],
     num_seq_per_target: int = 8,
     pmpnn_sampling_temp: float = 0.1,
