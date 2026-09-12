@@ -511,38 +511,67 @@ def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: s
 
 
 COLABFOLD_RANK_MARKER = "_rank_"
+COLABFOLD_MODEL_MARKER = "_model_"
+# What --num-models defaults to, and what this repo does not override. Used only
+# to notice a short set, never to fabricate one.
+COLABFOLD_N_MODELS = 5
+
+
+def _colabfold_model_number(path: str) -> int:
+    """The AF2 parameter set that produced *path*, or 0 if the name does not say."""
+    if COLABFOLD_MODEL_MARKER not in path:
+        return 0
+    try:
+        return int(path.split(COLABFOLD_MODEL_MARKER, 1)[1].split("_", 1)[0])
+    except (IndexError, ValueError):
+        return 0
 
 
 def colabfold_model_siblings(pdb_path: str | None) -> list[str]:
-    """Every ranked prediction of the sequence *pdb_path* is one ranking of.
+    """Every AF2 parameter set's prediction of the sequence *pdb_path* is one of.
 
-    ColabFold runs five AF2 parameter sets per query -- ``--num-models`` defaults
-    to 5 and nothing here overrides it -- and names them
-    ``{job}_unrelaxed_rank_{rank}_alphafold2_ptm_model_{m}_seed_{s}.pdb``. Only
-    the rank is ordered; which model wins a rank varies per sequence, so the set
-    is found by rank rather than by model number. This is the colabfold analogue
-    of :func:`per_model_paths_from_first`, which cannot serve because the holo
-    side names its models ``_model{n}.pdb`` and the rank is not in the name.
+    ColabFold runs five per query -- ``--num-models`` defaults to 5 and nothing
+    here overrides it -- and names them
+    ``{job}_unrelaxed_rank_{r}_alphafold2_ptm_model_{m}_seed_{s}.pdb``.
 
-    Returns the siblings sorted by rank with *pdb_path* first, or ``[pdb_path]``
-    when the name is not ColabFold's or nothing else is on disk -- so a caller
-    can always reduce over what it gets back, and a single-model run is the
-    one-element case rather than a special case.
+    The set is FOUND by rank, because the rank is the only field that varies
+    predictably: every rank from 001 exists, while which model numbers appear is
+    not knowable from one filename. It is then ORDERED BY MODEL NUMBER, because
+    that is the identity that means something. Rank is a per-sequence sort by
+    pLDDT -- model 3 wins for one sequence and model 5 for the next -- so a
+    rank-ordered list puts a different parameter set in slot 0 for every row.
+    Ordering by model makes slot k the same AF2 model everywhere, which is the
+    contract :func:`per_model_paths_from_first` gets for free on the holo side
+    from ``{design}_model{n}.pdb``.
+
+    That difference does not change a mean over the whole set -- the set is the
+    same either way -- but it is what any per-model reading would need, and it
+    makes the order reproducible rather than dependent on which model happened
+    to score best.
+
+    Returns ``[pdb_path]`` when the name is not ColabFold's or nothing else is on
+    disk, so a single-model backend is the one-element case rather than a special
+    case. A SHORT set is returned and warned about rather than refused: unlike
+    the holo side's all-or-nothing rule, which protects a worst-case reduction
+    that three of five models would flatter, every reduction here is a mean, and
+    a mean of three real predictions beats discarding them.
     """
     if not pdb_path or COLABFOLD_RANK_MARKER not in pdb_path or "_seed_" not in pdb_path:
         return [pdb_path] if pdb_path else []
     prefix = pdb_path.split(COLABFOLD_RANK_MARKER)[0]
-    # Every rank of one query shares the seed and the suffix this repo appended;
-    # only the rank and the model number differ.
+    # Every prediction of one query shares the seed and the suffix this repo
+    # appended; only the rank and the model number differ.
     ending = pdb_path[pdb_path.rindex("_seed_") :]
-    found = glob.glob(f"{prefix}{COLABFOLD_RANK_MARKER}*{ending}")
+    found = sorted(set(glob.glob(f"{prefix}{COLABFOLD_RANK_MARKER}*{ending}")))
     if not found:
         return [pdb_path]
-
-    def rank_of(path: str) -> str:
-        return path.split(COLABFOLD_RANK_MARKER, 1)[1].split("_", 1)[0]
-
-    return sorted(set(found), key=rank_of)
+    if len(found) < COLABFOLD_N_MODELS:
+        logger.warning(
+            f"Reducing over {len(found)} of {COLABFOLD_N_MODELS} ColabFold predictions for "
+            f"{os.path.basename(prefix)}: the mean describes the models that are on disk, not the "
+            f"five that ran"
+        )
+    return sorted(found, key=lambda path: (_colabfold_model_number(path), path))
 
 
 def run_colabfold(

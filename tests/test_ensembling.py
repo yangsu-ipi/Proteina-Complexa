@@ -1160,8 +1160,14 @@ def test_every_ranked_colabfold_prediction_is_found_from_the_one_returned(tmp_pa
         f.write_text("ATOM\n")
         made.append(str(f))
 
+    # Found by rank -- the only field that varies predictably -- but ORDERED BY
+    # MODEL, because rank is a per-sequence sort by pLDDT and would put a
+    # different parameter set in slot 0 for every row. Ordering by model is the
+    # contract per_model_paths_from_first gets for free from _model{n}.pdb.
     found = colabfold_model_siblings(made[0])
-    assert found == made, "all five, in rank order, starting from the one that is returned"
+    assert found == sorted(made, key=lambda p: int(p.split("_model_")[1].split("_")[0]))
+    assert [int(p.split("_model_")[1].split("_")[0]) for p in found] == [1, 2, 3, 4, 5]
+    assert set(found) == set(made), "the set is the same; only the order is made meaningful"
 
     # A neighbouring sequence's predictions are not this sequence's.
     other = tmp_path / "seq_2_unrelaxed_rank_001_alphafold2_ptm_model_3_seed_000_apo_mpnn.pdb"
@@ -1199,3 +1205,82 @@ def test_the_ensemble_is_meaned_and_a_dead_model_is_dropped_not_counted(tmp_path
     assert math.isnan(_mean_over_models([float("nan")])), "nothing finite stays unmeasured"
     assert math.isnan(_mean_over_models([]))
     assert _mean_over_models([0.9, 0.1]) != 0.9, "not a best-of"
+
+
+def test_a_short_ensemble_is_used_and_announced(tmp_path):
+    """Unlike the holo side's all-or-nothing rule, which guards a worst-case that
+    three of five models would flatter, every reduction here is a mean -- and a
+    mean of three real predictions beats discarding them. But it describes three,
+    so it has to say so."""
+    from loguru import logger
+
+    from proteinfoundation.metrics.folding_models import colabfold_model_siblings
+
+    made = []
+    for rank, model in ((1, 3), (2, 5), (3, 1)):
+        f = tmp_path / f"seq_1_unrelaxed_rank_00{rank}_alphafold2_ptm_model_{model}_seed_000_apo_mpnn.pdb"
+        f.write_text("ATOM\n")
+        made.append(str(f))
+
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        found = colabfold_model_siblings(made[0])
+    finally:
+        logger.remove(sink)
+    assert len(found) == 3
+    assert any("3 of 5" in m for m in seen), "a partial mean must not look like a full one"
+
+
+def test_derived_metrics_are_read_over_the_ensemble_not_the_winner(tmp_path, monkeypatch):
+    """SASA and secondary structure used to come off the top-ranked structure
+    while pTM, pAE, pLDDT and scRMSD in the same row were already means over all
+    five -- one row, two reductions, and nothing in the column names to say
+    which one a number got."""
+    import proteinfoundation.evaluation.monomer_eval_utils as utils
+
+    made = []
+    for rank, model in ((1, 3), (2, 5), (3, 1)):
+        f = tmp_path / f"seq_1_unrelaxed_rank_00{rank}_alphafold2_ptm_model_{model}_seed_000_apo_mpnn.pdb"
+        f.write_text("ATOM\n")
+        made.append(str(f))
+
+    by_model = {3: 100.0, 5: 200.0, 1: 300.0}
+
+    def fake(path):
+        m = int(path.split("_model_")[1].split("_")[0])
+        return {
+            "binder_sasa": by_model[m],
+            "binder_ss_counts": [float(m), 0.0],
+            "sasa_engine": "freesasa",
+        }
+
+    monkeypatch.setattr(utils, "derive_from_monomer_structure", fake)
+
+    out = utils.derive_from_monomer_ensemble(made[0])
+    assert out["binder_sasa"] == pytest.approx(200.0), "the mean of all three, not rank 001's 100"
+    assert out["binder_ss_counts"] == [pytest.approx(3.0), 0.0], "packed counts average elementwise"
+    assert out["sasa_engine"] == "freesasa", "provenance is taken, not averaged"
+
+
+def test_a_single_structure_backend_derives_exactly_as_before(tmp_path, monkeypatch):
+    """ESMFold2 returns one structure per sequence per seed; the ensemble read
+    must be the identity there, not a new code path with its own behaviour."""
+    import proteinfoundation.evaluation.monomer_eval_utils as utils
+
+    only = tmp_path / "esm_1_seed7.pdb_esm_apo_mpnn"
+    only.write_text("ATOM\n")
+    monkeypatch.setattr(utils, "derive_from_monomer_structure", lambda p: {"binder_sasa": 42.0})
+    assert utils.derive_from_monomer_ensemble(str(only)) == {"binder_sasa": 42.0}
+
+
+def test_the_derivation_version_moved_with_the_reduction(tmp_path):
+    """Changing what a registered metric MEANS without changing its name is
+    exactly what this constant exists to announce -- and not bumping it is the
+    mistake GEOMETRY_REDUCTION_VERSION was bumped for after the fact, where a
+    cached campaign matched the fingerprint and served the old numbers back."""
+    from proteinfoundation.evaluation.monomer_eval_utils import MONOMER_DERIVATION_VERSION
+
+    assert MONOMER_DERIVATION_VERSION >= 2, (
+        "best-of-one-structure to mean-over-the-ensemble is a change of meaning"
+    )

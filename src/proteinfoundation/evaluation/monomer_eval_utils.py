@@ -247,7 +247,15 @@ MONOMER_DERIVED_SUFFIXES: tuple[str, ...] = (
 )
 # Bumped when the derivation of a registered metric changes without its name
 # changing, which the name alone cannot express.
-MONOMER_DERIVATION_VERSION = 1
+#
+# 2: read over the ENSEMBLE. These used to come off the one structure a backend
+# returned, which for ColabFold is the top-ranked of five -- a best-of sitting in
+# the same row as pTM, pAE, pLDDT and scRMSD that were already means over all
+# five. Nothing in the column names said which reduction it got. Re-derives from
+# kept structures; no refolding. Not bumping is the failure this constant exists
+# to prevent: a cached campaign would match the old fingerprint and serve the
+# best-of values back under a name that now promises a mean.
+MONOMER_DERIVATION_VERSION = 2
 
 
 def monomer_derivation_fingerprint() -> str:
@@ -273,6 +281,34 @@ def derive_from_monomer_structure(pdb_path: str) -> dict:
 
     metrics = monomer_structure_metrics(pdb_path)
     return {name: metrics[name] for name in MONOMER_DERIVED_SUFFIXES if name in metrics}
+
+
+def derive_from_monomer_ensemble(pdb_path: str) -> dict:
+    """The registered metrics for one sequence, meaned over its predictions.
+
+    A structure read is per structure, but a sequence may have several: ColabFold
+    keeps all five AF2 parameter sets, and reading only the one that ranked first
+    would report a best-of for SASA and secondary structure while pTM, pAE,
+    pLDDT and scRMSD beside them are means over all five -- one row, two
+    reductions, no way to tell from the column which it got.
+
+    A backend that returns one structure per sequence is the one-element case and
+    costs nothing extra.
+    """
+    from proteinfoundation.metrics.folding_models import colabfold_model_siblings
+
+    ensemble = [p for p in colabfold_model_siblings(pdb_path) if p and os.path.exists(p)]
+    if len(ensemble) <= 1:
+        return derive_from_monomer_structure(pdb_path)
+    per_model = [derive_from_monomer_structure(p) for p in ensemble]
+    per_model = [m for m in per_model if m]
+    if not per_model:
+        return {}
+    return {
+        name: _reduce_derived_value([m[name] for m in per_model if name in m])
+        for name in MONOMER_DERIVED_SUFFIXES
+        if any(name in m for m in per_model)
+    }
 
 
 def _entry_needs_derivation(entry: dict, stale: bool) -> bool:
@@ -369,7 +405,7 @@ def _derive_into(folds: dict, stale: bool) -> bool:
                 one = {}
                 if pdb and os.path.exists(pdb):
                     try:
-                        one = derive_from_monomer_structure(pdb)
+                        one = derive_from_monomer_ensemble(pdb)
                         usable = usable or bool(one)
                     except Exception as exc:
                         failed += 1
@@ -609,25 +645,39 @@ def _mean_derived(per_seed: list):
     if not usable:
         return per_seed[0] if per_seed else None
     width = min(len(v) for v in usable)
-    out = []
-    for i in range(width):
-        values = [v[i] for v in usable]
-        first = values[0]
-        if isinstance(first, str):
-            out.append(first)
-        elif isinstance(first, list):
-            if any(not isinstance(v, list) or len(v) != len(first) for v in values):
-                out.append(first)
-            else:
-                out.append([sum(v[j] for v in values) / len(values) for j in range(len(first))])
-        else:
-            numbers = [float(v) for v in values if isinstance(v, (int, float))]
-            out.append(
-                sum(numbers) / len(numbers)
-                if len(numbers) == len(values) and all(math.isfinite(n) for n in numbers)
-                else math.nan
-            )
-    return out
+    return [_reduce_derived_value([v[i] for v in usable]) for i in range(width)]
+
+
+def _reduce_derived_value(values: list):
+    """One derived metric's value, meaned over whatever produced it.
+
+    Shared by the two axes a derived metric can be drawn on -- ESMFold2's seeds
+    and ColabFold's five AF2 parameter sets -- so a SASA averaged over seeds and
+    one averaged over models are reduced by the same rules rather than by two
+    implementations that could drift.
+
+    Strings are provenance (the SASA engine, the radii set), identical across
+    draws by construction and meaningless as an average, so the first is taken.
+    Packed eight-state secondary-structure counts are lists and are averaged
+    elementwise; a ragged set is not averaged at all. A NaN in any draw makes the
+    result NaN, the same rule the RMSDs use for infinity: a draw that produced no
+    usable value did not produce a slightly worse one.
+    """
+    if not values:
+        return math.nan
+    first = values[0]
+    if isinstance(first, str):
+        return first
+    if isinstance(first, list):
+        if any(not isinstance(v, list) or len(v) != len(first) for v in values):
+            return first
+        return [sum(v[j] for v in values) / len(values) for j in range(len(first))]
+    numbers = [float(v) for v in values if isinstance(v, (int, float))]
+    return (
+        sum(numbers) / len(numbers)
+        if len(numbers) == len(values) and all(math.isfinite(n) for n in numbers)
+        else math.nan
+    )
 
 
 def average_folds(folds: dict[int, dict]) -> dict | None:
