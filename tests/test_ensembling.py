@@ -1141,3 +1141,61 @@ def test_an_explicitly_named_binary_is_the_operators_call(tmp_path, monkeypatch)
     with contextlib.suppress(Exception):
         folding_models.run_colabfold(["MKV"], str(tmp_path / "out"))
     assert str(script) in seen.get("command", ""), seen
+
+
+def test_every_ranked_colabfold_prediction_is_found_from_the_one_returned(tmp_path):
+    """ColabFold runs five AF2 parameter sets per query -- --num-models defaults
+    to 5 and nothing overrides it -- ranks them, and this repo returned only
+    rank_001. The other four predictions and their PAE matrices had already been
+    paid for.
+
+    Found by RANK, not by model number: which parameter set wins a rank varies
+    per sequence, so the set is not derivable the way the holo side's
+    _model{n}.pdb siblings are."""
+    from proteinfoundation.metrics.folding_models import colabfold_model_siblings
+
+    made = []
+    for rank, model in ((1, 3), (2, 5), (3, 1), (4, 4), (5, 2)):
+        f = tmp_path / f"seq_1_unrelaxed_rank_00{rank}_alphafold2_ptm_model_{model}_seed_000_apo_mpnn.pdb"
+        f.write_text("ATOM\n")
+        made.append(str(f))
+
+    found = colabfold_model_siblings(made[0])
+    assert found == made, "all five, in rank order, starting from the one that is returned"
+
+    # A neighbouring sequence's predictions are not this sequence's.
+    other = tmp_path / "seq_2_unrelaxed_rank_001_alphafold2_ptm_model_3_seed_000_apo_mpnn.pdb"
+    other.write_text("ATOM\n")
+    assert str(other) not in colabfold_model_siblings(made[0])
+
+    # A different suffix is a different fold of the same sequence -- the apo
+    # track and the codesignability track share a structures directory.
+    self_fold = tmp_path / "seq_1_unrelaxed_rank_002_alphafold2_ptm_model_5_seed_000_apo_self.pdb"
+    self_fold.write_text("ATOM\n")
+    assert str(self_fold) not in colabfold_model_siblings(made[0])
+
+
+def test_a_single_model_backend_is_the_one_element_case_not_a_special_case(tmp_path):
+    """ESMFold and ESMFold2 return one structure, and the reduction has to be
+    identity for them rather than a branch every caller remembers to take."""
+    from proteinfoundation.metrics.folding_models import colabfold_model_siblings
+
+    esm = tmp_path / "esm_1_seed7.pdb_esm_apo_mpnn"
+    esm.write_text("ATOM\n")
+    assert colabfold_model_siblings(str(esm)) == [str(esm)]
+    assert colabfold_model_siblings(None) == []
+
+
+def test_the_ensemble_is_meaned_and_a_dead_model_is_dropped_not_counted(tmp_path):
+    """Mean, never best-of: the point of five models is that their disagreement
+    measures confidence, which a best-of discards. And a model that reported
+    nothing did not report a worse number -- folding NaN in as a zero would
+    report a confident prediction as a poor one."""
+    from proteinfoundation.evaluation.monomer_eval import _mean_over_models
+
+    assert _mean_over_models([0.4, 0.6]) == pytest.approx(0.5)
+    assert _mean_over_models([0.4, float("nan"), 0.6]) == pytest.approx(0.5), "dropped, not zeroed"
+    assert _mean_over_models([None, "x", 0.8]) == pytest.approx(0.8)
+    assert math.isnan(_mean_over_models([float("nan")])), "nothing finite stays unmeasured"
+    assert math.isnan(_mean_over_models([]))
+    assert _mean_over_models([0.9, 0.1]) != 0.9, "not a best-of"

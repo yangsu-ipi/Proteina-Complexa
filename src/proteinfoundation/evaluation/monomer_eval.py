@@ -15,6 +15,7 @@ Key design choices:
 See monomer_eval_utils.py for data classes and column name patterns.
 """
 
+import math
 import os
 import shutil
 from typing import Literal
@@ -47,7 +48,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
-from proteinfoundation.metrics.folding_models import read_fold_confidence
+from proteinfoundation.metrics.folding_models import colabfold_model_siblings, read_fold_confidence
 from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
@@ -299,6 +300,54 @@ def fold_sequences(
     return results
 
 
+def _mean_over_models(values) -> float:
+    """Mean of the models that produced a usable number, NaN if none did.
+
+    A model that reported nothing did not report a slightly worse value, so it is
+    dropped rather than folded in as a zero -- and a metric with nothing finite
+    behind it stays NaN, which every reader already treats as unmeasured. Same
+    rule reduce_rmsd_over_models applies on the holo side.
+    """
+    usable = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    return sum(usable) / len(usable) if usable else float("nan")
+
+
+def _rmsd_over_models(paths: list[str], ref_coors, ref_mask, rmsd_modes: list[str]) -> dict[str, float]:
+    """Each mode's RMSD, meaned over the predictions of one sequence.
+
+    Mean rather than the worst case, which is what the holo track reserves for
+    PLACEMENT metrics: there is no target here and nothing to be placed against,
+    so the spread between models is uncertainty about one structure rather than
+    disagreement about a location. It is also the reduction ESMFold2's seeds
+    already get from average_folds, which keeps the two apo backends comparable.
+
+    A structure that could not be read is skipped; inf only when none could, which
+    is the value the caller already uses for a fold that did not happen.
+    """
+    per_model: list[dict[str, float]] = []
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        folded_prot = load_pdb(path)
+        folded_coors = torch.tensor(folded_prot.atom_positions, dtype=torch.float32)
+        folded_mask = torch.tensor(folded_prot.atom_mask, dtype=torch.bool)
+        mask = ref_mask * folded_mask
+        per_model.append(
+            {
+                mode: rmsd_metric(
+                    coors_1_atom37=ref_coors,
+                    coors_2_atom37=folded_coors,
+                    mask_atom_37=mask,
+                    mode=mode,
+                )
+                for mode in rmsd_modes
+            }
+        )
+    if not per_model:
+        return {mode: float("inf") for mode in rmsd_modes}
+    return {mode: _mean_over_models(m[mode] for m in per_model) for mode in rmsd_modes}
+
+
 def compute_scrmsd_from_folded(
     reference_pdb_path: str,
     folding_results: dict[str, list[FoldingResult]],
@@ -354,29 +403,28 @@ def compute_scrmsd_from_folded(
                 continue
 
             folded_paths[model_name].append(result.pdb_path)
-            reported = read_fold_confidence(result.pdb_path)
+
+            # One entry per prediction of this sequence. For ESMFold and ESMFold2
+            # that is the one structure returned; for ColabFold it is all five AF2
+            # parameter sets, which ran anyway and whose disagreement is the point
+            # of having run them. Reducing over the set here rather than reporting
+            # the top-ranked one is the same rule the holo track applies in
+            # average_af2_stats -- a mean, never a best-of, because a best-of
+            # discards exactly the uncertainty five models were run to measure.
+            ensemble = colabfold_model_siblings(result.pdb_path)
             for name in MONOMER_CONFIDENCE_SUFFIXES:
-                confidence[model_name][name].append(float(reported.get(name, float("nan"))))
+                confidence[model_name][name].append(
+                    _mean_over_models(read_fold_confidence(path).get(name) for path in ensemble)
+                )
             # Read here because this is already the one place that opens every
             # folded structure. The backends write per-residue pLDDT into the
             # B-factor column, so it costs a parse of a file being parsed anyway.
-            plddt[model_name].append(mean_plddt_from_pdb(result.pdb_path))
+            plddt[model_name].append(_mean_over_models(mean_plddt_from_pdb(p) for p in ensemble))
 
             try:
-                folded_prot = load_pdb(result.pdb_path)
-                folded_coors = torch.tensor(folded_prot.atom_positions, dtype=torch.float32)
-                folded_mask = torch.tensor(folded_prot.atom_mask, dtype=torch.bool)
-                mask = ref_mask * folded_mask
-
+                per_mode = _rmsd_over_models(ensemble, ref_coors, ref_mask, rmsd_modes)
                 for mode in rmsd_modes:
-                    rmsd = rmsd_metric(
-                        coors_1_atom37=ref_coors,
-                        coors_2_atom37=folded_coors,
-                        mask_atom_37=mask,
-                        mode=mode,
-                    )
-                    rmsd_values[mode][model_name].append(rmsd)
-
+                    rmsd_values[mode][model_name].append(per_mode[mode])
             except Exception as e:
                 logger.error(f"Error computing RMSD for {result.pdb_path}: {e}")
                 for mode in rmsd_modes:

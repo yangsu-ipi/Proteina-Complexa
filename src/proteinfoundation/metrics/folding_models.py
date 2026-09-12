@@ -486,18 +486,19 @@ def _alphafold_missing_from(command: str) -> str | None:
     return None
 
 
-def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: str) -> None:
-    """Copy pTM and PAE out of ColabFold's own scores file into a sidecar.
+def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: str, rank: str) -> None:
+    """Copy pTM and PAE out of one ranked ColabFold prediction into sidecars.
 
-    ColabFold writes ``{job}_scores_rank_001_*.json`` beside the structure, with
-    ``ptm`` and the full ``pae`` matrix in Angstroms. Reading the rank-001 file
-    rather than any of them matters: the returned PDB is rank 001, and a
-    confidence from a different ranked model would describe a structure nobody
-    kept.
+    ColabFold writes ``{job}_scores_rank_{rank}_*.json`` beside each structure,
+    with ``ptm`` and the full ``pae`` matrix in Angstroms. Each rank gets its own
+    sidecar describing itself -- a confidence from a different ranked model would
+    describe a structure nobody looked at -- and its own PAE in the store, named
+    by the scores file that produced it, so a later ipSAE at a different cutoff
+    has all five matrices rather than one.
     """
-    matches = sorted(glob.glob(os.path.join(structures_dir, f"{seq_name}_scores_rank_001*.json")))
+    matches = sorted(glob.glob(os.path.join(structures_dir, f"{seq_name}_scores_rank_{rank}*.json")))
     if not matches:
-        logger.debug(f"No ColabFold scores file for {seq_name}; its pTM and PAE stay unmeasured")
+        logger.debug(f"No ColabFold rank-{rank} scores for {seq_name}; its pTM and PAE stay unmeasured")
         return
     try:
         with open(matches[0]) as handle:
@@ -507,6 +508,41 @@ def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: s
         return
     write_fold_confidence(pdb_path, ptm=scored.get("ptm"), pae=scored.get("pae"))
     save_pae(pdb_path, scored.get("pae"), backend="colabfold", model=os.path.basename(matches[0]))
+
+
+COLABFOLD_RANK_MARKER = "_rank_"
+
+
+def colabfold_model_siblings(pdb_path: str | None) -> list[str]:
+    """Every ranked prediction of the sequence *pdb_path* is one ranking of.
+
+    ColabFold runs five AF2 parameter sets per query -- ``--num-models`` defaults
+    to 5 and nothing here overrides it -- and names them
+    ``{job}_unrelaxed_rank_{rank}_alphafold2_ptm_model_{m}_seed_{s}.pdb``. Only
+    the rank is ordered; which model wins a rank varies per sequence, so the set
+    is found by rank rather than by model number. This is the colabfold analogue
+    of :func:`per_model_paths_from_first`, which cannot serve because the holo
+    side names its models ``_model{n}.pdb`` and the rank is not in the name.
+
+    Returns the siblings sorted by rank with *pdb_path* first, or ``[pdb_path]``
+    when the name is not ColabFold's or nothing else is on disk -- so a caller
+    can always reduce over what it gets back, and a single-model run is the
+    one-element case rather than a special case.
+    """
+    if not pdb_path or COLABFOLD_RANK_MARKER not in pdb_path or "_seed_" not in pdb_path:
+        return [pdb_path] if pdb_path else []
+    prefix = pdb_path.split(COLABFOLD_RANK_MARKER)[0]
+    # Every rank of one query shares the seed and the suffix this repo appended;
+    # only the rank and the model number differ.
+    ending = pdb_path[pdb_path.rindex("_seed_") :]
+    found = glob.glob(f"{prefix}{COLABFOLD_RANK_MARKER}*{ending}")
+    if not found:
+        return [pdb_path]
+
+    def rank_of(path: str) -> str:
+        return path.split(COLABFOLD_RANK_MARKER, 1)[1].split("_", 1)[0]
+
+    return sorted(set(found), key=rank_of)
 
 
 def run_colabfold(
@@ -595,29 +631,50 @@ def run_colabfold(
         logger.error(f"Unexpected error running ColabFold: {e!s}")
         raise RuntimeError(f"Unexpected error running ColabFold: {e!s}")
 
-    # Collect PDB file paths for rank_001 models in the original sequence order
+    # Every rank is kept, not only the winner. ColabFold runs five AF2 parameter
+    # sets per query by default and this pays for all five either way; keeping one
+    # threw away four predictions and four PAE matrices that had already been
+    # computed. The rank_001 path is what is RETURNED, so every caller sees the
+    # same contract it always did -- the rest are found beside it by
+    # colabfold_model_siblings, which is how the ensemble is later reduced.
+    structures_dir = f"{path_to_colabfold_out}/structures"
+    produced = sorted(os.listdir(structures_dir)) if os.path.isdir(structures_dir) else []
     pdb_file_paths = []
     for seq_name in seq_names:
-        found_pdb = False
-        for filename in os.listdir(f"{path_to_colabfold_out}/structures"):
-            if filename.startswith(seq_name) and "rank_001" in filename and filename.endswith(".pdb"):
-                pdb_path = f"{path_to_colabfold_out}/structures/{filename}"
-                if suffix:
-                    # Add suffix to the filename
-                    new_path = pdb_path.replace(".pdb", f"_{suffix}.pdb")
-                    shutil.copy(pdb_path, new_path)
-                    pdb_file_paths.append(new_path)
-                else:
-                    pdb_file_paths.append(pdb_path)
-                _record_colabfold_confidence(
-                    f"{path_to_colabfold_out}/structures", seq_name, pdb_file_paths[-1]
-                )
-                found_pdb = True
-                break
-
-        if not found_pdb:
-            logger.warning(f"No rank_001 PDB file found for sequence: {seq_name}")
+        ranked = sorted(
+            name
+            for name in produced
+            if name.startswith(f"{seq_name}_") and COLABFOLD_RANK_MARKER in name and name.endswith(".pdb")
+        )
+        if not ranked:
+            logger.warning(f"No PDB file found for sequence: {seq_name}")
             pdb_file_paths.append(None)
+            continue
+
+        winner = None
+        for filename in ranked:
+            rank = filename.split(COLABFOLD_RANK_MARKER, 1)[1].split("_", 1)[0]
+            pdb_path = os.path.join(structures_dir, filename)
+            if suffix:
+                kept = pdb_path.replace(".pdb", f"_{suffix}.pdb")
+                shutil.copy(pdb_path, kept)
+            else:
+                kept = pdb_path
+            # Each rank's own confidence and its own PAE, describing itself.
+            _record_colabfold_confidence(structures_dir, seq_name, kept, rank=rank)
+            if rank == "001":
+                winner = kept
+
+        if winner is None:
+            logger.warning(
+                f"ColabFold produced {len(ranked)} structures for {seq_name} but none ranked 001; "
+                f"reporting the first of them"
+            )
+            first = ranked[0]
+            winner = os.path.join(structures_dir, first)
+            if suffix:
+                winner = winner.replace(".pdb", f"_{suffix}.pdb")
+        pdb_file_paths.append(winner)
 
     # Clean up individual FASTA files directory
     if not keep_outputs:
