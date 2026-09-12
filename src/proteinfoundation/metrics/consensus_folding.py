@@ -75,6 +75,7 @@ from loguru import logger
 
 from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.ensembling import PAE_MAX_BIN, mean_chain_plddt
+from proteinfoundation.metrics.pae_store import save_pae
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 
@@ -242,6 +243,18 @@ def _score_esmfold2(
             os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
             results[best].complex.to_protein_complex().to_pdb(out_pdb_path)
             scored[best]["pdb_path"] = out_pdb_path
+            # The matrix every PAE-family column here is computed from, beside the
+            # structure it describes. Chain lengths in the order they were written
+            # -- targets first, binder last -- so a reader can split the interface
+            # block without opening the PDB.
+            save_pae(
+                out_pdb_path,
+                getattr(results[best], "pae", None),
+                chain_lengths=[len(x) for x in target_seqs] + [len(binder_seq)],
+                backend="esmfold2",
+                model=str(cfg.get("model_id") or ""),
+                seed=seed,
+            )
         except Exception as exc:
             # Not a warning. keep_folding_outputs asked for this file, and a
             # missing structure is what triggers the refold -- so swallowing the

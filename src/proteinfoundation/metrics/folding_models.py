@@ -14,6 +14,8 @@ from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
 from transformers.models.esm.openfold_utils.protein import Protein as OFProtein
 from transformers.models.esm.openfold_utils.protein import to_pdb
 
+from proteinfoundation.metrics.pae_store import save_pae
+
 hf_logging.set_verbosity_error()
 
 
@@ -228,6 +230,13 @@ def run_esmfold(
         recorded = confidences[i] if i < len(confidences) else {}
         if recorded:
             write_fold_confidence(fdir, ptm=recorded.get("ptm"), pae=recorded.get("pae"))
+            save_pae(
+                fdir,
+                recorded.get("pae"),
+                chain_lengths=[len(sequences[i])],
+                backend="esmfold",
+                model="facebook/esmfold_v1",
+            )
 
     if not keep_outputs:
         # Clean up individual FASTA files directory
@@ -335,6 +344,16 @@ def run_esmfold2(
         # What the folder knows and the PDB cannot carry. Same fields the advisory
         # complex path reads off a MolecularComplexResult.
         write_fold_confidence(fdir, ptm=getattr(single, "ptm", None), pae=getattr(single, "pae", None))
+        # And the matrix itself, so a later change to what is computed from it is
+        # a re-read rather than a refold.
+        save_pae(
+            fdir,
+            getattr(single, "pae", None),
+            chain_lengths=[len(sequences[i])],
+            backend="esmfold2",
+            model=model_id,
+            seed=seed,
+        )
         out_paths.append(fdir)
 
     if not keep_outputs:
@@ -446,6 +465,7 @@ def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: s
         logger.warning(f"Ignoring unusable ColabFold scores file {matches[0]}: {exc}")
         return
     write_fold_confidence(pdb_path, ptm=scored.get("ptm"), pae=scored.get("pae"))
+    save_pae(pdb_path, scored.get("pae"), backend="colabfold", model=os.path.basename(matches[0]))
 
 
 def run_colabfold(

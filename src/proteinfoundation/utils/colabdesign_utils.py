@@ -47,6 +47,7 @@ from proteinfoundation.metrics.ensembling import (
     average_af2_stats,
     mean_chain_plddt,
 )
+from proteinfoundation.metrics.pae_store import save_pae
 
 
 def get_af2_advanced_settings(num_af2_models: int = 1):
@@ -312,6 +313,20 @@ def predict_binder_complex(
             verbose=False,
         )
         prediction_model.save_pdb(complex_pdb)
+        # Per model, beside the structure that model produced. The PAE family --
+        # i_pAE, pAE, min_ipAE and the whole ipSAE set -- is computed from this
+        # matrix and from nothing else, so storing it is what makes a later change
+        # to any of them (a different ipSAE distance cutoff, say) a re-read
+        # instead of refolding the campaign. ColabDesign's get_pae returns the
+        # expected error in Angstroms, which is the unit the store keeps.
+        target_len = getattr(prediction_model, "_target_len", None)
+        save_pae(
+            complex_pdb,
+            prediction_model.aux.get("pae"),
+            chain_lengths=[target_len, len(binder_sequence)] if target_len else None,
+            backend="af2",
+            model=f"model{model_num + 1}",
+        )
         model_stats = af2_stats_from_metrics(copy_dict(prediction_model.aux["log"]))
         # Per-chain means come from the per-residue array rather than the PDB's
         # B-factor column: same numbers, no dependence on how save_pdb scales

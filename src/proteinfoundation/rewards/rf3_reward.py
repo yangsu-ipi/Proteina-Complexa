@@ -12,6 +12,7 @@ from loguru import logger
 
 from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
 from proteinfoundation.metrics.ipsae import complex_ipSAE
+from proteinfoundation.metrics.pae_store import save_pae
 from proteinfoundation.rewards.base_reward import BaseRewardModel, ensure_tensor, standardize_reward
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb
 
@@ -699,6 +700,12 @@ class RF3RewardRunner(BaseRewardModel):
                 pae_raw = full_conf.get("pae")
                 if pae_raw is not None:
                     pae_matrix = torch.tensor(pae_raw, dtype=torch.float32)
+                    # Beside the structure, in the compact store the other
+                    # backends use. RF3 already writes this matrix, but as JSON
+                    # text -- ~24x the bytes -- inside a file its own runner
+                    # owns and may clean up. Copying it out is what lets a later
+                    # ipSAE cutoff change re-read instead of re-predict.
+                    save_pae(cif_file, pae_matrix, backend="rf3")
                     ipsae_result = complex_ipSAE(
                         pae_matrix,
                         cif_file,
