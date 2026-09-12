@@ -35,7 +35,6 @@ class Result:
     def __init__(self, seqs=("AAAA",), rmsd=1.0, plddt=0.9):
         self.sequences = list(seqs)
         self.rmsd_values = {"esmfold": {"ca": [rmsd]}}
-        self.best_rmsd = rmsd
         self.folded_paths = []
         self.plddt = {"esmfold": [plddt]}
 
@@ -78,7 +77,9 @@ def test_growing_the_seed_count_keeps_what_is_already_there(tmp_path):
 
     got = read_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp, seeds=seeds)
     assert set(got) == set(seeds[:3]), "three present, two to compute"
-    assert [got[s]["best_rmsd"] for s in seeds[:3]] == [0.0, 1.0, 2.0], "and each is its own fold"
+    assert [got[s]["rmsd_values"]["esmfold"]["ca"][0] for s in seeds[:3]] == [0.0, 1.0, 2.0], (
+        "and each is its own fold"
+    )
 
     write_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp, Result(rmsd=3.0), False, seed=seeds[3], seed_index=3)
     grown = read_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp, seeds=seeds)
@@ -131,14 +132,14 @@ def test_a_schema_1_cache_is_adopted_rather_than_discarded(tmp_path):
     got = read_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp, seeds=seeds)
     assert legacy_seed in got or got == {}, "adopted under its own seed, or honestly reported as absent"
     if legacy_seed in seeds:
-        assert got[legacy_seed]["best_rmsd"] == 0.5
+        assert got[legacy_seed]["rmsd_values"]["esmfold"]["ca"][0] == 0.5
 
 
 def test_a_caller_not_asking_per_seed_still_gets_a_fold(tmp_path):
     """Callers not yet converted keep working against both schemas."""
     fp = "fingerprint"
     write_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp, Result(rmsd=1.5), False, seed=42, seed_index=0)
-    assert read_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp)["best_rmsd"] == 1.5
+    assert read_monomer_fold_cache(str(tmp_path), "apo_mpnn", fp)["rmsd_values"]["esmfold"]["ca"][0] == 1.5
 
 
 def test_an_all_nonfinite_result_is_still_not_cached(tmp_path):
@@ -910,7 +911,6 @@ def test_derive_for_result_does_not_redo_what_averaging_carried(tmp_path):
 
     result = DesignabilityResult(
         rmsd_values={"ca": {"esmfold2": [1.0]}},
-        best_rmsd={"ca": {"esmfold2": 1.0}},
         folded_paths={"esmfold2": ["a.pdb", "b.pdb", "c.pdb"]},
         sequences=["MKV"],
         derived={"esmfold2": {"binder_sasa": [20.0]}},
@@ -957,7 +957,6 @@ def test_one_builder_decides_what_a_fold_entry_records(tmp_path):
 
     scored = DesignabilityResult(
         rmsd_values={"ca": {"esmfold2": [1.0]}},
-        best_rmsd={"ca": {"esmfold2": 1.0}},
         folded_paths={"esmfold2": ["a.pdb"]},
         sequences=["MKV"],
     )
@@ -967,6 +966,6 @@ def test_one_builder_decides_what_a_fold_entry_records(tmp_path):
 
     # The keys the reducers and the cache both read, in one place.
     assert set(kept) == {
-        "sequences", "rmsd_values", "best_rmsd", "folded_paths",
+        "sequences", "rmsd_values", "folded_paths",
         "plddt", "confidence", "structures_kept",
-    }
+    }, "best_rmsd is gone: nothing read it, and _result_from_cache could KeyError on it"

@@ -49,7 +49,7 @@ from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
 from proteinfoundation.metrics.folding_models import colabfold_model_siblings, read_fold_confidence
-from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
 from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
@@ -103,7 +103,7 @@ def get_sequences_for_evaluation(
     binder_chain: str | None = None,
     mpnn_pdb_path: str | None = None,
     target_chains: list[str] | None = None,
-    inverse_folding_model: str = "protein_mpnn",
+    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
 ) -> list[str]:
     """
     Get sequences for structure prediction evaluation.
@@ -430,17 +430,9 @@ def compute_scrmsd_from_folded(
                 for mode in rmsd_modes:
                     rmsd_values[mode][model_name].append(float("inf"))
 
-    # Compute best RMSD for each mode/model
-    best_rmsd = {}
-    for mode in rmsd_modes:
-        best_rmsd[mode] = {}
-        for model_name in folding_results:
-            values = rmsd_values[mode][model_name]
-            best_rmsd[mode][model_name] = min(values) if values else float("inf")
 
     return DesignabilityResult(
         rmsd_values=rmsd_values,
-        best_rmsd=best_rmsd,
         folded_paths=folded_paths,
         plddt=plddt,
         confidence=confidence,
@@ -557,7 +549,6 @@ def _fill_missing_modes(entry: dict, rmsd_modes: list[str], reference_pdb_path: 
     logger.info(f"Cached refold lacked mode(s) {missing}; measured from {len(present)} kept structure(s)")
     filled = dict(entry)
     filled["rmsd_values"] = {**have, **extra.rmsd_values}
-    filled["best_rmsd"] = {**(entry.get("best_rmsd") or {}), **extra.best_rmsd}
     # The re-read opened every structure, so it also read the confidence sidecars:
     # a fold kept before those existed gains its pTM and PAE here without being
     # folded again, wherever the backend has since written one.
@@ -595,7 +586,6 @@ def _result_from_cache(
         logger.info(f"Reusing cached refold for {len(sequences)} sequence(s), modes {rmsd_modes}")
         return DesignabilityResult(
             rmsd_values={m: have[m] for m in rmsd_modes},
-            best_rmsd={m: cached["best_rmsd"][m] for m in rmsd_modes},
             folded_paths=paths,
             sequences=sequences,
             plddt=dict(cached.get("plddt") or {}),
@@ -701,9 +691,6 @@ def _fold_entry(scored, keep_outputs: bool) -> dict:
     return {
         "sequences": list(scored.sequences),
         "rmsd_values": scored.rmsd_values,
-        # Nothing reads this. Kept because _result_from_cache reconstructs from
-        # it and every cache on disk carries it; see the note there.
-        "best_rmsd": scored.best_rmsd,
         "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
         "plddt": scored.plddt,
         "confidence": scored.confidence,
@@ -725,7 +712,7 @@ def evaluate_self_consistency(
     reuse_cache: bool = True,
     mpnn_pdb_path: str | None = None,
     target_chains: list[str] | None = None,
-    inverse_folding_model: str = "protein_mpnn",
+    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
     n_esmfold2_seeds: int = 1,
     derive_structure_metrics: bool = False,
 ) -> DesignabilityResult:
@@ -1038,7 +1025,7 @@ def compute_monomer_metrics(
     # override included, so the two tracks cannot end up redesigning with
     # different models. redesign_model records the resolved value.
     inverse_folding_model = resolve_inverse_folding_model(
-        cfg_metric.get("inverse_folding_model", "protein_mpnn"), is_target_ligand
+        cfg_metric.get("inverse_folding_model", DEFAULT_INVERSE_FOLDING_MODEL), is_target_ligand
     )
 
     # Provenance for the designability numbers. Declared with the columns because

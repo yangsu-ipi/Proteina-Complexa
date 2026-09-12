@@ -23,7 +23,7 @@ from proteinfoundation.metrics.interface import (
     interface_residues as find_interface_residues,
 )
 from proteinfoundation.metrics.interface import resseqs, sequence_indices
-from proteinfoundation.metrics.inverse_folding_models import inverse_fold, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, inverse_fold, resolve_inverse_folding_model
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues_atomistic,
     replace_seq_in_generated_pdb,
@@ -256,7 +256,7 @@ def run_binder_eval(
     sequence_types: list[Literal["mpnn", "mpnn_fixed", "self"]] = ["self"],
     interface_cutoff: float = DEFAULT_INTERFACE_CUTOFF_PROTEIN,
     is_target_ligand: bool = False,
-    inverse_folding_model: str = "protein_mpnn",
+    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
     gen_target_chain: list[str] = None,  # If none, use target_pdb_chain as gen_target_chain
     binder_chain: str = None,  # If none, use the last chain id in the refolded complex
     num_redesign_seqs: int = None,  # If none, default to 8 for protein targets, 1 for ligand targets

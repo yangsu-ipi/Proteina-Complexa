@@ -39,7 +39,6 @@ BASE = dict(  # noqa: C408
 def result(values, sequences=("AAA",)):
     return DesignabilityResult(
         rmsd_values={"ca": {"esmfold": list(values)}},
-        best_rmsd={"ca": {"esmfold": min(values) if values else float("inf")}},
         folded_paths=[],
         sequences=list(sequences),
     )
@@ -221,7 +220,6 @@ def test_the_self_mismatch_guard_returns_what_the_caller_unpacks(monkeypatch, tm
         "evaluate_self_consistency",
         lambda **kwargs: DesignabilityResult(
             rmsd_values={"ca": {"esmfold2": [1.0]}},
-            best_rmsd={"ca": {"esmfold2": 1.0}},
             sequences=["WHAT THE PDB SAYS"],
             plddt={"esmfold2": [0.8]},
         ),
@@ -270,7 +268,6 @@ def test_adding_a_mode_reads_the_kept_structures_instead_of_refolding(monkeypatc
         seen["results"] = folding_results
         return DesignabilityResult(
             rmsd_values={m: {"esmfold2": [3.0, 4.0]} for m in rmsd_modes},
-            best_rmsd={m: {"esmfold2": 3.0} for m in rmsd_modes},
         )
 
     monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
@@ -297,7 +294,6 @@ def test_one_failed_fold_does_not_force_a_refold_of_the_rest(monkeypatch, tmp_pa
         seen["results"] = folding_results
         return DesignabilityResult(
             rmsd_values={m: {"esmfold2": [3.0, float("inf")]} for m in rmsd_modes},
-            best_rmsd={m: {"esmfold2": 3.0} for m in rmsd_modes},
         )
 
     monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
@@ -347,7 +343,6 @@ def test_a_new_mode_is_averaged_over_seeds_like_the_cached_one(monkeypatch, tmp_
         n = len(folding_results["esmfold2"])
         return DesignabilityResult(
             rmsd_values={m: {"esmfold2": [7.0] * n} for m in rmsd_modes},
-            best_rmsd={m: {"esmfold2": 7.0} for m in rmsd_modes},
         )
 
     monkeypatch.setattr(monomer_eval, "compute_scrmsd_from_folded", fake)
@@ -531,3 +526,35 @@ def test_backends_that_disagree_about_the_sequences_are_not_merged():
         }
     )
     assert set(merged["rmsd_values"]["ca"]) == {"esmfold2"}, "the disagreeing backend is dropped"
+
+
+def test_a_cache_written_before_best_rmsd_was_dropped_still_reads(tmp_path):
+    """best_rmsd was computed, cached, merged and reconstructed, and nothing ever
+    read its value -- compute_monomer_metrics takes its own min() over
+    rmsd_values for the _res_scRMSD_* columns. Worse than dead: _result_from_cache
+    indexed it per requested mode, so a value nobody used could KeyError a cache
+    read for a mode it happened to lack.
+
+    Removing it must not invalidate a campaign's caches. Every entry on disk
+    carries the key; it is now simply ignored."""
+    from proteinfoundation.evaluation.monomer_eval import _result_from_cache
+
+    legacy = {
+        "sequences": ["MKV"],
+        "rmsd_values": {"ca": {"esmfold2": [1.25]}},
+        # Written by a version that still recorded it.
+        "best_rmsd": {"ca": {"esmfold2": 1.25}},
+        "folded_paths": {"esmfold2": [None]},
+        "plddt": {"esmfold2": [0.8]},
+        "confidence": {"esmfold2": {"pTM": [0.5], "pAE": [0.2]}},
+        "structures_kept": False,
+    }
+    result = _result_from_cache(legacy, ["ca"], str(tmp_path / "ref.pdb"))
+    assert result is not None, "an old entry must still rebuild"
+    assert result.rmsd_values["ca"]["esmfold2"] == [1.25]
+    assert not hasattr(result, "best_rmsd"), "and the field is gone from the result"
+
+    # The mode that used to raise: present in rmsd_values, absent from best_rmsd.
+    lopsided = dict(legacy, rmsd_values={"ca": {"esmfold2": [1.25]}, "bb3": {"esmfold2": [1.4]}})
+    rebuilt = _result_from_cache(lopsided, ["ca", "bb3"], str(tmp_path / "ref.pdb"))
+    assert rebuilt is not None and rebuilt.rmsd_values["bb3"]["esmfold2"] == [1.4]

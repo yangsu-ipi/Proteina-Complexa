@@ -80,6 +80,17 @@ REDESIGN_SCORE_KIND = {
 }
 
 
+# One inverse folder for every track. SolubleMPNN is ProteinMPNN retrained
+# without membrane proteins, so it does not decorate a de novo design with the
+# hydrophobic surface a membrane environment would justify -- which is the wrong
+# prior for something meant to be expressed and purified. Named once rather than
+# defaulted per call site: designability, codesignability and the binder track
+# redesign the SAME backbone, and three defaults are three chances for one of
+# them to redesign it differently from the others while the config names a single
+# model. A ligand target still overrides to LigandMPNN below.
+DEFAULT_INVERSE_FOLDING_MODEL = "soluble_mpnn"
+
+
 def resolve_inverse_folding_model(configured: str, is_target_ligand: bool) -> str:
     """The inverse folder a run will actually use.
 

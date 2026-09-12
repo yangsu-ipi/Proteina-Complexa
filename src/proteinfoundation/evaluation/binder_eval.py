@@ -70,7 +70,7 @@ from proteinfoundation.metrics.consensus_folding import (
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
 from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF, INTERFACE_DERIVATION_VERSION
-from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.metrics.tmol_interface import tmol_interface_metrics
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -495,7 +495,7 @@ def compute_binder_metrics(
     # convention to read them by. Recording the configured value would name the
     # wrong model and, worse, the wrong sort direction.
     inverse_folding_model = resolve_inverse_folding_model(
-        cfg_metric.get("inverse_folding_model", "protein_mpnn"), is_target_ligand
+        cfg_metric.get("inverse_folding_model", DEFAULT_INVERSE_FOLDING_MODEL), is_target_ligand
     )
 
     # No ranking here. metric.ranking_criteria moved to aggregation.ranking_criteria,

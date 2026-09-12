@@ -72,7 +72,6 @@ class DesignabilityResult:
     """Full-structure scRMSD values from fold-and-compare (monomer evaluation)."""
 
     rmsd_values: dict[str, dict[str, list[float]]]  # mode -> model -> list of rmsds
-    best_rmsd: dict[str, dict[str, float]]  # mode -> model -> best rmsd
     # {model: [path or None per sequence]}. Keyed, because a flat list cannot say
     # which structure belongs to which sequence or which model, and anything read
     # off these structures needs both.
@@ -572,12 +571,11 @@ def merge_model_folds(per_model: dict[str, dict]) -> dict:
         return {}
 
     merged: dict = {"sequences": sequences or []}
-    for keyed_by_mode in ("rmsd_values", "best_rmsd"):
-        by_mode: dict[str, dict] = {}
-        for entry in usable.values():
-            for mode, by_model in (entry.get(keyed_by_mode) or {}).items():
-                by_mode.setdefault(mode, {}).update(by_model)
-        merged[keyed_by_mode] = by_mode
+    by_mode: dict[str, dict] = {}
+    for entry in usable.values():
+        for mode, by_model in (entry.get("rmsd_values") or {}).items():
+            by_mode.setdefault(mode, {}).update(by_model)
+    merged["rmsd_values"] = by_mode
     for keyed_by_model in ("plddt", "confidence", "folded_paths", "derived"):
         combined: dict = {}
         for entry in usable.values():
@@ -930,7 +928,6 @@ def write_monomer_fold_cache(
     entry = {
         "sequences": list(result.sequences),
         "rmsd_values": result.rmsd_values,
-        "best_rmsd": result.best_rmsd,
         "folded_paths": {m: list(v) for m, v in (result.folded_paths or {}).items()} if keep_outputs else {},
         "plddt": result.plddt,
         "confidence": getattr(result, "confidence", {}) or {},
