@@ -592,6 +592,32 @@ def test_the_reduction_rule_is_derivation_not_structure():
     assert "geometry_reduction=GEOMETRY_REDUCTION_VERSION" in derivation
 
 
+def test_the_atom_mask_fix_invalidates_the_numbers_it_changed():
+    """A correctness fix to a derived metric is only half a fix while a cache can
+    still serve the old value. `calculate_prot_prot_binder_rmsd` measured absent
+    side-chain slots as atoms at the origin; correcting the mask moved
+    binder_scRMSD_allatom from 0.475 to 1.006 on one AF2 design and from 11.505 to
+    1.177 on an ESMFold2 one -- and shipped without bumping the constant that says
+    a cached number means something else now, so a re-run of a cached campaign
+    would have matched the derivation fingerprint and served the old values back.
+
+    This pins the version against the fix rather than the arithmetic, which no
+    test can check: the mask lives in binder_metrics and the constant in
+    ensembling, and nothing but this connects them."""
+    from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
+
+    assert GEOMETRY_REDUCTION_VERSION >= 3, (
+        "bump GEOMETRY_REDUCTION_VERSION when a change alters what a cached "
+        "geometry number means -- the mask fix is version 3"
+    )
+    body = _read("src/proteinfoundation/metrics/binder_metrics.py").split(
+        "def calculate_prot_prot_binder_rmsd"
+    )[1][:6000]
+    assert "gen_binder_mask & refolded_binder_mask" in body, (
+        "the real-atom intersection is what version 3 records the arrival of"
+    )
+
+
 def test_a_stale_derivation_recomputes_instead_of_refolding():
     """The whole point of the split. A cache whose structures match but whose
     numbers came from another rule must be refreshed, not thrown away."""

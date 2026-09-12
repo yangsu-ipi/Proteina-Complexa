@@ -131,7 +131,18 @@ PLACEMENT_METRICS = frozenset(
 # Bumped when a reduction rule changes what a cached number means. Rides in the
 # binder eval fingerprint: the structures on disk stay valid, the numbers derived
 # from them do not.
-GEOMETRY_REDUCTION_VERSION = 2
+#
+# 3: the atom37 mask. calculate_prot_prot_binder_rmsd passed torch.ones as
+# mask_atom_37, so every absent side-chain slot -- padded to NaN and then to the
+# origin by the atom37 encoding -- was measured as an atom at (0,0,0). The mask
+# is the real-atom intersection now, which moves binder_scRMSD_allatom by more
+# than the metric's whole useful range: 0.475 to 1.006 on one AF2 design, 11.505
+# to 1.177 on an ESMFold2 one. The fix landed without this bump, so a re-run of a
+# cached campaign matched the derivation fingerprint and served the old numbers
+# back -- the silent-stale-cache case this constant exists to prevent, in the one
+# family it had just been proven wrong for. Re-derives from kept structures; no
+# refolding.
+GEOMETRY_REDUCTION_VERSION = 3
 
 
 def reduce_rmsd_over_models(per_model: list[dict]) -> dict:
