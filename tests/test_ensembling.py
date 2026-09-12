@@ -1005,3 +1005,81 @@ def test_the_advisory_and_generated_structures_answer_the_same_four():
     assert from_eval is TMOL_METRIC_COLS, "re-exported, not restated"
     assert tuple(TMOL_METRIC_COLS) == CONSENSUS_TMOL_SUFFIXES
     assert all(col.endswith("_tmol") for col in TMOL_METRICS.values())
+
+
+# ---------------------------------------------------------------------------
+# ColabFold lives in its own conda environment, because its [alphafold] extra
+# downgrades absl-py, biopython and chex and pins a jax a Blackwell card cannot
+# use -- none of which may reach the environment the primary AF2 refold runs in.
+# ---------------------------------------------------------------------------
+
+
+def test_the_colabfold_binary_can_be_named_rather_than_found_on_path(monkeypatch):
+    """Complexa cannot `conda activate` a second environment mid-process, and
+    prepending that env's bin to PATH would shadow `python` itself. It is a
+    subprocess, so an absolute path is enough."""
+    from proteinfoundation.metrics.folding_models import colabfold_batch_command
+
+    monkeypatch.delenv("COLABFOLD_EXEC_PATH", raising=False)
+    assert colabfold_batch_command() == "colabfold_batch"
+
+    monkeypatch.setenv("COLABFOLD_EXEC_PATH", "/data/shared/miniforge3/envs/colabfold/bin/colabfold_batch")
+    assert colabfold_batch_command().endswith("envs/colabfold/bin/colabfold_batch")
+
+
+def test_a_complete_param_store_without_the_sentinel_is_flagged(tmp_path, monkeypatch):
+    """ColabFold skips its 3.47 GB download only if params/download_finished.txt
+    exists. The Complexa parameter tree is writable, so without the sentinel the
+    download quietly succeeds and duplicates weights already on disk -- once per
+    box, unnoticed until a disk fills."""
+    from proteinfoundation.metrics.folding_models import colabfold_data_dir
+
+    params = tmp_path / "params"
+    params.mkdir()
+    for i in (1, 2, 3, 4, 5):
+        (params / f"params_model_{i}_ptm.npz").write_text("x")
+    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+    # A loguru sink, not caplog: this codebase logs through loguru, which does not
+    # propagate to the stdlib logging caplog hooks into.
+    from loguru import logger
+
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        assert colabfold_data_dir(str(tmp_path)) == str(tmp_path)
+        assert any("download_finished.txt" in m for m in seen), (
+            "the fix has to be named, not just the problem"
+        )
+
+        # With the sentinel there is nothing to say.
+        seen.clear()
+        (params / "download_finished.txt").write_text("")
+        colabfold_data_dir(str(tmp_path))
+        assert not any("download_finished.txt" in m for m in seen)
+    finally:
+        logger.remove(sink)
+
+
+def test_an_incomplete_store_is_not_declared_finished(tmp_path, monkeypatch):
+    """The same guard the install script uses: marking an incomplete store as
+    finished would make ColabFold skip the download it actually needs."""
+    from proteinfoundation.metrics.folding_models import colabfold_data_dir
+
+    params = tmp_path / "params"
+    params.mkdir()
+    (params / "params_model_1_ptm.npz").write_text("x")
+    (params / "params_model_2.npz").write_text("x")
+    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+    from loguru import logger
+
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        colabfold_data_dir(str(tmp_path))
+    finally:
+        logger.remove(sink)
+    assert not any("download_finished.txt" in m for m in seen), "nothing to advise about a partial store"

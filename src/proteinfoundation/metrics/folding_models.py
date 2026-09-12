@@ -433,6 +433,7 @@ def colabfold_data_dir(cache_dir: str | None = None) -> str:
         if value:
             resolved = os.path.expanduser(value)
             if glob.glob(os.path.join(resolved, "params", "params_model_*.npz")):
+                _warn_if_download_would_retrigger(resolved)
                 return resolved
     for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR"), os.environ.get("CACHE_DIR")):
         if value:
@@ -443,6 +444,57 @@ def colabfold_data_dir(cache_dir: str | None = None) -> str:
         "Set COLABFOLD_DATA_DIR, or AF2_DIR to the tree build_blackwell.sh creates at "
         "community_models/ckpts/AF2, or CACHE_DIR to a writable directory to download into."
     )
+
+
+def _warn_if_download_would_retrigger(data_dir: str) -> None:
+    """Say so when a complete parameter store lacks ColabFold's success sentinel.
+
+    ColabFold's download step is skipped only if ``params/download_finished.txt``
+    exists. Without it, every ``colabfold_batch`` re-triggers a 3.47 GB download:
+    into a read-only store that dies with PermissionError, and into a writable
+    one -- which the Complexa tree is -- it quietly succeeds, duplicating weights
+    that were already there, once per box and unnoticed until a disk fills.
+
+    Warned rather than fixed here. Creating the file would have this library
+    write into a shared model store, and provisioning belongs to
+    ``_install/install-colabfold.sh``, which creates the same sentinel under the
+    same guard: only when all five ptm sets are present, so an incomplete store
+    is never marked finished.
+    """
+    params = os.path.join(data_dir, "params")
+    if os.path.exists(os.path.join(params, "download_finished.txt")):
+        return
+    complete = all(
+        os.path.getsize(os.path.join(params, f"params_model_{i}_ptm.npz")) > 0
+        if os.path.exists(os.path.join(params, f"params_model_{i}_ptm.npz"))
+        else False
+        for i in (1, 2, 3, 4, 5)
+    )
+    if not complete:
+        return
+    logger.warning(
+        f"{params} holds all five AF2 ptm parameter sets but no download_finished.txt, so "
+        f"colabfold_batch will re-download 3.47 GB over them. Create the sentinel once: "
+        f"touch {params}/download_finished.txt"
+    )
+
+
+def colabfold_batch_command() -> str:
+    """The ``colabfold_batch`` to run, honouring ``COLABFOLD_EXEC_PATH``.
+
+    ColabFold lives in its OWN conda environment by design -- installed by
+    ``_install/install-colabfold.sh`` into ``envs/colabfold`` -- because its
+    ``[alphafold]`` extra downgrades absl-py, biopython and chex, and pins a jax
+    that a Blackwell card cannot use. None of that may reach the environment
+    Complexa's primary AF2 refold runs in.
+
+    Complexa cannot ``conda activate`` a second environment mid-process, and it
+    does not need to: this is a subprocess, so an absolute path to the other
+    env's binary is enough. Named for the executable the way ``RF3_EXEC_PATH``
+    is, rather than relying on PATH -- prepending another env's bin directory
+    would shadow ``python`` itself.
+    """
+    return os.environ.get("COLABFOLD_EXEC_PATH") or "colabfold_batch"
 
 
 def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: str) -> None:
@@ -511,7 +563,8 @@ def run_colabfold(
 
     # Run ColabFold batch on the directory containing individual FASTA files
     batch_command = (
-        f"colabfold_batch {fasta_dir} {path_to_colabfold_out}/structures --msa-mode single_sequence --data {data_dir}"
+        f"{colabfold_batch_command()} {fasta_dir} {path_to_colabfold_out}/structures "
+        f"--msa-mode single_sequence --data {data_dir}"
     )
     if relax:
         batch_command = batch_command + " --num-relax 1 --use-gpu-relax"
