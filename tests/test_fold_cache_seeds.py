@@ -916,3 +916,57 @@ def test_derive_for_result_does_not_redo_what_averaging_carried(tmp_path):
         derived={"esmfold2": {"binder_sasa": [20.0]}},
     )
     assert derive_for_result(result) == {"esmfold2": {"binder_sasa": [20.0]}}
+
+
+def test_both_refold_tracks_measure_through_one_function():
+    """apo_refold and evaluate_self_consistency ask different questions of
+    different sequences, and answer them identically: same seeds, same folder,
+    same RMSD against the same designed backbone, same cache. They used to do it
+    through two copies of one loop, and the copies drifted twice --
+
+      one derived structure metrics per seed and the other after averaging,
+      which cost self_apo_esmfold2 six columns;
+
+      only one recorded structures_kept, so a fresh apo entry claimed its
+      structures were gone.
+
+    Both are the same failure: an entry that means one thing on one path and
+    another on the other. Pinned here because the duplication is what will grow
+    back, not the individual bugs."""
+    import inspect
+
+    from proteinfoundation.evaluation import binder_eval
+    from proteinfoundation.evaluation.monomer_eval import evaluate_self_consistency
+
+    apo = inspect.getsource(binder_eval.apo_refold)
+    esc = inspect.getsource(evaluate_self_consistency)
+    for source, who in ((apo, "apo_refold"), (esc, "evaluate_self_consistency")):
+        assert "fold_and_measure_seeds(" in source, f"{who} must measure through the shared loop"
+        assert "compute_scrmsd_from_folded(" not in source, f"{who} re-implements the measurement"
+        assert "write_monomer_fold_cache(" not in source, f"{who} writes the cache itself"
+
+
+def test_one_builder_decides_what_a_fold_entry_records(tmp_path):
+    """structures_kept was set by evaluate_self_consistency and by the cache
+    writer, but NOT by apo_refold's in-memory entry -- so the same seed meant
+    'structures are on disk' when read back and 'they are gone' when just
+    folded, and average_folds turned one fresh seed into a merged entry that
+    could never fill a new RMSD mode from the structures it had kept."""
+    from proteinfoundation.evaluation.monomer_eval import _fold_entry
+    from proteinfoundation.evaluation.monomer_eval_utils import DesignabilityResult
+
+    scored = DesignabilityResult(
+        rmsd_values={"ca": {"esmfold2": [1.0]}},
+        best_rmsd={"ca": {"esmfold2": 1.0}},
+        folded_paths={"esmfold2": ["a.pdb"]},
+        sequences=["MKV"],
+    )
+    kept = _fold_entry(scored, keep_outputs=True)
+    assert kept["structures_kept"] is True
+    assert _fold_entry(scored, keep_outputs=False)["structures_kept"] is False
+
+    # The keys the reducers and the cache both read, in one place.
+    assert set(kept) == {
+        "sequences", "rmsd_values", "best_rmsd", "folded_paths",
+        "plddt", "confidence", "structures_kept",
+    }

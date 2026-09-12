@@ -617,6 +617,100 @@ def _result_from_cache(
     return None
 
 
+def fold_and_measure_seeds(
+    *,
+    sequences: list[str],
+    reference_pdb_path: str,
+    output_dir: str,
+    name: str,
+    suffix: str,
+    model: str,
+    fingerprint: str,
+    seeds: list[int],
+    rmsd_modes: list[str],
+    keep_outputs: bool,
+    stored: dict[int, dict] | None = None,
+    fold_cache_dir: str | None = None,
+    what: str = "seeds",
+) -> dict[int, dict]:
+    """One backend's per-seed folds for one design: reuse, fold, measure, cache.
+
+    The measurement half of both refold tracks. Codesignability/designability
+    (:func:`evaluate_self_consistency`) and the apo track
+    (:func:`~proteinfoundation.evaluation.binder_eval.apo_refold`) ask different
+    questions of different sequences, but they answer them the same way -- same
+    seeds, same folder, same RMSD against the same designed backbone, same cache
+    -- and they used to do it through two copies of this loop.
+
+    The copies had already drifted twice. One derived structure metrics per seed
+    and the other after averaging, which cost self_apo_esmfold2 six columns until
+    it was found; and only one recorded ``structures_kept``, so a fresh apo entry
+    claimed its structures were gone and could never fill a newly requested RMSD
+    mode from them. Both are the same bug: an entry that means one thing on one
+    path and another thing on the other. One builder, one meaning.
+
+    Returns ``{seed: entry}``. *stored* is what a cache read already produced;
+    seeds found there are passed through untouched.
+    """
+    per_seed: dict[int, dict] = {seed: stored[seed] for seed in seeds if stored and seed in stored}
+    if per_seed and len(per_seed) < len(seeds):
+        logger.info(f"{len(per_seed)}/{len(seeds)} {what} cached for {name} ({model}); folding the rest")
+
+    for seed in seeds:
+        if seed in per_seed:
+            continue
+        folded = fold_sequences(
+            sequences=sequences,
+            output_dir=output_dir,
+            name=name,
+            folding_models=[model],
+            suffix=suffix,
+            cache_dir=fold_cache_dir,
+            keep_outputs=keep_outputs,
+            seed=seed,
+        )
+        scored = compute_scrmsd_from_folded(
+            reference_pdb_path=reference_pdb_path,
+            folding_results=folded,
+            rmsd_modes=rmsd_modes,
+        )
+        scored.sequences = sequences
+        write_monomer_fold_cache(
+            output_dir,
+            suffix,
+            fingerprint,
+            scored,
+            keep_outputs,
+            seed=seed,
+            seed_index=seeds.index(seed),
+            name=name,
+            model=model,
+        )
+        per_seed[seed] = _fold_entry(scored, keep_outputs)
+    return per_seed
+
+
+def _fold_entry(scored, keep_outputs: bool) -> dict:
+    """One seed's fold as the caches and reducers expect it.
+
+    The same shape :func:`write_monomer_fold_cache` persists, built in one place
+    so an in-memory entry and the one read back from disk cannot disagree about
+    what a fold recorded -- which is how an apo entry came to lack
+    ``structures_kept`` while its own cache file carried it.
+    """
+    return {
+        "sequences": list(scored.sequences),
+        "rmsd_values": scored.rmsd_values,
+        # Nothing reads this. Kept because _result_from_cache reconstructs from
+        # it and every cache on disk carries it; see the note there.
+        "best_rmsd": scored.best_rmsd,
+        "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
+        "plddt": scored.plddt,
+        "confidence": scored.confidence,
+        "structures_kept": bool(keep_outputs),
+    }
+
+
 def evaluate_self_consistency(
     pdb_path: str,
     output_dir: str,
@@ -785,47 +879,20 @@ def evaluate_self_consistency(
         # A deterministic folder gets one seed however many a sampler beside it
         # wants -- which is only expressible once the seeds are derived per model.
         seeds = _fold_seeds(name, suffix, sequences, [model], n_esmfold2_seeds)
-        per_seed: dict[int, dict] = {}
-        for seed in seeds:
-            if seed in stored:
-                per_seed[seed] = stored[seed]
-                continue
-            folding_results = fold_sequences(
-                sequences=sequences,
-                output_dir=output_dir,
-                name=name,
-                folding_models=[model],
-                suffix=suffix,
-                cache_dir=cache_dir,
-                keep_outputs=keep_outputs,
-                seed=seed,
-            )
-            scored = compute_scrmsd_from_folded(
-                reference_pdb_path=pdb_path,
-                folding_results=folding_results,
-                rmsd_modes=rmsd_modes,
-            )
-            scored.sequences = sequences
-            write_monomer_fold_cache(
-                output_dir,
-                suffix,
-                fingerprints[model],
-                scored,
-                keep_outputs,
-                seed=seed,
-                seed_index=seeds.index(seed),
-                model=model,
-            )
-            per_seed[seed] = {
-                "sequences": list(scored.sequences),
-                "rmsd_values": scored.rmsd_values,
-                "best_rmsd": scored.best_rmsd,
-                "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
-                "plddt": scored.plddt,
-                "confidence": scored.confidence,
-                "structures_kept": bool(keep_outputs),
-            }
-        per_model_seeds[model] = per_seed
+        per_model_seeds[model] = fold_and_measure_seeds(
+            sequences=sequences,
+            reference_pdb_path=pdb_path,
+            output_dir=output_dir,
+            name=name,
+            suffix=suffix,
+            model=model,
+            fingerprint=fingerprints[model],
+            seeds=seeds,
+            rmsd_modes=rmsd_modes,
+            keep_outputs=keep_outputs,
+            stored=stored,
+            fold_cache_dir=cache_dir,
+        )
 
     result = _result_from_model_folds(
         per_model_seeds, rmsd_modes, pdb_path, derive=derive_structure_metrics

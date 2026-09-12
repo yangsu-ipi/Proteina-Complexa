@@ -56,7 +56,6 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     derive_for_result,
     per_model_confidence,
     refresh_monomer_derivation,
-    write_monomer_fold_cache,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
@@ -283,9 +282,8 @@ def apo_refold(
     the same distinction: unmeasured rather than bad.
     """
     from proteinfoundation.evaluation.monomer_eval import (
-        compute_scrmsd_from_folded,
         evaluate_self_consistency,
-        fold_sequences,
+        fold_and_measure_seeds,
     )
     from proteinfoundation.metrics.folding_models import folding_model_identity
     from proteinfoundation.utils.pdb_utils import pdb_name_from_path
@@ -373,50 +371,27 @@ def apo_refold(
             if reuse_cache
             else None
         )
-        per_seed = {seed: stored[seed] for seed in seeds if stored and seed in stored}
-        if len(per_seed) < len(seeds):
-            logger.info(
-                f"{len(per_seed)}/{len(seeds)} apo seeds cached for {name} ({model}); folding the rest"
-            )
-
-        for seed in seeds:
-            if seed in per_seed:
-                continue
-            folded = fold_sequences(
-                sequences=sequences,
-                output_dir=sample_root_path,
-                name=name,
-                folding_models=[model],
-                suffix=suffix,
-                cache_dir=None,
-                keep_outputs=keep_outputs,
-                seed=seed,
-            )
-            scored = compute_scrmsd_from_folded(
-                reference_pdb_path=binder_pdb_path,
-                folding_results=folded,
-                rmsd_modes=rmsd_modes,
-            )
-            scored.sequences = sequences
-            write_monomer_fold_cache(
-                sample_root_path,
-                suffix,
-                fingerprint,
-                scored,
-                keep_outputs,
-                seed=seed,
-                seed_index=seeds.index(seed),
-                name=name,
-                model=model,
-            )
-            per_seed[seed] = {
-                "sequences": list(scored.sequences),
-                "rmsd_values": scored.rmsd_values,
-                "best_rmsd": scored.best_rmsd,
-                "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
-                "plddt": scored.plddt,
-                "confidence": scored.confidence,
-            }
+        # The same fold-and-measure the codesignability track runs, through the
+        # same function: these two ask different questions of different sequences
+        # and answer them identically, and two copies of this loop had already
+        # drifted twice.
+        per_seed = fold_and_measure_seeds(
+            sequences=sequences,
+            reference_pdb_path=binder_pdb_path,
+            output_dir=sample_root_path,
+            name=name,
+            suffix=suffix,
+            model=model,
+            fingerprint=fingerprint,
+            seeds=seeds,
+            rmsd_modes=rmsd_modes,
+            keep_outputs=keep_outputs,
+            stored=stored,
+            # The apo track never steered the weights cache; fold_sequences takes
+            # it for the backends that do.
+            fold_cache_dir=None,
+            what="apo seeds",
+        )
 
         # What the kept structures say about themselves, filled in on the run that
         # produced them rather than the one after. Re-reads PDBs, never refolds.
