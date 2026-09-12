@@ -239,3 +239,35 @@ def test_a_verdict_from_another_sequence_is_caught():
 
 def test_a_verdict_on_the_headline_sequence_passes():
     assert_headline_indices_agree(build_row(pass_idx=BEST), SEQ, BACKEND)
+
+
+def test_a_fresh_advisory_fold_is_derived_on_the_run_that_made_it(tmp_path, monkeypatch):
+    """The advisory scorer reports what the FOLDER knows -- pTM, PAE, the ipSAE
+    family -- and the entry filter keeps only those. Everything read off the
+    structure (buried area, shape complementarity, secondary structure, geometry
+    against the design) arrived absent, and the derivation pass ran only over
+    entries read from CACHE. So a fresh fold shipped NaN in all of them and
+    healed on the next run: the cache ended up correct while the CSV that run
+    wrote did not, and a campaign had to be evaluated twice to fill columns whose
+    structures were on disk the first time.
+
+    Verified on the EphA3 box before the fix: consensus_fold_cache_esmfold2.json
+    held binder_dSASA=812.928 and interface_sc=0.373 while the run's own
+    binder_results CSV carried [nan, nan] for both."""
+    import inspect
+
+    from proteinfoundation.metrics import consensus_folding
+
+    source = inspect.getsource(consensus_folding.score_binders)
+    derive_calls = source.count("_derive_into_scores(")
+    assert derive_calls >= 3, (
+        "one definition and two callers -- cached entries AND fresh folds; "
+        f"found {derive_calls} occurrences"
+    )
+    fresh_block = source.split("if pending:", 1)[-1]
+    assert "_derive_into_scores(fresh" in fresh_block, (
+        "the fresh folds must be derived before they are cached or returned"
+    )
+    cached_at = source.index("_derive_into_scores(scores")
+    fresh_at = source.index("_derive_into_scores(fresh")
+    assert cached_at < fresh_at, "cached entries first, then the folds this run just made"

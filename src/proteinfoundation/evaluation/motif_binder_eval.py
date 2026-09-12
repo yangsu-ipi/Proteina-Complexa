@@ -53,7 +53,8 @@ from proteinfoundation.evaluation.motif_eval import (
 )
 from proteinfoundation.evaluation.motif_eval_utils import MotifInfo
 from proteinfoundation.evaluation.utils import maybe_tqdm
-from proteinfoundation.metrics.column_names import rename
+from proteinfoundation.metrics.column_names import DEFAULT_COMPLEX_BACKEND, rename
+from proteinfoundation.result_analysis.binder_analysis_utils import complex_backend_of
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.utils.motif_utils import extract_motif_from_pdb
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb
@@ -379,6 +380,13 @@ def compute_motif_binder_metrics(
         ["mpnn_fixed", "self"] if is_target_ligand else ["self"],
     )
     show_progress = eval_config.get("show_progress", False)
+
+    # Which folder produced the complexes Phase 2 reads back. Taken from the
+    # frame Phase 1 just wrote rather than from config, for the reason the column
+    # exists at all: it is recorded per row, and a frame is the only thing that
+    # knows what actually ran. Falls back to the scheme's own default when the
+    # column is absent, which is what results predating it came from.
+    complex_backend = complex_backend_of(binder_df) or DEFAULT_COMPLEX_BACKEND
 
     # Pre-create _all columns as object dtype so df.at can store lists
     # (without this, assigning a list to a non-existent column via df.at

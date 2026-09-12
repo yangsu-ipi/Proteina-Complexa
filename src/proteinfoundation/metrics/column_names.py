@@ -203,7 +203,14 @@ def _split_seq_type(name: str) -> tuple[str | None, str]:
     return None, name
 
 
-def classify(old: str, complex_backend: str = "af2") -> tuple[str, str | None]:
+# The folder the old names meant without saying so: every {seq}_complex_* column
+# written before the backend got a slot came from AF2 by circumstance. Named once
+# rather than retyped at each default, so a reader can find every place the
+# assumption is made.
+DEFAULT_COMPLEX_BACKEND = "af2"
+
+
+def classify(old: str, complex_backend: str = DEFAULT_COMPLEX_BACKEND) -> tuple[str, str | None]:
     """``(rule, new_name)`` for one old column, where *rule* names why.
 
     *complex_backend* fills the slot the old names never had. It defaults to
@@ -258,7 +265,7 @@ def classify(old: str, complex_backend: str = "af2") -> tuple[str, str | None]:
     return "UNCLASSIFIED", old
 
 
-def rename(old: str, complex_backend: str = "af2") -> str | None:
+def rename(old: str, complex_backend: str = DEFAULT_COMPLEX_BACKEND) -> str | None:
     """The new name for an old column, or None if it is retired.
 
     Returns *old* unchanged for anything the scheme does not govern. Pure and
@@ -267,7 +274,7 @@ def rename(old: str, complex_backend: str = "af2") -> str | None:
     return classify(old, complex_backend)[1]
 
 
-def rename_map(columns, complex_backend: str = "af2") -> dict[str, str | None]:
+def rename_map(columns, complex_backend: str = DEFAULT_COMPLEX_BACKEND) -> dict[str, str | None]:
     """``{old: new}`` for the columns that change, with None for retired ones."""
     out: dict[str, str | None] = {}
     for column in columns:
@@ -293,7 +300,7 @@ def migrate_frame(frame, complex_backend: str | None = None):
     if not columns:
         return frame
     if complex_backend is None:
-        complex_backend = "af2"
+        complex_backend = DEFAULT_COMPLEX_BACKEND
         if "complex_folding_backend" in columns:
             present = {v for v in frame["complex_folding_backend"].dropna().unique()}
             if len(present) == 1:

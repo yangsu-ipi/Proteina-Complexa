@@ -1346,18 +1346,28 @@ def score_binders(
     # once the PDB is there, instead of staying blank forever behind a derivation
     # fingerprint that already matches -- and when a cutoff this run asks for is
     # one the entry has not been scored at.
-    if scores and cache_dir:
-        rederived: dict[str, dict[int, dict[str, float | str]]] = {}
+    def _derive_into_scores(subject: dict, stale: bool) -> tuple[dict, int, int]:
+        """Fill in what is read off the kept structures, re-reading not refolding.
+
+        Returns the entries that changed, plus the counts worth reporting. Shared
+        by the two callers that need it -- entries read from cache, and folds made
+        moments ago -- because a fresh fold that skips this ships NaN in every
+        derived column and only heals on the NEXT run. That is the failure
+        refresh_monomer_derivation names on the monomer side: "the difference
+        between a column being there and a campaign having to be evaluated twice
+        to populate it".
+        """
+        changed: dict[str, dict[int, dict[str, float | str]]] = {}
         failed = 0
         # Entries whose PAE family the stored matrix could not refresh. Only
         # interesting when the derivation moved: their folder-reported values
         # then answer the question the cutoffs used to ask, and no file on disk
         # can produce the new answer without predicting the complex again.
         unrefreshable_pae = 0
-        for seq, by_seed in scores.items():
+        for seq, by_seed in subject.items():
             for seed, metrics in by_seed.items():
                 complete = all(k in metrics for k in wanted_suffixes) and not missing_pae_cutoffs(metrics)
-                if not derivation_stale and complete:
+                if not stale and complete:
                     continue
                 pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, seed)
                 if not (isinstance(pdb, str) and os.path.exists(pdb)):
@@ -1373,7 +1383,7 @@ def score_binders(
                         # otherwise only what is genuinely absent is computed,
                         # which is what makes adding a cutoff cost a millisecond
                         # rather than a re-read of the structure.
-                        have={} if derivation_stale else metrics,
+                        have={} if stale else metrics,
                     )
                 except Exception as exc:
                     failed += 1
@@ -1395,7 +1405,11 @@ def score_binders(
                     usable[PAE_CUTOFF_KEY] = derived[PAE_CUTOFF_KEY]
                 if usable:
                     metrics.update(usable)
-                    rederived.setdefault(seq, {})[seed] = metrics
+                    changed.setdefault(seq, {})[seed] = metrics
+        return changed, failed, unrefreshable_pae
+
+    if scores and cache_dir:
+        rederived, failed, unrefreshable_pae = _derive_into_scores(scores, derivation_stale)
         if rederived:
             write_consensus_cache(cache_dir, backend, fingerprint, rederived, derivation=derivation)
             logger.info(
@@ -1463,6 +1477,16 @@ def score_binders(
                 if metrics.get("pdb_path"):
                     usable["pdb_path"] = metrics["pdb_path"]
                 fresh.setdefault(seq, {})[seed] = usable
+        # Read off the structures these folds just wrote, before they are cached
+        # or returned. The scorer reports what the FOLDER knows -- pTM, PAE, the
+        # ipSAE family -- and `usable` above keeps only those; everything read off
+        # the structure (buried area, shape complementarity, secondary structure,
+        # geometry against the design) arrives here absent. Deriving only in the
+        # cached-entry pass above meant a fresh fold shipped NaN in all of those
+        # and healed on the NEXT run, so a campaign had to be evaluated twice to
+        # fill columns whose structures were already on disk the first time.
+        if cache_dir:
+            _derive_into_scores(fresh, stale=False)
         for seq, by_seed in fresh.items():
             scores.setdefault(seq, {}).update(by_seed)
         if cache_dir and fresh:
