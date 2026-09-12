@@ -302,9 +302,23 @@ PYEOF
   # pyproject's dm-tree==0.1.8, and alphafold-colabfold==2.3.18 beside the vendored
   # colabdesign that carries this branch's jax-0.10 patches.
   #
-  # The four console scripts it installs (colabfold_batch, _relax, _search, _split_msas) will
-  # all fail at import without that extra. Nothing calls them; they are collateral.
+  # The four console scripts it installs (colabfold_batch, _relax, _search, _split_msas) all
+  # fail at import without that extra. They used to be harmless collateral -- nothing called
+  # them -- and that stopped being true when apo folding gained a colabfold backend: it runs
+  # `colabfold_batch` as a subprocess, and THIS env's broken shim is first on PATH. What the
+  # user then sees is ColabFold's own "alphafold is not installed. Please run `pip install
+  # colabfold[alphafold]`", which is the one instruction that must never be followed here --
+  # see the NEVER note above. So delete the shims and keep the library: console scripts are
+  # standalone files in bin/, unrelated to the package in site-packages, and `from
+  # colabfold.colabfold import run_mmseqs2` is unaffected. The folder that CAN fold lives in
+  # its own environment and is named by COLABFOLD_EXEC_PATH.
   "$PIP" install -c "$CONS" --no-deps colabfold==1.6.2
+  rm -f "$ENV_DIR/bin/colabfold_batch" "$ENV_DIR/bin/colabfold_relax" \
+        "$ENV_DIR/bin/colabfold_search" "$ENV_DIR/bin/colabfold_split_msas"
+  "$PY" -c "from colabfold.colabfold import run_mmseqs2" || {
+    echo "ERROR: removing the console scripts broke the one colabfold import this env needs." >&2
+    exit 1
+  }
   # Then give back the core deps --no-deps skipped, same as the accelerate/pydssp pair above.
   # These three are absent from the env and depend on nothing that is pinned, so they are pure
   # additions; matplotlib, numpy, pandas, requests and tqdm already satisfy their ranges. Adding
