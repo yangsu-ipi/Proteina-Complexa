@@ -449,17 +449,34 @@ def colabfold_data_dir(cache_dir: str | None = None) -> str:
 def _warn_if_download_would_retrigger(data_dir: str) -> None:
     """Say so when a complete parameter store lacks ColabFold's success sentinel.
 
-    ColabFold's download step is skipped only if ``params/download_finished.txt``
-    exists. Without it, every ``colabfold_batch`` re-triggers a 3.47 GB download:
-    into a read-only store that dies with PermissionError, and into a writable
-    one -- which the Complexa tree is -- it quietly succeeds, duplicating weights
-    that were already there, once per box and unnoticed until a disk fills.
+    What ``colabfold/download.py`` actually does for the ptm model type -- the one
+    a single-chain apo fold selects -- is: return early if
+    ``params/download_finished.txt`` exists; otherwise stream
+    ``alphafold_params_2021-07-14.tar`` straight into ``tarfile.open(mode="r|")``
+    and ``extractall`` into ``params/``, then touch the sentinel.
 
-    Warned rather than fixed here. Creating the file would have this library
-    write into a shared model store, and provisioning belongs to
-    ``_install/install-colabfold.sh``, which creates the same sentinel under the
-    same guard: only when all five ptm sets are present, so an incomplete store
-    is never marked finished.
+    So the cost is not a duplicate copy and not a disk that fills: the tar is
+    never written out, and the extract OVERWRITES in place. It is that an apo
+    fold would rewrite the parameter store the PRIMARY refold reads from,
+    replacing this tree's 2022-12-06 monomer and ptm sets -- 3.6 GB of the 5.3 GB
+    here -- with the 2021-07-14 release's files of the same names. The
+    multimer_v3 set ColabDesign actually loads is not in that tar and survives,
+    so today the blast radius is the apo weights; a shared mutable store that one
+    backend rewrites under another is the part worth avoiding on principle.
+
+    And it is once, not once per fold -- the sentinel is touched on success.
+    Per-fold forever is the read-only case, where the touch fails too; that is the
+    failure ``_install/install-colabfold.sh`` describes for the shared store.
+
+    The clean answer is to give ColabFold a store of its own via
+    COLABFOLD_DATA_DIR, which is what ``templates/colabfold.sbatch`` does with
+    ``--data /data/shared/models/af2-params``. The sentinel is the answer when
+    sharing this tree is deliberate.
+
+    Warned rather than fixed here: creating the file would have this library write
+    into a shared model store, and provisioning belongs to the install script,
+    which creates the same sentinel under the same guard -- only when all five ptm
+    sets are present, so an incomplete store is never marked finished.
     """
     params = os.path.join(data_dir, "params")
     if os.path.exists(os.path.join(params, "download_finished.txt")):
@@ -473,8 +490,10 @@ def _warn_if_download_would_retrigger(data_dir: str) -> None:
     if not complete:
         return
     logger.warning(
-        f"{params} holds all five AF2 ptm parameter sets but no download_finished.txt, so "
-        f"colabfold_batch will re-download 3.47 GB over them. Create the sentinel once: "
+        f"{params} holds all five AF2 ptm parameter sets but no download_finished.txt, so the "
+        f"first colabfold_batch will stream the 2021-07-14 AF2 release over them -- rewriting "
+        f"this store's monomer and ptm weights in place. Point ColabFold at its own store with "
+        f"COLABFOLD_DATA_DIR, or, if sharing this one is deliberate, create the sentinel once: "
         f"touch {params}/download_finished.txt"
     )
 
