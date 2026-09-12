@@ -9,6 +9,7 @@ aggregate statistics).  Domain-specific utilities live in their own
 
 import ast
 import os
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -121,6 +122,21 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
     than updating it, so a field absent here is dropped before any consumer sees
     it; that is why ``metric`` has to be threaded through explicitly.
     """
+    # Mapping and Sequence, not dict and list. A threshold written in a
+    # campaign's pipeline.yaml arrives as an omegaconf DictConfig (or ListConfig),
+    # and neither subclasses the builtin -- so `isinstance(spec, dict)` was False
+    # for every spec that came from a config file, the tuple branch did not match
+    # either, and the function raised "Invalid threshold specification" on a spec
+    # that was perfectly valid. It cost the EphA3 campaign both of its analyze
+    # stages, after generate and evaluate had run for 23 hours.
+    #
+    # Nothing caught it because the two campaigns that work declare no thresholds
+    # of their own: they fall back to DEFAULT_PROTEIN_BINDER_THRESHOLDS, which are
+    # Python literals and so genuinely dicts. Every docstring promising that a
+    # gate is "a threshold-dictionary entry rather than a code change" was
+    # describing something that could not be done.
+    if isinstance(spec, bool):
+        raise ValueError(f"Invalid threshold specification: {spec}")
     if isinstance(spec, (int, float)):
         return {
             "threshold": float(spec),
@@ -129,7 +145,7 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
             "column_prefix": "complex",
             "metric": None,
         }
-    elif isinstance(spec, dict):
+    elif isinstance(spec, Mapping):
         return {
             "threshold": float(spec.get("threshold", spec.get("value", 0.0))),
             "op": spec.get("op", spec.get("operator", "<=")),
@@ -137,7 +153,7 @@ def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
             "column_prefix": spec.get("column_prefix", "complex"),
             "metric": spec.get("metric"),
         }
-    elif isinstance(spec, (list, tuple)):
+    elif isinstance(spec, Sequence) and not isinstance(spec, (str, bytes)):
         return {
             "threshold": float(spec[0]),
             "op": spec[1] if len(spec) > 1 else "<=",

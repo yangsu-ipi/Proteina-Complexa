@@ -354,6 +354,92 @@ def test_metric_survives_parse_threshold_spec():
     assert parse_threshold_spec(2.0)["metric"] is None
 
 
+def test_a_threshold_written_in_a_campaign_config_parses():
+    """The bug that cost EphA3 both of its analyze stages, after generate and
+    evaluate had run for 23 hours.
+
+    Every spec above is a Python literal, so every spec above is a dict. A
+    threshold written in a campaign's pipeline.yaml is an omegaconf DictConfig,
+    which does NOT subclass dict -- so `isinstance(spec, dict)` was False, the
+    list/tuple branch did not match either, and the function raised "Invalid
+    threshold specification" on a spec that was entirely valid. The two campaigns
+    that work declare no thresholds of their own and fall back to the Python
+    defaults, which is why nothing caught it.
+
+    So this test builds its specs the way a config does, not the way a test
+    usually would."""
+    from omegaconf import OmegaConf
+
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    cfg = OmegaConf.create(
+        {
+            "success_thresholds": {
+                "complex_i_pAE": {
+                    "threshold": 7.0,
+                    "op": "<=",
+                    "scale": 31.0,
+                    "column_prefix": "complex",
+                    "metric": "i_pAE",
+                },
+                "as_a_list": [1.5, "<", 1.0, "binder"],
+            }
+        }
+    ).success_thresholds
+
+    assert not isinstance(cfg.complex_i_pAE, dict), "the thing under test is that this is not a dict"
+
+    parsed = parse_threshold_spec(cfg.complex_i_pAE)
+    assert parsed["threshold"] == 7.0
+    assert parsed["op"] == "<=" and parsed["scale"] == 31.0
+    assert parsed["column_prefix"] == "complex" and parsed["metric"] == "i_pAE"
+
+    # ListConfig is a Sequence and not a list, so the tuple form was broken the
+    # same way and by the same cause.
+    from_list = parse_threshold_spec(cfg.as_a_list)
+    assert from_list["threshold"] == 1.5 and from_list["op"] == "<"
+    assert from_list["scale"] == 1.0 and from_list["column_prefix"] == "binder"
+
+
+def test_a_string_is_not_a_threshold_sequence():
+    """Widening the tuple branch to Sequence catches str, which would parse
+    "7.0" character by character into a threshold of 7 and an op of ".". """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    with pytest.raises(ValueError):
+        parse_threshold_spec("7.0")
+    with pytest.raises(ValueError):
+        parse_threshold_spec(True)
+
+
+def test_by_backend_overrides_survive_coming_from_a_config():
+    """The quiet twin. expand_backend_thresholds tested for dict too, so a
+    by_backend spec from a config fell through its passthrough branch -- the
+    overrides never applied, and the base threshold gated every backend as though
+    they had not been written. No error, just the wrong gate."""
+    from omegaconf import OmegaConf
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import resolve_backend_overrides
+
+    thresholds = OmegaConf.create(
+        {
+            "i_pAE": {
+                "threshold": 7.0,
+                "op": "<=",
+                "scale": 31.0,
+                "by_backend": {"rf3": {"threshold": 9.0, "scale": 1.0}},
+            }
+        }
+    )
+    for_af2 = resolve_backend_overrides(thresholds, "af2")
+    for_rf3 = resolve_backend_overrides(thresholds, "rf3")
+
+    assert for_af2["i_pAE"]["threshold"] == 7.0, "the base rule"
+    assert "by_backend" not in for_af2["i_pAE"], "and the nested rules are consumed, not passed on"
+    assert for_rf3["i_pAE"]["threshold"] == 9.0, "the override applies"
+    assert for_rf3["i_pAE"]["scale"] == 1.0
+
+
 def test_a_criterion_without_a_metric_still_uses_its_key():
     """The ligand and motif dicts still rely on that, and are not being converted."""
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec

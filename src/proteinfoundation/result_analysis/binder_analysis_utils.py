@@ -10,6 +10,7 @@ This module contains:
 import ast
 import math
 import statistics
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -362,7 +363,13 @@ def resolve_backend_overrides(thresholds: dict, backend: str | None) -> dict:
     """
     out: dict = {}
     for name, spec in thresholds.items():
-        if not isinstance(spec, dict) or "by_backend" not in spec:
+        # Mapping, not dict: a spec from a campaign's pipeline.yaml is an
+        # omegaconf DictConfig, and testing for the builtin sent every one of
+        # them down the passthrough branch. That failure is the quiet twin of the
+        # one parse_threshold_spec raised -- by_backend would simply not apply,
+        # and the base threshold would gate every backend as though the overrides
+        # had never been written.
+        if not isinstance(spec, Mapping) or "by_backend" not in spec:
             out[name] = spec
             continue
         base = {k: v for k, v in spec.items() if k != "by_backend"}
