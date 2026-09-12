@@ -65,7 +65,6 @@ from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
     assert_columns_are_advisory,
-    assert_headline_indices_agree,
     available_backends,
     consensus_derived_suffixes,
     score_binders,
@@ -1168,10 +1167,15 @@ def compute_binder_metrics(
                             gated_columns(row_dict, seq_type, success_thresholds),
                             set(all_columns),
                         )
-                        # And that the headline they carry is the same sequence the
-                        # primary headline describes. Checked on the row, so a
-                        # future call site cannot reintroduce the mismatch quietly.
-                        assert_headline_indices_agree(row_dict, seq_type, backend_name)
+                        # The headline-agreement check does NOT belong here.
+                        # Evaluate emits per-sequence lists and no scalars at all,
+                        # so there is no headline yet for the advisory columns to
+                        # agree or disagree with; asserting it here compared every
+                        # scalar against None and reported, correctly but
+                        # uselessly, that no index explained a headline that did
+                        # not exist. analyze runs it once the headline is chosen
+                        # and the verdicts refreshed -- see
+                        # assert_frame_headline_indices_agree.
                         all_columns.extend(new_cols)
 
         results.append(row_dict)

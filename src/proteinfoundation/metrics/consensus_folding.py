@@ -77,7 +77,7 @@ from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.ensembling import PAE_MAX_BIN, mean_chain_plddt
 from proteinfoundation.metrics.pae_store import save_pae
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
-from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
+from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN, complex_backend_of
 
 # Metrics a backend may report. Named to mirror the primary backend's metrics so
 # a column-to-column comparison reads naturally, without reusing its prefix.
@@ -543,19 +543,62 @@ def advisory_column(seq_type: str, backend: str, metric_suffix: str) -> str:
     return f"{seq_type}_complex_{backend}_{metric_suffix}"
 
 
+def advisory_backends_in(columns, seq_type: str, complex_backend: str) -> list[str]:
+    """Advisory backends a frame carries columns for, read off the column names.
+
+    The alternative is threading ``consensus_backends`` from the config into
+    analyze, which would then describe the run's *request* rather than the
+    frame's *contents* -- and a pooled frame can hold runs that asked for
+    different backends. The names are this module's to parse.
+    """
+    prefix, suffix = f"{seq_type}_complex_", "_i_pAE"
+    found = set()
+    for column in columns:
+        if not (column.startswith(prefix) and column.endswith(suffix)):
+            continue
+        backend = column[len(prefix) : -len(suffix)]
+        # One slot: a backend name occupies exactly one, so anything with a
+        # separator in it is a metric that happens to end in i_pAE.
+        if backend and "_" not in backend and backend != complex_backend:
+            found.add(backend)
+    return sorted(found)
+
+
+def assert_frame_headline_indices_agree(df, seq_types: list[str]) -> None:
+    """Every row's headline describes one sequence, across both tracks.
+
+    Run after the headline is chosen and the verdicts refreshed: that is when the
+    invariant exists, and when the verdict -- the column most able to drift, since
+    it is re-derived downstream -- has been written.
+    """
+    complex_backend = complex_backend_of(df) or "af2"
+    for seq_type in seq_types:
+        for backend in advisory_backends_in(df.columns, seq_type, complex_backend):
+            for row in df.to_dict("records"):
+                assert_headline_indices_agree(row, seq_type, backend)
+
+
 def _agreeing_indices(row: dict, columns: list[str]) -> set[int] | None:
     """Indices at which every scalar equals its own ``_all`` entry.
 
-    None when there is nothing to check. NaN counts as agreeing with NaN: a
-    backend that failed writes NaN to both, and that is consistent, not a
-    mismatch.
+    None when there is nothing to check -- no ``_all`` lists, or no scalars beside
+    them. NaN counts as agreeing with NaN: a backend that failed writes NaN to
+    both, and that is consistent, not a mismatch.
     """
     candidates: set[int] | None = None
     for column in columns:
         values = row.get(f"{column}_all")
         if not isinstance(values, list):
             continue
-        scalar = row.get(column)
+        if column not in row:
+            # A column with no scalar makes no claim about which sequence the row
+            # describes, so it cannot disagree with one. Evaluate emits per-sequence
+            # lists and nothing else -- analyze builds the headline -- so at that
+            # point EVERY scalar is absent, and reading them as None made the
+            # function report that no index explained the headline. It was right
+            # that none did: there was no headline yet.
+            continue
+        scalar = row[column]
         here = {
             i
             for i, value in enumerate(values)
@@ -579,6 +622,11 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
     Checked on the row rather than at the point of assignment, because that is
     where the property has to hold: a future call site can reintroduce the bug
     with entirely different code and this still catches it.
+
+    Call it where headlines exist. Evaluate emits per-sequence lists and no
+    scalars at all, so there is nothing there for this to compare; the invariant
+    comes into being in :func:`pick_headline_sequence`, and that is where this
+    runs.
 
     Raises:
         ValueError: If no single index explains both sets of headlines.

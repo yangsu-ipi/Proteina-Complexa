@@ -12,6 +12,7 @@ it arises. Production runs the same check on the first design of every run.
 """
 
 import math
+import pathlib
 
 import pytest
 
@@ -117,6 +118,70 @@ def test_a_row_without_advisory_all_columns_is_not_flagged():
     re-analysing an old campaign must not fail on a row that simply has nothing
     to compare."""
     assert_headline_indices_agree(build_row(advisory_all=False), SEQ, BACKEND)
+
+
+def test_a_row_with_lists_but_no_headline_is_not_flagged():
+    """What evaluate produces, and what took down the EphA3 smoke run.
+
+    Evaluate emits per-sequence lists and NO scalars -- analyze builds the
+    headline -- so on an evaluate-time row every scalar is absent. Reading those
+    absences as None made the check report that no index explained the headline.
+    It was right that none did: there was no headline. A column with no scalar
+    makes no claim and cannot disagree with one."""
+    row = build_row()
+    lists_only = {k: v for k, v in row.items() if k.endswith("_all")}
+    assert lists_only, "the fixture must actually carry per-sequence lists"
+    assert not any(not k.endswith("_all") for k in lists_only)
+
+    assert_headline_indices_agree(lists_only, SEQ, BACKEND)
+
+
+def test_a_partly_built_headline_is_still_checked():
+    """The skip must be per column, not a blanket escape. One scalar present and
+    wrong is exactly the drift this exists to catch, and it must not be excused by
+    the scalars beside it being absent."""
+    row = build_row()
+    lists_only = {k: v for k, v in row.items() if k.endswith("_all")}
+    primary = rename(f"{SEQ}_complex_i_pAE", "af2")
+    # Present, and equal to no entry of its own list.
+    lists_only[primary] = 99.0
+    lists_only[COMPLEX_BACKEND_COLUMN] = "af2"
+    with pytest.raises(ValueError, match="No single sequence"):
+        assert_headline_indices_agree(lists_only, SEQ, BACKEND)
+
+
+def test_the_check_runs_where_the_headline_exists():
+    """A guard at a call site that can never exercise it is the failure this
+    function's own docstring records having had. It is called from analyze, after
+    the headline is chosen and the verdicts refreshed -- not from evaluate."""
+    analyze = pathlib.Path("src/proteinfoundation/analyze.py").read_text()
+    evaluate = pathlib.Path("src/proteinfoundation/evaluation/binder_eval.py").read_text()
+
+    assert "assert_frame_headline_indices_agree(" in analyze
+    assert analyze.index("refresh_per_sequence_verdicts(") < analyze.index(
+        "assert_frame_headline_indices_agree("
+    ), "the verdict is part of what is checked, so it must be written first"
+    assert "assert_headline_indices_agree(row_dict" not in evaluate, (
+        "evaluate has no headline to check"
+    )
+
+
+def test_advisory_backends_are_read_off_the_columns():
+    """A pooled frame can hold runs that asked for different backends, so the
+    frame's contents decide what is checked, not the config's request."""
+    from proteinfoundation.metrics.consensus_folding import advisory_backends_in
+
+    columns = [
+        "mpnn_complex_af2_i_pAE",
+        "mpnn_complex_esmfold2_i_pAE",
+        "mpnn_complex_esmfold2_min_ipAE",
+        "mpnn_complex_af2_min_ipAE",
+        "self_complex_esmfold2_i_pAE",
+    ]
+    assert advisory_backends_in(columns, "mpnn", "af2") == ["esmfold2"]
+    assert advisory_backends_in(columns, "self", "af2") == ["esmfold2"]
+    assert advisory_backends_in(columns, "mpnn", "esmfold2") == ["af2"], "whoever is primary is excluded"
+    assert advisory_backends_in([], "mpnn", "af2") == []
 
 
 def test_a_failed_backend_writing_nan_is_consistent_not_mismatched():

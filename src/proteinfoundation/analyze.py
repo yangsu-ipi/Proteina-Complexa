@@ -3187,6 +3187,9 @@ def main(cfg: DictConfig) -> None:
             validate_ranking_criteria(cfg_aggregation.get("ranking_criteria"))
             or dict(DEFAULT_PROTEIN_RANKING_CRITERIA),
         )
+        # The headline is chosen; the verdicts below are taken at that index. The
+        # agreement check runs after both, which is the first moment the property
+        # it asserts actually exists.
         combined_df = refresh_per_sequence_verdicts(
             combined_df,
             list(cfg_aggregation.get("sequence_types", ["self", "mpnn"])),
@@ -3194,6 +3197,11 @@ def main(cfg: DictConfig) -> None:
                 cfg_aggregation.get("success_thresholds"),
                 is_ligand_binder=result_type == "ligand_binder",
             ),
+        )
+        from proteinfoundation.metrics.consensus_folding import assert_frame_headline_indices_agree
+
+        assert_frame_headline_indices_agree(
+            combined_df, list(cfg_aggregation.get("sequence_types", ["self", "mpnn"]))
         )
 
         # Advisory metrics have no transferable absolute scale, so the only
