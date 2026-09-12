@@ -6,7 +6,9 @@ values a gate later reads -- including the cases where a draw is missing or
 unusable, which is where a reduction quietly invents a number if it can.
 """
 
+import contextlib
 import math
+import os
 
 import pytest
 
@@ -860,65 +862,59 @@ def test_the_pae_divisor_has_one_definition():
     assert not offenders, f"the PAE divisor retyped instead of imported: {offenders}"
 
 
-def test_complexa_does_not_steer_colabfolds_weights(tmp_path, monkeypatch):
-    """ColabFold runs from its own environment, provisioned by its own installer,
-    with its own default store and its own completion sentinel. Complexa's job is
-    to invoke the binary.
+def test_complexa_never_names_colabfolds_parameter_store(monkeypatch):
+    """Where AF2 parameters live is a property of the ColabFold installation, not
+    of the tools that call it. A site that does not use ColabFold's default store
+    answers that once, in a wrapper that supplies --data and execs the real
+    binary, and names the wrapper in COLABFOLD_EXEC_PATH.
 
-    It used to fall through to AF2_DIR -- Complexa's OWN parameter tree -- which
-    made an apo fold write into the store the primary refold reads from."""
-    from proteinfoundation.metrics.folding_models import colabfold_data_dir
-
-    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
-        monkeypatch.delenv(name, raising=False)
-
-    af2 = tmp_path / "community_models" / "ckpts" / "AF2"
-    (af2 / "params").mkdir(parents=True)
-    (af2 / "params" / "params_model_1_ptm.npz").write_text("")
-    monkeypatch.setenv("AF2_DIR", str(af2))
-    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-
-    assert colabfold_data_dir() is None, "neither AF2_DIR nor CACHE_DIR is ColabFold's to use"
-
-    # An address someone configured is honoured -- that is how an offline node
-    # points at a pre-staged store.
-    staged = tmp_path / "staged"
-    staged.mkdir()
-    monkeypatch.setenv("COLABFOLD_DATA_DIR", str(staged))
-    assert colabfold_data_dir() == str(staged)
-    assert colabfold_data_dir(str(tmp_path / "explicit")) == str(tmp_path / "explicit"), (
-        "an explicit argument wins over the environment"
-    )
-
-
-def test_no_address_means_no_flag_not_a_directory_named_none(monkeypatch):
-    """The bug the previous version was written against: `cache_dir =
-    os.environ.get("CACHE_DIR")` was assigned OVER the function's argument, so
-    with CACHE_DIR unset the command read `--data None` and colabfold downloaded
-    four gigabytes into a directory literally named None, on a compute node.
-
-    Answering "no address" and dropping the flag cannot express that at all --
-    which is a better fix than picking some directory to name."""
+    So Complexa reads no weights path and passes no --data. Two earlier versions
+    did, and both went wrong in the same direction: falling through to AF2_DIR
+    pointed an apo fold at Complexa's OWN parameter tree, which ColabFold would
+    have overwritten with the 2021-07-14 release; and before that, `cache_dir =
+    os.environ.get("CACHE_DIR")` assigned over the argument and put `--data None`
+    on the command line, downloading four gigabytes into a directory named None."""
     import inspect
 
     from proteinfoundation.metrics import folding_models
 
-    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
-        monkeypatch.delenv(name, raising=False)
-    assert folding_models.colabfold_data_dir() is None
+    assert not hasattr(folding_models, "colabfold_data_dir"), (
+        "resolving a store for another tool is the thing being removed, not relocated"
+    )
 
     source = inspect.getsource(folding_models.run_colabfold)
-    assert "if data_dir:" in source, "the flag is conditional"
-    assert "--data {data_dir}" not in source.split("if data_dir:")[0], (
-        "and never formatted unconditionally, which is how None became a path"
+    assert "--data" not in source, "the flag is ColabFold's own installation to supply"
+    assert "XDG_CACHE_HOME" not in source, (
+        "and steering appdirs' default store is the same relay wearing a disguise"
     )
 
 
-# ---------------------------------------------------------------------------
-# Fold confidence sidecars. pLDDT survives a fold in the B-factor column; pTM
-# and PAE exist only in the folder's output, so a monomer fold reported one of
-# the three while the complex track reported the whole family.
-# ---------------------------------------------------------------------------
+def test_colabfolds_run_ignores_complexas_cache_dir(tmp_path, monkeypatch):
+    """cache_dir stays in the signature -- designability calls all three folders
+    the same way -- but naming Complexa's cache must not move ColabFold's weights,
+    the way run_esmfold2 accepts and ignores it."""
+    from proteinfoundation.metrics import folding_models
+
+    seen: dict = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        raise RuntimeError("stop after the command is built")
+
+    monkeypatch.setattr(folding_models.subprocess, "run", fake_run)
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "complexa-cache"))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    with contextlib.suppress(Exception):
+        folding_models.run_colabfold(
+            ["MKV"], str(tmp_path / "out"), cache_dir=str(tmp_path / "complexa-cache")
+        )
+
+    assert "--data" not in seen.get("command", ""), seen.get("command")
+    assert "XDG_CACHE_HOME" not in os.environ, (
+        "ColabFold's default store resolves through appdirs; pointing XDG_CACHE_HOME "
+        "at Complexa's cache steers it just as surely as --data would"
+    )
 
 
 def test_the_sidecar_stores_pae_on_the_scale_every_other_column_uses(tmp_path):
@@ -1042,61 +1038,3 @@ def test_the_colabfold_binary_can_be_named_rather_than_found_on_path(monkeypatch
 
     monkeypatch.setenv("COLABFOLD_EXEC_PATH", "/data/shared/miniforge3/envs/colabfold/bin/colabfold_batch")
     assert colabfold_batch_command().endswith("envs/colabfold/bin/colabfold_batch")
-
-
-def test_a_complete_param_store_without_the_sentinel_is_flagged(tmp_path, monkeypatch):
-    """ColabFold skips its 3.47 GB download only if params/download_finished.txt
-    exists. The Complexa parameter tree is writable, so without the sentinel the
-    download quietly succeeds and duplicates weights already on disk -- once per
-    box, unnoticed until a disk fills."""
-    from proteinfoundation.metrics.folding_models import colabfold_data_dir
-
-    params = tmp_path / "params"
-    params.mkdir()
-    for i in (1, 2, 3, 4, 5):
-        (params / f"params_model_{i}_ptm.npz").write_text("x")
-    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
-        monkeypatch.delenv(name, raising=False)
-
-    # A loguru sink, not caplog: this codebase logs through loguru, which does not
-    # propagate to the stdlib logging caplog hooks into.
-    from loguru import logger
-
-    seen: list[str] = []
-    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
-    try:
-        assert colabfold_data_dir(str(tmp_path)) == str(tmp_path)
-        assert any("download_finished.txt" in m for m in seen), (
-            "the fix has to be named, not just the problem"
-        )
-
-        # With the sentinel there is nothing to say.
-        seen.clear()
-        (params / "download_finished.txt").write_text("")
-        colabfold_data_dir(str(tmp_path))
-        assert not any("download_finished.txt" in m for m in seen)
-    finally:
-        logger.remove(sink)
-
-
-def test_an_incomplete_store_is_not_declared_finished(tmp_path, monkeypatch):
-    """The same guard the install script uses: marking an incomplete store as
-    finished would make ColabFold skip the download it actually needs."""
-    from proteinfoundation.metrics.folding_models import colabfold_data_dir
-
-    params = tmp_path / "params"
-    params.mkdir()
-    (params / "params_model_1_ptm.npz").write_text("x")
-    (params / "params_model_2.npz").write_text("x")
-    for name in ("COLABFOLD_DATA_DIR", "AF2_DIR", "CACHE_DIR"):
-        monkeypatch.delenv(name, raising=False)
-
-    from loguru import logger
-
-    seen: list[str] = []
-    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
-    try:
-        colabfold_data_dir(str(tmp_path))
-    finally:
-        logger.remove(sink)
-    assert not any("download_finished.txt" in m for m in seen), "nothing to advise about a partial store"

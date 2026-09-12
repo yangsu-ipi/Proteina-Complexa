@@ -37,9 +37,10 @@ metric:
   #
   # Two folders, as on the protein-binder side. Strictly additive here: the
   # ligand thresholds carry no apo criterion, so this adds columns and moves no
-  # pass rate. colabfold is AlphaFold2 via colabfold_batch, single-sequence; its
-  # parameters are the ones build_blackwell.sh already fetches to
-  # community_models/ckpts/AF2 (see colabfold_data_dir).
+  # pass rate. colabfold is AlphaFold2 (monomer + pTM) via colabfold_batch,
+  # single-sequence, run from its own conda environment: name the binary in
+  # COLABFOLD_EXEC_PATH, and let that installation own its parameter store
+  # (see colabfold_batch_command).
   compute_apo_metrics: true
   apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
   # Every mode the holo side reports, so apo and holo geometry are the same

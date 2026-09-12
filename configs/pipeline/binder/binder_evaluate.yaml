@@ -62,9 +62,11 @@ metric:
   # without its target under each. That is the point -- one folder agreeing with
   # itself is not evidence -- but it is a stricter gate than a single model, and
   # pass rates move when a second one is added.
-  # colabfold is AlphaFold2 via colabfold_batch, single-sequence. Its parameters
-  # are the ones build_blackwell.sh already fetches to community_models/ckpts/AF2;
-  # point AF2_DIR or COLABFOLD_DATA_DIR there (see colabfold_data_dir).
+  # colabfold is AlphaFold2 (monomer + pTM) via colabfold_batch, single-sequence.
+  # It runs from its own conda environment -- name the binary in COLABFOLD_EXEC_PATH.
+  # Its parameter store belongs to that installation, not to Complexa: a site that
+  # keeps AF2 params somewhere non-default wraps colabfold_batch with its own
+  # --data and names the wrapper here (see colabfold_batch_command).
   apo_folding_models: [esmfold2, colabfold]   # esmfold, esmfold2, colabfold
   # ESMFold2 is a diffusion sampler: one fold is one draw, and two unseeded runs
   # disagree. Folding several seeds and averaging trades evaluation time for a

@@ -414,94 +414,6 @@ def _convert_esm_outputs_to_pdb(outputs) -> list[str]:
     return pdbs
 
 
-def colabfold_data_dir(cache_dir: str | None = None) -> str | None:
-    """The ``--data`` to pass ColabFold, or None to let it decide.
-
-    ColabFold runs from its own conda environment, installed and provisioned by
-    ``_install/install-colabfold.sh``. Where that installation keeps its weights
-    is its business: it has a default (``appdirs.user_cache_dir("colabfold")``),
-    it knows how to populate it, and it records its own completion with its own
-    sentinel. Complexa's job here is to invoke the binary, not to manage another
-    tool's model store.
-
-    So there are exactly two answers. An address someone configured -- an explicit
-    argument, or COLABFOLD_DATA_DIR -- which is how an offline node points at a
-    pre-staged store. Or None, meaning omit the flag.
-
-    It used to fall through to AF2_DIR, which is Complexa's OWN parameter tree.
-    That made an apo fold write into the store the primary refold reads from: with
-    no ColabFold sentinel there, the first run streams the 2021-07-14 release over
-    this tree's 2022-12-06 monomer and ptm sets. ColabDesign loads multimer_v3 and
-    would have survived it, but a store one backend rewrites under another is not
-    an arrangement to rely on being harmless.
-
-    Returning None rather than a guess is also the real fix for the bug that
-    prompted the previous version: ``cache_dir = os.environ.get("CACHE_DIR")`` was
-    assigned OVER this function's argument, so with CACHE_DIR unset the command
-    read ``--data None`` and colabfold downloaded four gigabytes into a directory
-    literally named None. Answering "no address" and having the caller drop the
-    flag cannot express that at all.
-    """
-    for value in (cache_dir, os.environ.get("COLABFOLD_DATA_DIR")):
-        if value:
-            resolved = os.path.expanduser(value)
-            _warn_if_download_would_retrigger(resolved)
-            return resolved
-    return None
-
-
-def _warn_if_download_would_retrigger(data_dir: str) -> None:
-    """Say so when a complete parameter store lacks ColabFold's success sentinel.
-
-    What ``colabfold/download.py`` actually does for the ptm model type -- the one
-    a single-chain apo fold selects -- is: return early if
-    ``params/download_finished.txt`` exists; otherwise stream
-    ``alphafold_params_2021-07-14.tar`` straight into ``tarfile.open(mode="r|")``
-    and ``extractall`` into ``params/``, then touch the sentinel.
-
-    So the cost is not a duplicate copy and not a disk that fills: the tar is
-    never written out, and the extract OVERWRITES in place. It is that an apo
-    fold would rewrite the parameter store the PRIMARY refold reads from,
-    replacing this tree's 2022-12-06 monomer and ptm sets -- 3.6 GB of the 5.3 GB
-    here -- with the 2021-07-14 release's files of the same names. The
-    multimer_v3 set ColabDesign actually loads is not in that tar and survives,
-    so today the blast radius is the apo weights; a shared mutable store that one
-    backend rewrites under another is the part worth avoiding on principle.
-
-    And it is once, not once per fold -- the sentinel is touched on success.
-    Per-fold forever is the read-only case, where the touch fails too; that is the
-    failure ``_install/install-colabfold.sh`` describes for the shared store.
-
-    The clean answer is to give ColabFold a store of its own via
-    COLABFOLD_DATA_DIR, which is what ``templates/colabfold.sbatch`` does with
-    ``--data /data/shared/models/af2-params``. The sentinel is the answer when
-    sharing this tree is deliberate.
-
-    Warned rather than fixed here: creating the file would have this library write
-    into a shared model store, and provisioning belongs to the install script,
-    which creates the same sentinel under the same guard -- only when all five ptm
-    sets are present, so an incomplete store is never marked finished.
-    """
-    params = os.path.join(data_dir, "params")
-    if os.path.exists(os.path.join(params, "download_finished.txt")):
-        return
-    complete = all(
-        os.path.getsize(os.path.join(params, f"params_model_{i}_ptm.npz")) > 0
-        if os.path.exists(os.path.join(params, f"params_model_{i}_ptm.npz"))
-        else False
-        for i in (1, 2, 3, 4, 5)
-    )
-    if not complete:
-        return
-    logger.warning(
-        f"{params} holds all five AF2 ptm parameter sets but no download_finished.txt, so the "
-        f"first colabfold_batch will stream the 2021-07-14 AF2 release over them -- rewriting "
-        f"this store's monomer and ptm weights in place. Point ColabFold at its own store with "
-        f"COLABFOLD_DATA_DIR, or, if sharing this one is deliberate, create the sentinel once: "
-        f"touch {params}/download_finished.txt"
-    )
-
-
 def colabfold_batch_command() -> str:
     """The ``colabfold_batch`` to run, honouring ``COLABFOLD_EXEC_PATH``.
 
@@ -516,6 +428,15 @@ def colabfold_batch_command() -> str:
     env's binary is enough. Named for the executable the way ``RF3_EXEC_PATH``
     is, rather than relying on PATH -- prepending another env's bin directory
     would shadow ``python`` itself.
+
+    This is also the ONLY hook Complexa offers around ColabFold, deliberately.
+    Where a site keeps AF2 parameters is a property of that ColabFold
+    installation, not of the tools calling it, so a site that does not use the
+    default store answers it once -- in a wrapper that supplies ``--data`` and
+    execs the real binary -- and points this variable at the wrapper. Every
+    caller then just runs colabfold_batch. Complexa reading a weights path and
+    relaying it would make each caller responsible for a fact only the installer
+    knows, and would make them disagree.
     """
     return os.environ.get("COLABFOLD_EXEC_PATH") or "colabfold_batch"
 
@@ -559,7 +480,10 @@ def run_colabfold(
         path_to_colabfold_out (str): Output directory path for ColabFold results.
         suffix (str): Suffix to add to output files to indicate source (e.g. "mpnn" or "pdb")
         relax (bool): whether to relax the structure afterwards
-        cache_dir (Optional[str]): Cache directory for model weights
+        cache_dir (Optional[str]): accepted for signature compatibility with
+            run_esmfold/run_esmfold2 and ignored. It names Complexa's cache, and
+            ColabFold's parameter store is the ColabFold installation's business:
+            see colabfold_batch_command for where a site answers that once.
         keep_outputs (bool): Whether to keep individual output directories after processing.
             If False (default), temporary directories are deleted to save space.
 
@@ -573,9 +497,8 @@ def run_colabfold(
     os.makedirs(path_to_colabfold_out, exist_ok=True)
     os.makedirs(os.path.join(path_to_colabfold_out, "structures"), exist_ok=True)
 
-    data_dir = colabfold_data_dir(cache_dir)
-    if os.environ.get("CACHE_DIR"):
-        os.environ["XDG_CACHE_HOME"] = os.path.expanduser(os.environ["CACHE_DIR"])
+    if cache_dir:
+        logger.debug("run_colabfold ignores cache_dir; ColabFold's installation owns its parameter store")
 
     # Create individual FASTA files using the unified function
     fasta_dir = os.path.join(path_to_colabfold_out, "individual_fastas")
@@ -589,11 +512,6 @@ def run_colabfold(
         f"{colabfold_batch_command()} {fasta_dir} {path_to_colabfold_out}/structures "
         f"--msa-mode single_sequence"
     )
-    # Only when someone named one. Unset, ColabFold uses its own default store,
-    # which is the installation's business rather than ours -- and there is no way
-    # to spell "no address" into this flag that does not become a directory.
-    if data_dir:
-        batch_command += f" --data {data_dir}"
     if relax:
         batch_command = batch_command + " --num-relax 1 --use-gpu-relax"
 
