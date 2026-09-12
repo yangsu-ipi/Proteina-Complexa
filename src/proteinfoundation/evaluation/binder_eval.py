@@ -33,9 +33,9 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     DEFAULT_NUM_REDESIGN_SEQS_PROTEIN,
     TMOL_METRIC_COLS,
     apo_column,
+    apo_confidence_column,
     apo_derived_column,
     apo_fold_fingerprint,
-    apo_plddt_column,
     check_thresholds_are_computable,
     dedupe_columns,
     extract_binder_chain_to_pdb,
@@ -51,9 +51,10 @@ from proteinfoundation.evaluation.esm_eval import (
     compute_esm_ppl_for_sequences,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
+    APO_CONFIDENCE_SUFFIXES,
     MONOMER_DERIVED_SUFFIXES,
     derive_for_result,
-    per_model_plddt,
+    per_model_confidence,
     refresh_monomer_derivation,
     write_monomer_fold_cache,
 )
@@ -61,21 +62,21 @@ from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, 
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.column_names import backend_for_folding_method, rename
 from proteinfoundation.metrics.consensus_folding import (
-    CONSENSUS_DERIVED_SUFFIXES,
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
     assert_columns_are_advisory,
     assert_headline_indices_agree,
     available_backends,
+    consensus_derived_suffixes,
     score_binders,
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
 from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF, INTERFACE_DERIVATION_VERSION
 from proteinfoundation.metrics.inverse_folding_models import REDESIGN_SCORE_KIND, resolve_inverse_folding_model
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
+from proteinfoundation.metrics.tmol_interface import tmol_interface_metrics
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
-from proteinfoundation.rewards.base_reward import REWARD_KEY
 
 # =============================================================================
 # Safe Imports with Availability Flags
@@ -256,7 +257,7 @@ def apo_refold(
     n_esmfold2_seeds: int = 1,
 ) -> tuple[
     dict[tuple[str, str], list[float]],
-    dict[str, list[float]],
+    dict[str, dict[str, list[float]]],
     dict[str, dict[str, list]],
 ]:
     """Fold each sequence alone and measure it against the designed backbone.
@@ -273,9 +274,10 @@ def apo_refold(
     ``self_apo_scRMSD_{mode}_{model}`` is an alias of
     ``_res_co_scRMSD_{mode}_{model}`` sharing one fold.
 
-    Returns ``({(mode, model): [rmsd per sequence]}, {model: [pLDDT per
-    sequence]}, {model: {metric: [value per sequence]}})`` -- the third being what
-    is read OFF the kept structures rather than reported by the folder. Empty
+    Returns ``({(mode, model): [rmsd per sequence]}, {model: {metric: [value per
+    sequence]}}, {model: {metric: [value per sequence]}})`` -- the second being
+    the confidence the folder reported (pLDDT, pTM, mean PAE), the third what is
+    read OFF the kept structures rather than reported by the folder. Empty
     when nothing could be folded; a failed fold is ``inf``
     for that sequence, not a missing row, so the lists stay aligned with the
     sequences they describe. A fold with no readable confidence is NaN, which is
@@ -326,7 +328,7 @@ def apo_refold(
                 for mode in rmsd_modes
                 for m in folding_models
             },
-            per_model_plddt(result.plddt, folding_models, len(sequences)),
+            per_model_confidence(result.plddt, result.confidence, folding_models, len(sequences)),
             # Read off the same structures, without a cache of its own to stamp:
             # this path shares the codesignability fold, whose cache lives under
             # another track's fingerprint. One sequence's worth of re-reading per
@@ -388,6 +390,7 @@ def apo_refold(
             "best_rmsd": scored.best_rmsd,
             "folded_paths": {m: list(v) for m, v in (scored.folded_paths or {}).items()},
             "plddt": scored.plddt,
+            "confidence": scored.confidence,
         }
 
     # What the kept structures say about themselves, filled in on the run that
@@ -403,7 +406,9 @@ def apo_refold(
     }
     return (
         rmsds,
-        per_model_plddt(averaged.get("plddt"), folding_models, len(sequences)),
+        per_model_confidence(
+            averaged.get("plddt"), averaged.get("confidence"), folding_models, len(sequences)
+        ),
         averaged.get("derived") or {},
     )
 
@@ -647,6 +652,16 @@ def compute_binder_metrics(
     # of a monomer one and is the sensible place to want a different count.
     consensus_cfg.setdefault("n_seeds", n_esmfold2_seeds)
     reuse_cached_consensus = cfg_metric.get("reuse_cached_consensus", True)
+    # The force field, on the advisory structures too, when the run computes it on
+    # the primary backend's refolds. Read from the same two config keys rather
+    # than a knob of its own: "TMOL is on" should not mean "on for one of the two
+    # models that folded this complex". It is off in the binder campaigns, and the
+    # derivation fingerprint carries the request -- so a run that does not want it
+    # is not a run whose cached structures look under-derived.
+    _refolded_cfg = cfg_metric.get("refolded", {}) or {}
+    derive_consensus_tmol = bool(cfg_metric.get("compute_refolded_structure_metrics", False)) and bool(
+        _refolded_cfg.get("tmol", True)
+    )
     consensus_target_seqs: list[str] = []
     if consensus_backends:
         unknown = [b for b in consensus_backends if b not in available_backends()]
@@ -942,18 +957,28 @@ def compute_binder_metrics(
                         logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")
                         apo_values = ({}, {}, {})
 
-                    apo_values, apo_plddt, apo_derived = apo_values
-                    for model, values in (apo_plddt or {}).items():
+                    apo_values, apo_confidence, apo_derived = apo_values
+                    for model, by_metric in (apo_confidence or {}).items():
                         # Advisory. The campaign folds apo with esmfold2, which
                         # runs on a compressed scale -- a native protein reaches
                         # ~0.65 there -- so an AF2-calibrated floor would reject
                         # nearly everything. Emitted for looking at, and picked
                         # up by the outlier flags in analyze.
-                        col = apo_plddt_column(seq_type, model)
-                        row_dict[f"{col}_all"] = values
-                        for name in (col, f"{col}_all"):
-                            if name not in all_columns:
-                                all_columns.append(name)
+                        #
+                        # pTM and PAE join pLDDT here: the complex track reports
+                        # the whole confidence family, and an apo fold that is
+                        # confident residue by residue while its domains float
+                        # apart is exactly what a pTM says and a mean pLDDT does
+                        # not. Absent for folds cached before the backends wrote
+                        # them down -- the folder is the only thing that knows.
+                        for metric in APO_CONFIDENCE_SUFFIXES:
+                            if metric not in by_metric:
+                                continue
+                            col = apo_confidence_column(seq_type, model, metric)
+                            row_dict[f"{col}_all"] = by_metric[metric]
+                            for name in (col, f"{col}_all"):
+                                if name not in all_columns:
+                                    all_columns.append(name)
 
                     for (mode, model), values in apo_values.items():
                         col = apo_column(seq_type, mode, model)
@@ -1081,6 +1106,7 @@ def compute_binder_metrics(
                         # against -- the same structure the primary backend's
                         # scRMSD columns compare to.
                         reference_pdb_path=pdb_path,
+                        derive_tmol=derive_consensus_tmol,
                     )
                     # `advisory` is parallel to `seqs`, so the headline must be the
                     # same sequence the primary columns describe. Using 0 here made
@@ -1088,7 +1114,10 @@ def compute_binder_metrics(
                     # different redesigns whenever the best was not the first --
                     # the exact pairing failure sequences_for_type exists to stop.
                     new_cols = []
-                    for suffix in (*CONSENSUS_METRIC_SUFFIXES, *CONSENSUS_DERIVED_SUFFIXES):
+                    for suffix in (
+                        *CONSENSUS_METRIC_SUFFIXES,
+                        *consensus_derived_suffixes(derive_consensus_tmol),
+                    ):
                         col = advisory_column(seq_type, backend_name, suffix)
                         # Always, now that best-only is gone. These lists are what
                         # make the advisory numbers re-rankable and calibratable
@@ -1198,17 +1227,12 @@ def compute_tmol_metrics_single(
     if not TMOL_AVAILABLE or tmol_model is None:
         return dict.fromkeys(TMOL_METRIC_COLS, np.nan)
 
-    try:
-        result = tmol_model.score(pdb_path=pdb_path, requires_grad=False)
-        return {
-            "n_interface_hbonds_tmol": result[REWARD_KEY]["n_interface_hbonds"].item(),
-            "total_interface_hbond_energy_tmol": result[REWARD_KEY]["total_interface_hbond_energy"].item(),
-            "total_interface_elec_energy_tmol": result[REWARD_KEY]["total_interface_elec_energy"].item(),
-            "n_interface_elec_interactions_tmol": result[REWARD_KEY]["n_interface_elec_interactions"].item(),
-        }
-    except Exception as e:
-        logger.error(f"TMOL error for {pdb_path}: {e}")
-        return dict.fromkeys(TMOL_METRIC_COLS, np.nan)
+    # The reward-key mapping lives in metrics.tmol_interface, which the advisory
+    # track reads the same four metrics through. NaN rather than absent here,
+    # because this function's callers build a fixed column set per PDB and a
+    # missing key would shorten one design's row.
+    metrics = tmol_interface_metrics(pdb_path, model=tmol_model)
+    return {name: metrics.get(name, np.nan) for name in TMOL_METRIC_COLS}
 
 
 # =============================================================================

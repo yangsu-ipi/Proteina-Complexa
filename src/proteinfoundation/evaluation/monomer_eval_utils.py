@@ -82,6 +82,13 @@ class DesignabilityResult:
     # sequences like everything else here. Empty for folds cached before it was
     # recorded; a reader must treat absence as unmeasured, not as zero.
     plddt: dict[str, list[float]] = field(default_factory=dict)
+    # model -> metric -> per-sequence value, for the confidence the folder reports
+    # but the structure cannot carry: pTM and the mean PAE. pLDDT is not in here
+    # because it is in the B-factor column, which is what lets it be recovered
+    # from a fold that predates its being recorded. These cannot be recovered --
+    # a fold cached before the sidecars existed leaves them absent for good,
+    # unless it is folded again.
+    confidence: dict[str, dict[str, list[float]]] = field(default_factory=dict)
 
 
 # =============================================================================
@@ -187,6 +194,10 @@ MONOMER_CACHE_SCHEMA = 3  # 1 held a single fold; 2 one per seed; 3 keys folded_
 # An apo fold is one chain, so everything defined across an interface is absent
 # here on purpose: dSASA, shape complementarity, interface composition. What a
 # monomer can say about itself is its own surface and its secondary structure.
+# Folder-reported confidence beyond pLDDT, named as the complex track names the
+# same quantities so an apo column and a holo one are one slot apart.
+MONOMER_CONFIDENCE_SUFFIXES: tuple[str, ...] = ("pTM", "pAE")
+
 MONOMER_DERIVED_SUFFIXES: tuple[str, ...] = (
     "sasa_engine",
     "sasa_radii",
@@ -449,6 +460,34 @@ def per_model_plddt(plddt: dict | None, folding_models: list[str], n: int) -> di
     return out
 
 
+# Everything the folder says about an apo structure, in one shape. pLDDT is
+# recovered from the PDB and the rest from the sidecar, but a reader of the
+# columns should not have to know which came from where.
+APO_CONFIDENCE_SUFFIXES: tuple[str, ...] = ("pLDDT", *MONOMER_CONFIDENCE_SUFFIXES)
+
+
+def per_model_confidence(
+    plddt: dict | None, confidence: dict | None, folding_models: list[str], n: int
+) -> dict[str, dict[str, list[float]]]:
+    """Per-model apo confidence as ``{model: {metric: [value per sequence]}}``.
+
+    Same padding rule as :func:`per_model_plddt`, and for the same reason: these
+    columns sit positionally beside the holo ones, so a short list would shift
+    the alignment rather than announce itself. A fold cached before its backend
+    wrote a confidence sidecar has NaN for pTM and PAE -- and, unlike pLDDT,
+    those cannot be recovered from the structure on disk.
+    """
+    by_model = per_model_plddt(plddt, folding_models, n)
+    stored = confidence or {}
+    out: dict[str, dict[str, list[float]]] = {}
+    for model in folding_models:
+        reported = stored.get(model) or {}
+        out[model] = {"pLDDT": by_model[model]}
+        for name in MONOMER_CONFIDENCE_SUFFIXES:
+            out[model][name] = (list(reported.get(name) or []) + [float("nan")] * n)[:n]
+    return out
+
+
 def _mean_derived(per_seed: list):
     """Average one derived metric over the seeds that produced it.
 
@@ -529,10 +568,25 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
             for i in range(width)
         ]
 
+    merged_confidence: dict[str, dict[str, list[float]]] = {}
+    for model, by_metric in (usable[0].get("confidence") or {}).items():
+        merged_confidence[model] = {}
+        for metric in by_metric:
+            per_seed = [(f.get("confidence") or {}).get(model, {}).get(metric, []) for f in usable]
+            width = min((len(v) for v in per_seed), default=0)
+            merged_confidence[model][metric] = [
+                sum(v[i] for v in per_seed) / len(per_seed)
+                if all(math.isfinite(v[i]) for v in per_seed)
+                else float("nan")
+                for i in range(width)
+            ]
+
     averaged = dict(usable[0])
     averaged["rmsd_values"] = merged
     if merged_plddt:
         averaged["plddt"] = merged_plddt
+    if merged_confidence:
+        averaged["confidence"] = merged_confidence
     # Concatenated per model rather than across models: a path is not a
     # measurement, and each is a real structure a reader may want -- but which
     # model produced it is part of what makes it readable.
@@ -710,6 +764,7 @@ def write_monomer_fold_cache(
         "best_rmsd": result.best_rmsd,
         "folded_paths": {m: list(v) for m, v in (result.folded_paths or {}).items()} if keep_outputs else {},
         "plddt": result.plddt,
+        "confidence": getattr(result, "confidence", {}) or {},
         "structures_kept": bool(keep_outputs),
     }
     from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION, deterministic_seed

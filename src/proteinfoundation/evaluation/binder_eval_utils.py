@@ -16,6 +16,11 @@ import numpy as np
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
+# Re-exported rather than restated: metrics.tmol_interface owns the mapping from
+# TMOL's reward keys to these column names, and the advisory track reads the same
+# four off its own structures. Two lists would agree until one of them was edited.
+from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS
+
 # atomworks/biotite are imported inside the two functions that read structures.
 # Everything else here -- ranking, success criteria, target resolution -- is pure
 # logic, and a module-level structure-stack import made all of it unimportable
@@ -86,13 +91,6 @@ BIOINFORMATICS_METRIC_COLS = [
     "target_ss_total",
     "target_interface_ss_counts",
     "target_interface_ss_total",
-]
-
-TMOL_METRIC_COLS = [
-    "n_interface_hbonds_tmol",
-    "total_interface_hbond_energy_tmol",
-    "total_interface_elec_energy_tmol",
-    "n_interface_elec_interactions_tmol",
 ]
 
 # =============================================================================
@@ -703,11 +701,19 @@ def apo_derived_column(seq_type: str, model: str, metric: str) -> str:
     return f"{seq_type}_apo_{model}_{metric}"
 
 
-def apo_plddt_column(seq_type: str, model: str) -> str:
-    """Column for the apo fold's mean pLDDT, per sequence type and folding model.
+def apo_confidence_column(seq_type: str, model: str, metric: str) -> str:
+    """Column for one folder-reported confidence of the apo fold.
 
     Model-suffixed like the apo RMSDs, since two backends disagree about
     confidence more than they disagree about geometry. No target/binder split
-    here: the apo fold is the binder alone, so its pLDDT is the binder's.
+    here: the apo fold is the binder alone, so its pLDDT is the binder's -- and
+    the same goes for its pTM and its mean PAE, which is why they carry the same
+    ``binder_`` scope the complex columns of those names carry.
     """
-    return f"{seq_type}_apo_{model}_binder_pLDDT"
+    return f"{seq_type}_apo_{model}_binder_{metric}"
+
+
+def apo_plddt_column(seq_type: str, model: str) -> str:
+    """The pLDDT case of :func:`apo_confidence_column`, kept as its own name
+    because a threshold spec and two tests reach for it directly."""
+    return apo_confidence_column(seq_type, model, "pLDDT")

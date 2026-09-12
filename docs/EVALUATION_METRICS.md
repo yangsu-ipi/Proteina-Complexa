@@ -866,6 +866,28 @@ asking for another mode emits it ungated (all-atom RMSD is systematically larger
 so the same threshold would not transfer). Evaluation warns at startup if the
 configured modes cannot satisfy the criterion.
 
+It now defaults to all four modes the holo side reports — `[ca, bb3, bb3o,
+all_atom]` — so apo and holo geometry are the same measurement one column slot
+apart. Modes are deliberately absent from the fold fingerprint, so adding one to
+a campaign that has already run re-measures the structures it kept rather than
+folding them again: on CBLN1's 2 462 apo caches that is about half a second per
+design against a monomer fold per sequence per seed.
+
+Beyond geometry, an apo fold also reports what the folder thought of it:
+
+| Column | Meaning |
+|---|---|
+| `{seq}_apo_{model}_binder_pLDDT` | Mean pLDDT of the apo fold, read from the B-factor column |
+| `{seq}_apo_{model}_binder_pTM` | The folder's pTM for the apo structure |
+| `{seq}_apo_{model}_binder_pAE` | Mean predicted aligned error, divided by `PAE_MAX_BIN` like every other PAE column |
+
+All three are advisory — ESMFold2 runs on a compressed scale, so an
+AF2-calibrated floor would reject nearly everything — and all carry the `binder_`
+scope because an apo structure *is* the binder. pLDDT can be recovered from any
+kept structure; pTM and PAE cannot, so the backends write them to a
+`<structure>.confidence.json` sidecar as they fold. **A fold cached before those
+sidecars existed has NaN for pTM and PAE**, and only a refold will fill them.
+
 Costs one monomer fold per sequence per design on top of complex folding, cached
 per design in `monomer_fold_cache_apo_{seq_type}.json`. Except for `self`:
 `self_apo_scRMSD_{mode}_{model}` **is** `_res_co_scRMSD_{mode}_{model}` — the same
@@ -921,9 +943,17 @@ Protein targets only — ligand targets have their own aligned variants.
 |--------|-------------|
 | `generated_n_interface_hbonds_tmol` | H-bond count (generated structure) |
 | `generated_total_interface_hbond_energy_tmol` | H-bond energy (kcal/mol) |
-| `refolded_{seq}_n_interface_hbonds_tmol` | H-bond count (refolded structure) |
+| `{seq}_complex_{backend}_n_interface_hbonds_tmol_all` | H-bond count per redesign, for whichever backend folded it |
 | `generated_binder_interface_sc` | Shape complementarity |
 | `generated_binder_interface_dSASA` | Buried surface area (A^2) |
+
+The force field runs on the generated complex, on the primary backend's refolds,
+and -- when `refolded.tmol` is on -- on the advisory backend's structures too,
+read off the PDBs it kept rather than refolded. The request is part of the
+advisory derivation fingerprint, so turning it on re-reads those structures and
+leaving it off does not make them look under-derived. TMOL needs a compiled CUDA
+extension; where it cannot be built the columns are absent rather than wrong, and
+the failure costs one attempt per process, not one per structure.
 
 ### Ligand Binder Result Columns
 
@@ -1073,7 +1103,7 @@ Written to `motif_binder_results_*.csv` by motif binder evaluation. Used by both
 |--------|-------------|
 | `generated_n_interface_hbonds_tmol` | H-bond count (generated structure) |
 | `generated_total_interface_hbond_energy_tmol` | H-bond energy (kcal/mol) |
-| `refolded_{seq}_n_interface_hbonds_tmol` | H-bond count (refolded structure) |
+| `{seq}_complex_{backend}_n_interface_hbonds_tmol_all` | H-bond count per redesign, for whichever backend folded it |
 | `generated_binder_interface_sc` | Shape complementarity |
 | `generated_binder_interface_dSASA` | Buried surface area (A^2) |
 

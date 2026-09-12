@@ -869,3 +869,113 @@ def test_colabfold_refuses_to_download_into_a_directory_named_none(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     with _pytest.raises(RuntimeError, match="params_model"):
         colabfold_data_dir()
+
+
+# ---------------------------------------------------------------------------
+# Fold confidence sidecars. pLDDT survives a fold in the B-factor column; pTM
+# and PAE exist only in the folder's output, so a monomer fold reported one of
+# the three while the complex track reported the whole family.
+# ---------------------------------------------------------------------------
+
+
+def test_the_sidecar_stores_pae_on_the_scale_every_other_column_uses(tmp_path):
+    """Divided by the top PAE bin, like ColabDesign's loss, the RF3 adapter and
+    the advisory complex path. An apo PAE in Angstroms beside a holo one at /31
+    is the same 31x mismatch that had to be corrected in the advisory track."""
+    from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
+    from proteinfoundation.metrics.folding_models import read_fold_confidence, write_fold_confidence
+
+    pdb = tmp_path / "esm_1_seed7.pdb_esm_apo_mpnn"
+    pdb.write_text("")
+    pae = [[0.0, 6.0], [4.0, 0.0]]
+    write_fold_confidence(str(pdb), ptm=0.82, pae=pae)
+
+    got = read_fold_confidence(str(pdb))
+    assert got["pTM"] == pytest.approx(0.82)
+    # Symmetrised first, exactly as the advisory pAE is: (0 + 5 + 5 + 0) / 4.
+    assert got["pAE"] == pytest.approx(2.5 / PAE_MAX_BIN)
+    assert got["pAE"] < 1.0
+
+
+def test_a_fold_with_no_sidecar_is_unmeasured_not_zero(tmp_path):
+    """Every fold cached before the backends wrote these down lands here, and a
+    zero pTM is a claim about the structure that nobody made."""
+    from proteinfoundation.metrics.folding_models import read_fold_confidence, write_fold_confidence
+
+    pdb = tmp_path / "esm_1.pdb_esm_apo_mpnn"
+    pdb.write_text("")
+    assert read_fold_confidence(str(pdb)) == {}
+
+    # A backend that reports neither writes no file at all, rather than a file
+    # asserting nothing.
+    write_fold_confidence(str(pdb), ptm=None, pae=None)
+    assert read_fold_confidence(str(pdb)) == {}
+
+
+def test_the_sidecar_sits_beside_a_structure_with_no_extension_to_replace(tmp_path):
+    """These files are named `esm_1_seed7.pdb_esm_apo_mpnn`. Substituting an
+    extension would have written the sidecar over a different fold's name."""
+    from proteinfoundation.metrics.folding_models import confidence_sidecar_path
+
+    a = confidence_sidecar_path("/d/esm_1_seed7.pdb_esm_apo_mpnn")
+    b = confidence_sidecar_path("/d/esm_1_seed8.pdb_esm_apo_mpnn")
+    assert a != b
+    assert a.startswith("/d/esm_1_seed7.pdb_esm_apo_mpnn")
+
+
+def test_a_confidence_is_never_attributed_to_the_wrong_sequence():
+    """ESMFold's pTM may be per-batch or per-sequence depending on the head. A
+    scalar for a batch of four says nothing about which of the four it
+    describes, and a number on the wrong sequence is worse than no number."""
+    from proteinfoundation.metrics.folding_models import _batch_confidences
+
+    batched = _batch_confidences({"ptm": [0.8, 0.6, 0.7]}, 3)
+    assert [c["ptm"] for c in batched] == [0.8, 0.6, 0.7]
+
+    assert _batch_confidences({"ptm": 0.8}, 3) == [{}, {}, {}], "a scalar names no sequence"
+    assert _batch_confidences({"ptm": [0.8, 0.6]}, 3) == [{}, {}, {}], "a short batch names no sequence"
+    assert _batch_confidences({}, 2) == [{}, {}]
+
+
+# ---------------------------------------------------------------------------
+# The force field, on the advisory structures too.
+# ---------------------------------------------------------------------------
+
+
+def test_tmol_is_requested_rather_than_registered():
+    """It needs a compiled extension not every box has, and the binder campaigns
+    run with it off. Registered unconditionally, every cached advisory entry
+    would look under-derived forever on a box that cannot compute it, re-reading
+    every kept PDB on every run to produce nothing."""
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_TMOL_SUFFIXES,
+        consensus_derived_suffixes,
+    )
+
+    off = consensus_derived_suffixes(False)
+    on = consensus_derived_suffixes(True)
+    assert not set(CONSENSUS_TMOL_SUFFIXES) & set(off)
+    assert set(CONSENSUS_TMOL_SUFFIXES) <= set(on)
+    assert set(off) < set(on), "asking for it adds, it never replaces"
+
+
+def test_asking_for_less_is_not_staleness():
+    """The request is in the derivation fingerprint, so turning the force field
+    on re-reads the kept structures and leaving it off does not. The campaigns
+    run with it off: their fingerprint must be the one they already have."""
+    from proteinfoundation.metrics.consensus_folding import consensus_derivation_fingerprint
+
+    assert consensus_derivation_fingerprint(False) == consensus_derivation_fingerprint()
+    assert consensus_derivation_fingerprint(True) != consensus_derivation_fingerprint(False)
+
+
+def test_the_advisory_and_generated_structures_answer_the_same_four():
+    """One mapping from TMOL's reward keys to column names, in one module. Two
+    lists would agree right up until one of them was edited."""
+    from proteinfoundation.evaluation.binder_eval_utils import TMOL_METRIC_COLS as from_eval
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_TMOL_SUFFIXES
+    from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, TMOL_METRICS
+
+    assert from_eval is TMOL_METRIC_COLS, "re-exported, not restated"
+    assert tuple(TMOL_METRIC_COLS) == CONSENSUS_TMOL_SUFFIXES
+    assert all(col.endswith("_tmol") for col in TMOL_METRICS.values())

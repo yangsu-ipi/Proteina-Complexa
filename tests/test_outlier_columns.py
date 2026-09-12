@@ -161,14 +161,49 @@ def test_a_model_that_reported_nothing_still_gets_a_column():
     assert all(math.isnan(v) for v in out["esmfold"])
 
 
+def test_the_apo_fold_reports_the_whole_confidence_family():
+    """The complex track reports pLDDT, pTM and the PAE family; the apo track
+    reported pLDDT alone. A fold that is confident residue by residue while its
+    domains float apart is what a pTM says and a mean pLDDT does not."""
+    from proteinfoundation.evaluation.binder_eval_utils import apo_confidence_column, apo_plddt_column
+    from proteinfoundation.evaluation.monomer_eval_utils import APO_CONFIDENCE_SUFFIXES
+
+    assert set(APO_CONFIDENCE_SUFFIXES) == {"pLDDT", "pTM", "pAE"}
+    # One slot from the complex column of the same name, which is the whole point
+    # of spelling the scope out on a structure that holds only the binder.
+    assert apo_confidence_column("mpnn", "esmfold2", "pTM") == "mpnn_apo_esmfold2_binder_pTM"
+    assert apo_plddt_column("mpnn", "esmfold2") == apo_confidence_column("mpnn", "esmfold2", "pLDDT")
+
+
+def test_the_folder_reported_confidence_is_padded_like_the_plddt():
+    """Same alignment rule, and one further point: pLDDT can be read back off a
+    kept structure and these cannot, so a fold cached before the sidecars
+    existed has NaN here for good unless it is folded again."""
+    from proteinfoundation.evaluation.monomer_eval_utils import per_model_confidence
+
+    out = per_model_confidence(
+        {"esmfold2": [0.7, 0.8]},
+        {"esmfold2": {"pTM": [0.6]}},
+        ["esmfold2", "colabfold"],
+        2,
+    )
+    assert out["esmfold2"]["pLDDT"] == pytest.approx([0.7, 0.8])
+    assert out["esmfold2"]["pTM"] == pytest.approx([0.6, float("nan")], nan_ok=True)
+    assert all(math.isnan(v) for v in out["esmfold2"]["pAE"]), "unmeasured, not zero"
+    assert set(out) == {"esmfold2", "colabfold"}
+    assert all(math.isnan(v) for v in out["colabfold"]["pTM"])
+
+
 def test_apo_confidence_is_not_gated():
     """esmfold2 runs on a compressed scale, so an AF2-calibrated floor would
     reject nearly every design. No threshold spec may read this column."""
+    from proteinfoundation.evaluation.monomer_eval_utils import APO_CONFIDENCE_SUFFIXES
     from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
 
     for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values():
         metric = spec.get("metric") or ""
-        assert not (spec.get("column_prefix") == "apo" and "pLDDT" in metric)
+        for name in APO_CONFIDENCE_SUFFIXES:
+            assert not (spec.get("column_prefix") == "apo" and name in metric)
 
 
 def test_the_binder_half_of_the_af2_plddt_is_gated():

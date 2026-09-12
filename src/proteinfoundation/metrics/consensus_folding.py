@@ -75,6 +75,7 @@ from loguru import logger
 
 from proteinfoundation.metrics.column_names import rename
 from proteinfoundation.metrics.ensembling import PAE_MAX_BIN, mean_chain_plddt
+from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
 
 # Metrics a backend may report. Named to mirror the primary backend's metrics so
@@ -686,21 +687,43 @@ CONSENSUS_DERIVED_SUFFIXES: tuple[str, ...] = (
     # re-read, never a refold.
     *CONSENSUS_RMSD_SUFFIXES.values(),
 )
+# The force-field family, kept apart because it is the one derived set that is
+# not always wanted. It needs a compiled extension that not every environment
+# has, it costs a scorer construction and a pose build per structure, and the
+# binder campaigns run with it off -- so registering it unconditionally would
+# make every advisory entry look permanently under-derived on a box that cannot
+# compute it, re-reading every kept PDB on every run to produce nothing. It is
+# requested instead, by the same config flag that turns TMOL on for the generated
+# and primary-backend structures, and the request is part of the fingerprint.
+CONSENSUS_TMOL_SUFFIXES: tuple[str, ...] = tuple(TMOL_METRIC_COLS)
+
 # Bumped when the derivation of any registered metric changes without its name
 # changing, which the name alone cannot express.
 CONSENSUS_DERIVATION_VERSION = 1
 
 
-def consensus_derivation_fingerprint() -> str:
+def consensus_derived_suffixes(include_tmol: bool = False) -> tuple[str, ...]:
+    """What this run reads off an advisory structure."""
+    return CONSENSUS_DERIVED_SUFFIXES + (CONSENSUS_TMOL_SUFFIXES if include_tmol else ())
+
+
+def consensus_derivation_fingerprint(include_tmol: bool = False) -> str:
     """Identity of what is read OFF an advisory structure, not of the structure.
 
     Kept apart from :func:`consensus_fingerprint` so a metrics-only change
     re-derives from kept structures instead of refolding: on the CBLN1 campaign
     that is the difference between re-reading 22k PDBs and folding them again,
     three seeds deep, for numbers the folder does not influence.
+
+    *include_tmol* is in the hash rather than assumed, so turning the force field
+    on re-reads the structures and turning it off does not: a run that asked for
+    less is not stale, it asked for less.
     """
     canonical = json.dumps(
-        {"derived": sorted(CONSENSUS_DERIVED_SUFFIXES), "version": CONSENSUS_DERIVATION_VERSION},
+        {
+            "derived": sorted(consensus_derived_suffixes(include_tmol)),
+            "version": CONSENSUS_DERIVATION_VERSION,
+        },
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -734,7 +757,10 @@ def rmsd_against_design(pdb_path: str, reference_pdb_path: str) -> dict[str, flo
 
 
 def derive_from_structure(
-    pdb_path: str, n_target_chains: int, reference_pdb_path: str | None = None
+    pdb_path: str,
+    n_target_chains: int,
+    reference_pdb_path: str | None = None,
+    include_tmol: bool = False,
 ) -> dict[str, float]:
     """Read the registered derived metrics off one advisory structure.
 
@@ -744,12 +770,17 @@ def derive_from_structure(
     derivable" and retries next run; the only caller in the pipeline always has
     the design in hand.
 
+    *include_tmol* adds the force-field family. It is a request rather than a
+    registration for the reasons on :data:`CONSENSUS_TMOL_SUFFIXES`, and it must
+    match the flag the caller hashed into the derivation fingerprint.
+
     Returns ``{}`` while nothing is registered, which is what makes the split
     inert until a caller opts in. Raises nothing of its own: a caller treats a
     failure as "not derivable for this structure" and leaves the columns absent,
     so one unreadable PDB does not cost a refold of everything.
     """
-    if not CONSENSUS_DERIVED_SUFFIXES:
+    wanted_suffixes = consensus_derived_suffixes(include_tmol)
+    if not wanted_suffixes:
         return {}
     from proteinfoundation.utils.pr_alternative_utils import pr_alternative_score_interface
 
@@ -761,12 +792,17 @@ def derive_from_structure(
         binder_chain=chains[-1],
         target_chain=",".join(chains[:-1]),
     )
-    derived = {name: scores[name] for name in CONSENSUS_DERIVED_SUFFIXES if name in scores}
-    wanted = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(CONSENSUS_DERIVED_SUFFIXES)
+    derived = {name: scores[name] for name in wanted_suffixes if name in scores}
+    wanted = set(CONSENSUS_RMSD_SUFFIXES.values()) & set(wanted_suffixes)
     if reference_pdb_path and wanted:
         derived.update(
             {k: v for k, v in rmsd_against_design(pdb_path, reference_pdb_path).items() if k in wanted}
         )
+    if include_tmol:
+        # By the same function and the same scorer the generated complex is read
+        # through, on a structure whose chains this module wrote. TMOL works the
+        # chains out itself, so an advisory complex needs no special casing.
+        derived.update(tmol_interface_metrics(pdb_path))
     return derived
 
 
@@ -945,6 +981,7 @@ def score_binders(
     reuse_cache: bool = True,
     keep_structures: bool = False,
     reference_pdb_path: str | None = None,
+    derive_tmol: bool = False,
 ) -> list[dict[str, float | str]]:
     """Advisory metrics for each binder against the target, in input order.
 
@@ -960,6 +997,10 @@ def score_binders(
     *reference_pdb_path* is the designed complex, which the geometry family is
     measured against. Only the derived side uses it, so a caller without one gets
     everything except scRMSD.
+
+    *derive_tmol* asks for the force-field family as well, and should carry the
+    same value as the run's ``compute_tmol``: the advisory structures then answer
+    the same four questions the generated complex does.
     """
     cfg = dict(cfg or {})
     if backend not in CONSENSUS_BACKENDS:
@@ -974,7 +1015,8 @@ def score_binders(
     # Only ask about the derivation when something is actually read off the
     # structures. With nothing registered there is no staleness that matters, and
     # asking would report every pre-split cache as stale on every run.
-    derivation = consensus_derivation_fingerprint() if CONSENSUS_DERIVED_SUFFIXES else None
+    wanted_suffixes = consensus_derived_suffixes(derive_tmol)
+    derivation = consensus_derivation_fingerprint(derive_tmol) if wanted_suffixes else None
 
     # Seeds are derived here rather than inside the scorer, so one place decides
     # what a fold's identity is and the scorer stays a pure function of its
@@ -1005,18 +1047,20 @@ def score_binders(
     # lacks a derived key -- an entry cached before its structure existed heals
     # itself once the PDB is there, instead of staying blank forever behind a
     # derivation fingerprint that already matches.
-    if scores and CONSENSUS_DERIVED_SUFFIXES and cache_dir:
+    if scores and wanted_suffixes and cache_dir:
         rederived: dict[str, dict[int, dict[str, float | str]]] = {}
         failed = 0
         for seq, by_seed in scores.items():
             for seed, metrics in by_seed.items():
-                if not derivation_stale and all(k in metrics for k in CONSENSUS_DERIVED_SUFFIXES):
+                if not derivation_stale and all(k in metrics for k in wanted_suffixes):
                     continue
                 pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, seed)
                 if not (isinstance(pdb, str) and os.path.exists(pdb)):
                     continue
                 try:
-                    derived = derive_from_structure(pdb, len(target_seqs), reference_pdb_path)
+                    derived = derive_from_structure(
+                        pdb, len(target_seqs), reference_pdb_path, include_tmol=derive_tmol
+                    )
                 except Exception as exc:
                     failed += 1
                     logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")

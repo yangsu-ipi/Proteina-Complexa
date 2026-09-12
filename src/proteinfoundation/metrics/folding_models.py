@@ -1,9 +1,11 @@
 import glob
+import json
 import os
 import shutil
 import subprocess
 from typing import Literal
 
+import numpy as np
 import torch
 from loguru import logger
 from transformers import AutoTokenizer, EsmForProteinFolding
@@ -13,6 +15,83 @@ from transformers.models.esm.openfold_utils.protein import Protein as OFProtein
 from transformers.models.esm.openfold_utils.protein import to_pdb
 
 hf_logging.set_verbosity_error()
+
+
+# =============================================================================
+# Fold confidence sidecars
+# =============================================================================
+#
+# pLDDT survives a fold because the backends write it into the B-factor column,
+# so anything holding the PDB can read it back. pTM and PAE do not: they exist
+# only in the folder's own output, and once the run ends the structure on disk
+# cannot answer for them. A monomer fold was therefore recorded as pLDDT and
+# nothing else, while the complex track reported the whole confidence family.
+#
+# So each backend writes what it knows beside the structure it wrote. A tiny
+# JSON, not a second PDB convention: it rides along with the kept structure
+# through the cache, the resume path and the re-derivation path without any of
+# them being taught about it, and a fold that predates it simply has no sidecar,
+# which every reader treats as unmeasured rather than as zero.
+
+
+CONFIDENCE_SIDECAR_SUFFIX = ".confidence.json"
+
+
+def confidence_sidecar_path(pdb_path: str) -> str:
+    """Where one folded structure's folder-reported confidence lives.
+
+    Appended rather than substituted for the extension: these files are named
+    ``esm_1_seed7.pdb_esm_apo_mpnn``, so there is no extension to replace.
+    """
+    return pdb_path + CONFIDENCE_SIDECAR_SUFFIX
+
+
+def write_fold_confidence(pdb_path: str, ptm=None, pae=None) -> None:
+    """Record pTM and mean PAE for one folded structure.
+
+    *pae* is the full predicted-aligned-error matrix in Angstroms, as every
+    backend reports it; it is stored reduced to its symmetrised mean and divided
+    by :data:`PAE_MAX_BIN`, which is the scale every other PAE column in Complexa
+    carries. A monomer has one chain, so there is no interface block to take and
+    the whole matrix is the answer.
+
+    Never raises. A sidecar that cannot be written costs a column, and a fold is
+    far more expensive than the number it failed to record.
+    """
+    from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
+
+    payload: dict[str, float] = {}
+    try:
+        if ptm is not None:
+            payload["pTM"] = float(ptm)
+        if pae is not None:
+            array = np.asarray(pae.detach().cpu() if hasattr(pae, "detach") else pae, dtype=float)
+            if array.ndim == 2 and array.size:
+                payload["pAE"] = float(((array + array.T) / 2).mean()) / PAE_MAX_BIN
+        if not payload:
+            return
+        with open(confidence_sidecar_path(pdb_path), "w") as handle:
+            json.dump(payload, handle)
+    except Exception as exc:
+        logger.warning(f"Could not record fold confidence for {pdb_path}: {exc}")
+
+
+def read_fold_confidence(pdb_path: str) -> dict[str, float]:
+    """What the folder said about one structure, or ``{}`` if it did not say.
+
+    Absent is unmeasured, not zero: folds cached before sidecars existed, and
+    backends that report no PAE, both land here.
+    """
+    path = confidence_sidecar_path(pdb_path)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as handle:
+            loaded = json.load(handle)
+        return {k: float(v) for k, v in loaded.items() if isinstance(v, (int, float))}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(f"Ignoring unusable confidence sidecar {path}: {exc}")
+        return {}
 
 
 def create_individual_fasta_files(
@@ -92,6 +171,9 @@ def run_esmfold(
 
     # Run ESMFold
     list_of_strings_pdb = []
+    # Positionally aligned with list_of_strings_pdb, so a batch that reports
+    # nothing contributes Nones rather than shifting the ones after it.
+    confidences: list[dict] = []
     if len(sequences) == 8:
         max_nres = max([len(x) for x in sequences])
         if max_nres > 700:
@@ -129,6 +211,7 @@ def run_esmfold(
 
         _list_of_strings_pdb = _convert_esm_outputs_to_pdb(_outputs)
         list_of_strings_pdb.extend(_list_of_strings_pdb)
+        confidences.extend(_batch_confidences(_outputs, len(_list_of_strings_pdb)))
 
     # Create out directory if not there
     if not os.path.exists(path_to_esmfold_out):
@@ -142,6 +225,9 @@ def run_esmfold(
         with open(fdir, "w") as f:
             f.write(pdb)
             out_esm_paths.append(fdir)
+        recorded = confidences[i] if i < len(confidences) else {}
+        if recorded:
+            write_fold_confidence(fdir, ptm=recorded.get("ptm"), pae=recorded.get("pae"))
 
     if not keep_outputs:
         # Clean up individual FASTA files directory
@@ -177,7 +263,7 @@ def run_esmfold2(
     cache_dir: str | None = None,
     keep_outputs: bool = False,
     seed: int | None = None,
-) -> list[str]:
+) -> list[str | None]:
     """Runs ESMFold2 on sequences and stores results as PDB files.
 
     Same contract as :func:`run_esmfold` -- one PDB per input sequence, returned
@@ -231,7 +317,12 @@ def run_esmfold2(
         # structure to measure scRMSD against, not a ranked best-of-N.
         single = result[0] if isinstance(result, list) else result
         if single is None:
-            logger.warning(f"ESMFold2 returned nothing for sequence {i + 1}/{len(sequences)}; skipping")
+            # None, not dropped. The caller zips these paths against the input
+            # sequences by position, so omitting a failure shifted every later
+            # structure onto the wrong sequence -- silently, and only for the
+            # designs unlucky enough to have one fail.
+            logger.warning(f"ESMFold2 returned nothing for sequence {i + 1}/{len(sequences)}")
+            out_paths.append(None)
             continue
         # Filename pattern mirrors run_esmfold's so anything downstream that
         # inspects names sees the same shape. Outputs land in a per-model
@@ -241,6 +332,9 @@ def run_esmfold2(
         fname = f"esm_{i + 1}_seed{seed}.pdb_esm_{suffix}"
         fdir = os.path.join(path_to_esmfold_out, fname)
         single.complex.to_protein_complex().to_pdb(fdir)
+        # What the folder knows and the PDB cannot carry. Same fields the advisory
+        # complex path reads off a MolecularComplexResult.
+        write_fold_confidence(fdir, ptm=getattr(single, "ptm", None), pae=getattr(single, "pae", None))
         out_paths.append(fdir)
 
     if not keep_outputs:
@@ -253,6 +347,30 @@ def run_esmfold2(
 
 
 # I got this function from hugging face's ESM notebook example
+def _batch_confidences(outputs, count: int) -> list[dict]:
+    """Per-sequence pTM and PAE out of one ESMFold batch, where they are there.
+
+    Guarded on the leading dimension rather than trusting the field to be
+    batched: a scalar pTM for a batch of four says nothing about which of the
+    four it describes, and a confidence attributed to the wrong sequence is
+    worse than an absent one. Both fields are optional on the HF output, so an
+    entry is simply ``{}`` when the model did not report them.
+    """
+    picked: list[dict] = [{} for _ in range(count)]
+    for field, key in (("ptm", "ptm"), ("predicted_aligned_error", "pae")):
+        value = outputs.get(field) if hasattr(outputs, "get") else getattr(outputs, field, None)
+        if value is None:
+            continue
+        try:
+            if len(value) != count:
+                continue
+        except TypeError:
+            continue
+        for i in range(count):
+            picked[i][key] = value[i]
+    return picked
+
+
 def _convert_esm_outputs_to_pdb(outputs) -> list[str]:
     """Takes ESMFold outputs and converts them to a list of PDBs (as strings)."""
     final_atom_positions = atom14_to_atom37(outputs["positions"][-1], outputs)
@@ -306,6 +424,28 @@ def colabfold_data_dir(cache_dir: str | None = None) -> str:
         "Set COLABFOLD_DATA_DIR, or AF2_DIR to the tree build_blackwell.sh creates at "
         "community_models/ckpts/AF2, or CACHE_DIR to a writable directory to download into."
     )
+
+
+def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: str) -> None:
+    """Copy pTM and PAE out of ColabFold's own scores file into a sidecar.
+
+    ColabFold writes ``{job}_scores_rank_001_*.json`` beside the structure, with
+    ``ptm`` and the full ``pae`` matrix in Angstroms. Reading the rank-001 file
+    rather than any of them matters: the returned PDB is rank 001, and a
+    confidence from a different ranked model would describe a structure nobody
+    kept.
+    """
+    matches = sorted(glob.glob(os.path.join(structures_dir, f"{seq_name}_scores_rank_001*.json")))
+    if not matches:
+        logger.debug(f"No ColabFold scores file for {seq_name}; its pTM and PAE stay unmeasured")
+        return
+    try:
+        with open(matches[0]) as handle:
+            scored = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Ignoring unusable ColabFold scores file {matches[0]}: {exc}")
+        return
+    write_fold_confidence(pdb_path, ptm=scored.get("ptm"), pae=scored.get("pae"))
 
 
 def run_colabfold(
@@ -382,6 +522,9 @@ def run_colabfold(
                     pdb_file_paths.append(new_path)
                 else:
                     pdb_file_paths.append(pdb_path)
+                _record_colabfold_confidence(
+                    f"{path_to_colabfold_out}/structures", seq_name, pdb_file_paths[-1]
+                )
                 found_pdb = True
                 break
 
