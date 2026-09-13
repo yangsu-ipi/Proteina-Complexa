@@ -12,9 +12,9 @@ Companion to `SKILL.md`. Every `evaluate_*_from_pdb_dir.yaml` and its paired `an
 | Motif protein binder   | `configs/example/evaluate_motif_binder.yaml` (no `_from_pdb_dir` variant; set `input_mode=pdb_dir`) | `configs/analyze_motif_binder.yaml` | `motif_protein_binder` | `colabdesign`, `rf3_latest` | `protein_mpnn` / `soluble_mpnn` |
 
 Notes:
-- **The folding-backend column is exhaustive.** `metric.binder_folding_method` accepts `colabdesign` and any name containing `rf3`, and nothing else: `binder_eval.py:107-153` ends in `raise ValueError(f"Folding model '{folding_model}' not supported")`. `esmfold`, `boltz2_default` and `protenix_base_default_v0.5.0` all crash the evaluate step, despite the comments at `evaluate_from_pdb_dir.yaml:70`, `binder_evaluate.yaml:23` and `example/evaluate_motif_binder.yaml:73-74`. `esmfold` and `esmfold2` belong to the separate monomer key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`).
+- **One key names every folder.** `metric.folding_models` accepts `af2`, `esmfold2`, `esmfold` and `rf3`, plus the implementation aliases `colabfold` and `colabdesign` (both resolve to `af2`) and versioned harness names like `rf3_latest`. Anything else is refused at config resolution rather than at the first fold. Which track a member serves is a capability, not a choice: `esmfold` folds no complex, `rf3` folds no isolated monomer.
 - The "Analyze config" column above is informational only. `complexa analysis` takes **one** config for both steps (`cli_runner.py:1021-1042`), and `analyze` finds the per-job CSVs by that config's stem — so pass the *evaluate* config to both. `configs/analyze.yaml` and `configs/analyze_motif_binder.yaml` define neither `results_dir` nor `output_dir`, so running them directly (`complexa analyze configs/analyze.yaml`) exits 1 with `results_dir does not exist: ./evaluation_results/analyze` (`analyze.py:3037`, `validate_config` at `:393-412`).
-- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.binder_folding_method`, and `metric.inverse_folding_model` on the CLI. Note the shipped defaults are the *ligand* ones — `rf3_latest` (`:72`), `ligand_mpnn` (`:84`), `result_type: ligand_binder` (`:200`), `analysis_modes: [binder]` (`:207`).
+- The protein-binder and ligand-binder cases share `evaluate_from_pdb_dir.yaml`; switch behavior by setting `result_type`, `metric.folding_models`, and `metric.inverse_folding_model` on the CLI. Its shipped `folding_models: [rf3, af2, esmfold2]` puts RF3 first, so RF3 is the folder its complex thresholds are written against.
 - There is no shipped `evaluate_motif_protein_binder_from_pdb_dir.yaml`; reuse `configs/example/evaluate_motif_binder.yaml` with `++input_mode=pdb_dir ++sample_storage_path=<dir> ++result_type=motif_protein_binder`. That config composes `- /design_tasks/ame_dict_v2@dataset` (`:24`), so `dataset.task_name` must be a key in `configs/design_tasks/ame_dict_v2.yaml` unless you point it at your own dict — see the `motif_target_dict_cfg` note in §2.
 
 ## 2. Evaluate config schema
@@ -34,7 +34,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
   - `dataset.task_name` — target key (e.g. `02_PDL1`, `39_7V11_LIGAND`).
 - Key `metric.*` fields:
   - `compute_binder_metrics: true`.
-  - `binder_folding_method` — picks the refolding backend (table above).
+  - `folding_models` — every folder that refolds, for every track (table above).
   - `sequence_types: [self|mpnn|mpnn_fixed]` — which sequence(s) to refold.
   - `num_redesign_seqs` — MPNN sequence count (default 8 here).
   - `interface_cutoff` — Å cutoff for interface residue detection (default 8.0 protein, 6.0 motif).
@@ -57,7 +57,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
 - Required `dataset.task_name` — must match a key in `ame_dict_v2`.
 - Key `metric.*`:
   - `compute_motif_binder_metrics: True`.
-  - `binder_folding_method: rf3_latest` (only RF3 makes sense for ligand motif binders).
+  - `folding_models: [rf3, af2, esmfold2]` (RF3 first, so it is the gated complex folder for ligand motif binders).
   - `inverse_folding_model: ligand_mpnn`.
   - `sequence_types: [mpnn_fixed, self]` (default — `mpnn_fixed` keeps the motif residues constant).
   - `interface_cutoff: 6.0`.
@@ -69,7 +69,7 @@ All `evaluate_*` configs share a top-level shape (run identification, `input_mod
 These ship for completeness; the `from_pdb_dir` variants are derived from them with `input_mode=pdb_dir` baked in.
 
 - `configs/evaluate.yaml` — unified binder evaluation, defaults `input_mode: generated`. Pass `++input_mode=pdb_dir ++sample_storage_path=<dir>` to evaluate an external directory.
-- `configs/example/evaluate_motif_binder.yaml` — motif binder (protein + ligand variants). Note the path: it ships under `configs/example/`, not `configs/` (`ls configs/*.yaml` has no `evaluate_motif_binder.yaml`, and the citations in `docs/INFERENCE.md:104` and `configs/analyze_motif_binder.yaml:3` are stale). Set `++result_type=motif_protein_binder` (with AF2/ColabDesign + ProteinMPNN/SolubleMPNN) or rely on the default `motif_ligand_binder` (RF3 + LigandMPNN). Its own shipped defaults are `binder_folding_method: rf3_latest` (`:75`), `inverse_folding_model: ligand_mpnn` (`:79`), `sequence_types: [mpnn_fixed, self]` (`:82`), `num_redesign_seqs: 1` (`:85`), `interface_cutoff: 6.0` (`:88`), and it composes `- /design_tasks/ame_dict_v2@dataset` (`:24`) with `dataset.task_name: M0024_1nzy`. Use this when you have motif-protein-binder PDBs — there is no dedicated `_from_pdb_dir` variant, so add `++input_mode=pdb_dir ++sample_storage_path=<dir>`.
+- `configs/example/evaluate_motif_binder.yaml` — motif binder (protein + ligand variants). Note the path: it ships under `configs/example/`, not `configs/` (`ls configs/*.yaml` has no `evaluate_motif_binder.yaml`, and the citations in `docs/INFERENCE.md:104` and `configs/analyze_motif_binder.yaml:3` are stale). Set `++result_type=motif_protein_binder` (with AF2/ColabDesign + ProteinMPNN/SolubleMPNN) or rely on the default `motif_ligand_binder` (RF3 + LigandMPNN). Its own shipped defaults are `folding_models: [rf3, af2, esmfold2]`, `inverse_folding_model: ligand_mpnn`, `sequence_types: [mpnn_fixed, self]` (`:82`), `num_redesign_seqs: 1` (`:85`), `interface_cutoff: 6.0` (`:88`), and it composes `- /design_tasks/ame_dict_v2@dataset` (`:24`) with `dataset.task_name: M0024_1nzy`. Use this when you have motif-protein-binder PDBs — there is no dedicated `_from_pdb_dir` variant, so add `++input_mode=pdb_dir ++sample_storage_path=<dir>`.
 
 ## 3. Analyze config schema
 
@@ -110,7 +110,7 @@ Both come from the `configs/example/evaluate_motif_binder.yaml` family + `analyz
 | Property                    | `motif_protein_binder`           | `motif_ligand_binder` (AME)        |
 |-----------------------------|----------------------------------|------------------------------------|
 | Target                      | Protein receptor                 | Small molecule ligand              |
-| Folding (`binder_folding_method`) | `colabdesign` (AF2) or `rf3_latest` | `rf3_latest`                  |
+| Folding (`folding_models`) | `[af2, esmfold2]` | `[rf3, af2, esmfold2]`        |
 | Inverse folding             | `protein_mpnn` / `soluble_mpnn`  | `ligand_mpnn`                      |
 | Motif criteria              | RMSD + seq recovery              | RMSD + seq recovery + ligand clashes |
 | Default binder threshold    | `i_pAE*31 <= 7.0`, `pLDDT >= 0.8`, `scRMSD_ca < 2.0` | `scRMSD_bb3 <= 2.0` |
@@ -169,7 +169,7 @@ User: "Re-fold these 200 PDL1 binders with AlphaFold2 and tell me what fraction 
 complexa analysis configs/evaluate_from_pdb_dir.yaml \
   ++sample_storage_path=/data/pdl1_designs \
   ++dataset.task_name=02_PDL1 \
-  ++metric.binder_folding_method=colabdesign \
+  ++metric.folding_models=[af2,esmfold2] \
   ++metric.inverse_folding_model=soluble_mpnn \
   ++metric.sequence_types=[self,mpnn_fixed] \
   ++metric.num_redesign_seqs=8 \
@@ -217,7 +217,7 @@ PY
 complexa analysis configs/evaluate_ame_from_pdb_dir.yaml \
   ++sample_storage_path=/data/ame_1nzy_designs_rf3_ready \
   ++dataset.task_name=M0024_1nzy \
-  ++metric.binder_folding_method=rf3_latest \
+  ++metric.folding_models=[rf3,af2,esmfold2] \
   ++metric.inverse_folding_model=ligand_mpnn \
   ++metric.sequence_types=[mpnn_fixed,self] \
   ++metric.num_redesign_seqs=2 \

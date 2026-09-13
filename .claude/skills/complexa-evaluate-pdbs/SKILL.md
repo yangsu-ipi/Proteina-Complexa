@@ -24,7 +24,7 @@ Score a directory of pre-existing PDB files against the same metrics Proteina-Co
 
 ## What this skill enables
 
-- Re-fold a directory of designed PDBs with AF2 (`colabdesign`) or RF3 (any value containing `rf3`, e.g. `rf3_latest`). Those are the **only** two values `metric.binder_folding_method` accepts — `binder_eval.py:107-153` raises `ValueError: Folding model '<x>' not supported` for anything else, including `esmfold`, `boltz2_default` and `protenix_*` (the stale comments at `evaluate_from_pdb_dir.yaml:70` and `binder_evaluate.yaml:23` notwithstanding). `esmfold` and `esmfold2` are valid only for the *monomer* key `metric.monomer_folding_models` (`monomer_eval_utils.py:38`: `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`) — the two keys are easy to conflate.
+- Re-fold a directory of designed PDBs with every folder in `metric.folding_models`. ONE list drives every track — the complex, the apo monomer, designability and codesignability — and each track gets the members that can serve it: `af2` and `esmfold2` fold both a monomer and a complex, `esmfold` only a monomer, `rf3` only a complex. A member that cannot serve a track is named in the run log; an unrecognised name is refused outright. `af2` is the model — `colabfold` (the monomer CLI) and `colabdesign` (the complex harness) are accepted as input aliases and never emitted.
 - Compute binder interface metrics: `i_pAE`, `min_ipAE`, `i_pTM`, `pLDDT`, binder/complex scRMSD.
 - Compute monomer **designability** (ProteinMPNN-redesigned scRMSD) and **codesignability** (original sequence refold scRMSD).
 - **Apo refolding** — fold each sequence *without* its target and gate on it. On by default (`metric.compute_apo_metrics`), and one of the **six** protein-binder success criteria: `apo scRMSD_ca < 2.0`. A design must fold as designed both with and without its target. (It was the fourth of four when apo folding landed; placement added two more — see the full list under "What analyze reports".)
@@ -46,7 +46,7 @@ Surface from `preflight.json`:
 - `env.missing_required` — must include the keys for the chosen folding backend:
   - `colabdesign` → `AF2_DIR`
   - `rf3_latest` (or any `*rf3*` name) → `RF3_CKPT_PATH`, `RF3_EXEC_PATH`
-  - ESMFold weights matter only if you additionally enable monomer metrics (`metric.compute_monomer_metrics=true` + `metric.monomer_folding_models=[esmfold]`). ESMFold is not a `binder_folding_method`; there is no third refolding backend to preflight for.
+  - Every folder in `metric.folding_models` needs its weights, for every track it serves. `af2` on the monomer side runs `colabfold_batch` from its own environment (`COLABFOLD_EXEC_PATH`), and on the complex side runs ColabDesign against `AF2_DIR`; `esmfold2` resolves through `HF_HOME`.
 - `tools.{foldseek,mmseqs}` — required by `aggregation.compute_diversity` / `compute_mmseqs_diversity` (both default `true`).
 
 If any required key is missing, route the user to the `complexa-setup` skill.
@@ -62,7 +62,7 @@ complexa analysis configs/evaluate_from_pdb_dir.yaml \
     ++sample_storage_path=/abs/path/to/pdbs \
     ++dataset.task_name=02_PDL1 \
     ++result_type=protein_binder \
-    ++metric.binder_folding_method=colabdesign \
+    ++metric.folding_models=[af2,esmfold2] \
     ++metric.inverse_folding_model=soluble_mpnn \
     ++run_name=eval_pdl1_af2
 ```
@@ -81,7 +81,7 @@ Use this when the user's PDBs are protein-binder designs (multi-chain, binder is
 > - **Protein-binder targets** — use `configs/evaluate.yaml`, which composes the right dict
 >   (`:31`, `- /targets/targets_dict@dataset`), and add `++input_mode=pdb_dir`. It defines no
 >   `result_type`, so set it explicitly:
->   `complexa analysis configs/evaluate.yaml ++input_mode=pdb_dir ++sample_storage_path=<dir> ++dataset.task_name=02_PDL1 ++result_type=protein_binder ++metric.binder_folding_method=colabdesign ++metric.inverse_folding_model=soluble_mpnn ++run_name=<run>`
+>   `complexa analysis configs/evaluate.yaml ++input_mode=pdb_dir ++sample_storage_path=<dir> ++dataset.task_name=02_PDL1 ++result_type=protein_binder ++metric.folding_models=[af2,esmfold2] ++metric.inverse_folding_model=soluble_mpnn ++run_name=<run>`
 >   (its shipped `dataset.task_name: COM03_NIPAH` at `:88` is not a key in `targets_dict.yaml`,
 >   so the override is mandatory).
 > - **Ligand targets** — no shipped evaluate config composes `ligand_targets_dict.yaml` at all.
@@ -108,7 +108,7 @@ The standalone `configs/analyze*.yaml` files are not runnable on their own: they
 | Motif protein binder (standalone) | No — no `_from_pdb_dir` variant | `configs/example/evaluate_motif_binder.yaml` + `++input_mode=pdb_dir` | `motif_protein_binder` — override; the config's own default is `motif_ligand_binder` | `rf3_latest` (`:75`) |
 
 `configs/evaluate_from_pdb_dir.yaml` as shipped is a **ligand-binder** config:
-`binder_folding_method: rf3_latest` (`:72`), `inverse_folding_model: ligand_mpnn` (`:84`),
+`folding_models: [rf3, af2, esmfold2]`, `inverse_folding_model: ligand_mpnn`,
 `result_type: ligand_binder` (`:200`), `aggregation.analysis_modes: [binder]` (`:207`). Omit the
 overrides in the protein-binder command above and you get a ligand-binder run, not an AF2
 protein-binder one.
@@ -124,7 +124,7 @@ complexa analysis configs/evaluate_from_pdb_dir_ligand.yaml \
     ++sample_storage_path=/abs/path/to/pdbs \
     ++dataset.task_name=39_7V11_LIGAND \
     ++result_type=ligand_binder \
-    ++metric.binder_folding_method=rf3_latest \
+    ++metric.folding_models=[rf3,af2,esmfold2] \
     ++metric.inverse_folding_model=ligand_mpnn \
     ++run_name=eval_v11_rf3
 ```
@@ -166,13 +166,13 @@ Prefer `complexa analysis` (the evaluate→analyze chain) — it reuses the same
 complexa analysis configs/evaluate_from_pdb_dir.yaml \
   ++sample_storage_path=/abs/path/to/pdbs \
   ++dataset.task_name=02_PDL1 \
-  ++metric.binder_folding_method=colabdesign \
+  ++metric.folding_models=[af2,esmfold2] \
   ++metric.inverse_folding_model=soluble_mpnn \
   ++result_type=protein_binder \
   ++run_name=eval_pdl1_af2
 ```
 
-For ligand binders flip `binder_folding_method=rf3_latest`, `inverse_folding_model=ligand_mpnn`, `result_type=ligand_binder`. For AME use `configs/evaluate_ame_from_pdb_dir.yaml` — see `reference/eval_configs.md` for full worked examples.
+For ligand binders flip `folding_models=[rf3,af2,esmfold2]`, `inverse_folding_model=ligand_mpnn`, `result_type=ligand_binder` — `af2` drops itself from the complex track for a ligand target, with the reason logged. For AME use `configs/evaluate_ame_from_pdb_dir.yaml` — see `reference/eval_configs.md` for full worked examples.
 
 If you need to inspect output between stages, run them separately. The configs above are shared between `evaluate` and `analyze`:
 

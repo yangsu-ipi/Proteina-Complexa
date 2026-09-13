@@ -151,6 +151,15 @@ hydra:
   run:
     dir: ./logs/hydra_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
+# Inherited from binder_evaluate unless a campaign overrides it. Spelled out
+# here because it is the one metric key a campaign most often wants to change,
+# and because overriding ANY of the keys it replaces -- binder_folding_method,
+# monomer_folding_models, designability_folding_models,
+# codesignability_folding_models, apo_folding_models, consensus_backends -- while
+# the base config supplies this one is refused when the two disagree.
+metric:
+  folding_models: [af2, esmfold2]
+
 generation:
   task_name: 99_MYTARGET
   target_dict_cfg:

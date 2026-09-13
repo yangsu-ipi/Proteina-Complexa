@@ -49,14 +49,14 @@ heavier per-sample state than AF2.
 model or the evaluator tries to resolve `${oc.env:AF2_DIR}`.
 
 **Cause:** The protein binder pipeline's `af2folding` reward model and the
-default `binder_folding_method: colabdesign` both read `AF2_DIR` from the
+default `folding_models: [af2, esmfold2]` both read `AF2_DIR` from the
 environment. If `.env` does not define it, Hydra interpolation fails.
 
 **Fix:** Add `AF2_DIR=/path/to/af2_params` to `.env`. There is no cheaper
-backend to fall back to: `metric.binder_folding_method` accepts only
+backend to fall back to: `metric.folding_models` accepts only
 `colabdesign` or a name containing `rf3` (`binder_eval.py:107-153`), so
 `colabdesign` is the only AF2 path. (`esmfold` is valid only for the different
-key `metric.monomer_folding_models`.) If the GPU is the problem rather than the
+same `metric.folding_models` list.) If the GPU is the problem rather than the
 weights, lower `++generation.dataloader.batch_size`, `++eval_njobs`, or
 `++metric.num_redesign_seqs`.
 

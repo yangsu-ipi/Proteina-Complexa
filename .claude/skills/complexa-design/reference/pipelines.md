@@ -95,7 +95,7 @@ ligand and let the model build the rest of the protein around them.
   `search_ame_local_pipeline.yaml`. The CLI runner injects this into the
   subprocess environment.
 - Default success thresholds (`motif_ligand_binder`), from
-  `DEFAULT_MOTIF_LIGAND_BINDER_SUCCESS` (`motif_binder_analysis_utils.py:72-89`):
+  `DEFAULT_MOTIF_LIGAND_BINDER_SUCCESS` (`motif_binder_analysis_utils.py:73-90`):
   the binder side is **only** `scRMSD_bb3 <= 2.0`; the motif side is
   `motif_rmsd_pred <= 1.5`, `correct_motif_sequence >= 1.0`, and
   `has_ligand_clashes < 0.5`. There is no `i_pAE` and no `pLDDT` criterion — the
@@ -104,8 +104,8 @@ ligand and let the model build the rest of the protein around them.
   criteria simultaneously.
 - Pre- and post-refolding interface metrics are **disabled**:
   `compute_pre_refolding_metrics` and `compute_refolded_structure_metrics` are
-  both `false` (`ame_evaluate.yaml:73, :81`), as are all four sub-toggles
-  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:405-407`
+  both `false` (`ame_evaluate.yaml:90, :81`), as are all four sub-toggles
+  (`bioinformatics`, `tmol`). There is no HBPLUS toggle — `evaluate.py:416-418`
   reads only `bioinformatics` and `tmol`.
 - Quick command:
   ```bash
@@ -198,5 +198,5 @@ Pass-rate columns land in `filter_results/res_filter_*_pass_*.csv` (AME's
 `res_filter_motif_binder_pass_*.csv` goes to `motif_binder_metrics/` instead);
 diversity columns in `diversity/res_div_foldseek_*.csv` and
 `diversity/res_div_mmseqs_*.csv`; per-design metrics in the combined CSV. The
-subdirectories are created by `organize_results()` (`analyze.py:2928-2971`),
+subdirectories are created by `organize_results()` (`analyze.py:2932-2975`),
 which moves these files out of the results-dir root.

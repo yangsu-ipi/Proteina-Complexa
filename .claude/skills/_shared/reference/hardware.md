@@ -35,12 +35,14 @@ Notes:
 | ESMFold (monomer only) |         16 | `fair-esm`, internet/cache OK    | ~5–15 s (empirical)        |
 
 Binder / complex folding is selected via
-`++metric.binder_folding_method=colabdesign|rf3_latest` — those are the only two accepted
+`++metric.folding_models=[af2,esmfold2]` — one list for every refold
 values (`binder_eval.py:107-153` raises `ValueError: Folding model '<x>' not supported` for
 anything else). ESMFold is **not** a valid binder backend; it is accepted only for the
-separate monomer key `++metric.monomer_folding_models=[esmfold]` — which also accepts
+the same key, since one list drives every track — which also accepts
 `esmfold2` (single-chain, single-sequence, Fast-Cutoff2025 checkpoint)
-(`monomer_eval_utils.py:41`, `VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]`).
+(`column_names.py`, `FOLDING_MODELS = ("af2", "esmfold2", "esmfold", "rf3")`). `af2` is the
+model; `colabfold` and `colabdesign` are how it is run for a monomer and a complex, and
+both are accepted as input aliases.
 
 ## Search-algorithm cost multipliers
 
@@ -88,9 +90,9 @@ Try these in order — cheapest mitigations first:
 - Set `++metric.keep_folding_outputs=false` to free fold-stage RAM/disk
   pressure (helps when an OOM lands during evaluation).
 - Switch fold backend to the cheaper of the two valid ones:
-  `++metric.binder_folding_method=colabdesign` (~16 GB) instead of
+  `++metric.folding_models=[af2,esmfold2]` (~16 GB) instead of
   `rf3_latest` (~24 GB). There is no lighter third option — ESMFold is not a
-  valid `binder_folding_method` (see above).
+  valid member of `folding_models` (see above).
 - For AME: confirm `USE_V2_COMPLEXA_ARCH=True` matches the AME checkpoint —
   loading the wrong arch wastes ~10–20% VRAM (empirical).
 - Multi-GPU host: set `CUDA_VISIBLE_DEVICES=<idx>` to pin the run to a single
@@ -155,7 +157,7 @@ the moment `batch_size`, `nres` or the target changes, and it goes stale silentl
 
 **Both stages need it, and evaluation needs it more.** Generation has JAX through
 `AF2RewardModel` in `predict_step`. Evaluation has it too whenever
-`metric.binder_folding_method: colabdesign` — ColabDesign *is* AF2 *is* JAX — so
+`metric.folding_models: [af2, ...]` — af2 on a complex runs through ColabDesign, which *is* JAX — so
 "evaluate is torch-only" is wrong, and it is wrong in the direction that hurts.
 
 Measured on the CBLN1 smoke test, in the evaluation process:

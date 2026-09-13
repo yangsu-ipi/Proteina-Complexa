@@ -59,7 +59,7 @@ on GPU while the ESM2 path is fp32.
 
 ```yaml
 metric:
-  consensus_backends: [esmfold2]     # [] disables; "esmfold2" is the only registered backend
+  folding_models: [af2, esmfold2]    # every folder, every track
   reuse_cached_consensus: true       # per design, one cache file per backend
   consensus_cfg:
     target_msa: /path/to/target.a3m  # single-chain target
@@ -105,7 +105,7 @@ target. On by default with plain ESMFold; to use ESMFold2:
 ```yaml
 metric:
   compute_apo_metrics: true
-  apo_folding_models: [esmfold2]   # -> biohub/ESMFold2-Experimental-Fast-Cutoff2025
+  folding_models: [af2, esmfold2]  # esmfold2 -> biohub/ESMFold2-Experimental-Fast-Cutoff2025
   apo_rmsd_modes: [ca]
   reuse_cached_apo_folds: true
 ```
@@ -138,8 +138,8 @@ number sharing one fold. If they ever disagree, something upstream of both is
 wrong.
 
 **Caveat to report with any apo number:** apo and holo scRMSD are the same
-quantity from *different predictors* (apo: `apo_folding_models`; holo:
-`binder_folding_method`), so their difference mixes target dependence with
+quantity from the same folder list on both sides now (`metric.folding_models`),
+so their difference no longer mixes target dependence with
 predictor disagreement, and the 1.5 Å and 2.0 Å thresholds are not calibrated
 against each other.
 

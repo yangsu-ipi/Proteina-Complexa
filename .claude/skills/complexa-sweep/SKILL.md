@@ -115,7 +115,7 @@ Once the dry-run looks right, drop `--dryrun` to materialize `inf_{idx}_{run_nam
 > **`evaluate.py` never reads `root_path`**: with `sample_storage_path` absent it builds
 > `./inference/{config_name}_{target_task_name}` and appends `_{run_name}` (`:750, :770-785`),
 > e.g. `./inference/inf_0_my_sweep_22_DerF21_search_binder_local` — not where generate wrote.
-> `analyze.py:3037, :2947-2953` does the same for `results_dir`. A sweep driven by
+> `analyze.py:3041, :2947-2953` does the same for `results_dir`. A sweep driven by
 > `complexa design` therefore yields structures and **no usable evaluation results**.
 
 Split the stages instead. All four subcommands take a config-path positional plus Hydra overrides (`add_common_args`, `cli_runner.py:904-921`, wired into `generate`, `filter`, `evaluate`, `analyze` at `:979-1017`), so the pair can be threaded explicitly:
@@ -186,11 +186,11 @@ ls ./evaluation_results/eval_*_my_sweep*/RAW_*_combined.csv
 
 | File | Written by | Notes |
 |---|---|---|
-| `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:900`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:872`), `motif_results_*` (`:923`), `motif_binder_results_*` (`:949`) |
-| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3189`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
-| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:723`, relocated by `organize_results`, `analyze.py:2918-2996`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:254`) |
+| `binder_results_{config_name}_{job_id}.csv` | `evaluate` (`evaluate.py:913`) | per-job. `{config_name}` is the eval config stem, e.g. `eval_0_my_sweep`. Other flavours: `monomer_results_*` (`:885`), `motif_results_*` (`:936`), `motif_binder_results_*` (`:962`) |
+| `RAW_{result_type}_results_{config_name}_combined.csv` | `analyze` (`analyze.py:3231`) | **the file to parse.** `result_type` is `protein_binder` for `search_binder_local_pipeline` (`binder_analyze.yaml:12`) |
+| `filter_results/res_filter_binder_pass_*.csv` | `analyze` (`binder_analysis.py:955`, relocated by `organize_results`, `analyze.py:2922-3000`) | pre-computed pass rates — read these instead of rethresholding by hand. Ligand runs write `res_filter_ligand_pass_*`, motif runs `res_filter_motif_binder_pass_*` (`motif_binder_analysis.py:254`) |
 
-The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:618, :593`), with one column *prefix* per requested `metric.sequence_types` value:
+The combined CSV has **one row per generated sample** (`id_gen`, an enumerate index — `binder_eval.py:827, :593`), with one column *prefix* per requested `metric.sequence_types` value:
 
 | Column | Meaning |
 |---|---|
@@ -198,11 +198,11 @@ The combined CSV has **one row per generated sample** (`id_gen`, an enumerate in
 | `{seq}_complex_pLDDT` | complex pLDDT of the best refold, 0–1 |
 | `{seq}_binder_scRMSD_ca` | binder CA scRMSD, Å |
 | `{seq}_sequence` | the binder sequence (`binder_eval.py:816`) |
-| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:249-273`) |
+| `{seq}_{prefix}_{metric}_all` | the per-redesign list the threshold filter actually reads (`binder_analysis_utils.py:251-275`) |
 
 `i_pae`, `i_plddt`, `sc_rmsd`, `binder_seq` and `passes_filter` **do not exist anywhere in this repo** — a repo-wide grep for `passes_filter` matches only this skill's own files. There is no interface-pLDDT column at all, and no boolean pass column in the raw CSV.
 
-Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:98-183`) and there are **six**: `complex_i_pAE` (`scale: 31.0`, `threshold: 7.0`, `op: "<="`), `complex_binder_pLDDT >= 0.9`, `binder_scRMSD_ca < 1.5`, `apo_scRMSD_ca < 2.0` (per folding model), `complex_scRMSD_ca < 2.0` and `binder_scRMSD_target_aligned_ca < 2.0`. Recomputing from the older three overreports: on a 340-design campaign the last three took 97 passing designs to 89. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:425-426`), so if you retune, supply every entry complete with `scale`, `column_prefix` and `metric` — keys are names now, and `metric` carries the column suffix, because `binder_scRMSD_ca` and `complex_scRMSD_ca` differ only by prefix.
+Do not invent thresholds either. The protein-binder defaults are `DEFAULT_PROTEIN_BINDER_THRESHOLDS` (`binder_analysis_utils.py:98-183`) and there are **six**: `complex_i_pAE` (`scale: 31.0`, `threshold: 7.0`, `op: "<="`), `complex_binder_pLDDT >= 0.9`, `binder_scRMSD_ca < 1.5`, `apo_scRMSD_ca < 2.0` (per folding model), `complex_scRMSD_ca < 2.0` and `binder_scRMSD_target_aligned_ca < 2.0`. Recomputing from the older three overreports: on a 340-design campaign the last three took 97 passing designs to 89. Because the stored `i_pAE` column is 0–1, an `i_pae < 10` test passes every single sample and reports 100% success. And a *partial* `aggregation.success_thresholds` override replaces the whole default dict rather than merging (`binder_analysis.py:657-658`), so if you retune, supply every entry complete with `scale`, `column_prefix` and `metric` — keys are names now, and `metric` carries the column suffix, because `binder_scRMSD_ca` and `complex_scRMSD_ca` differ only by prefix.
 
 **Preferred path: read `success_rate` per config out of `filter_results/res_filter_binder_pass_*.csv`** rather than recomputing it from the raw CSV. Fall back to the raw columns above only if that file is absent (e.g. `aggregation.analysis_modes` excluded `binder`).
 

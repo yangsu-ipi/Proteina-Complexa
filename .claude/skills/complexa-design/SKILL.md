@@ -50,7 +50,7 @@ for those, including three failure modes that are silent.
 
 Protein binder, ligand binder, and AME motif-scaffolding design; search-based
 optimization (single-pass, best-of-n, beam-search, fk-steering, mcts); refold
-with ColabDesign (AF2) or RF3 — `metric.binder_folding_method` takes only
+with AF2 or RF3 — `metric.folding_models` takes only
 `colabdesign` or an `rf3*` name, else `ValueError` (`binder_eval.py:107-153`);
 pass-rate and diversity analysis per `result_type`.
 
@@ -104,7 +104,7 @@ ColabDesign. **If the user did not specify, this is what they want.**
 ```bash
 complexa design configs/search_ligand_binder_local_pipeline.yaml \
     ++run_name=v11_v1 ++generation.task_name=39_7V11_LIGAND \
-    ++metric.binder_folding_method=rf3_latest
+    ++metric.folding_models=[rf3,af2,esmfold2]
 ```
 
 For "ligand binder", "small-molecule pocket", "SMILES target", "ATP-binding
@@ -190,7 +190,7 @@ complexa design configs/search_binder_local_pipeline.yaml \
     ++generation.task_name=02_PDL1 \
     ++generation.search.algorithm=beam-search \
     ++generation.search.beam_search.beam_width=8 \
-    ++metric.binder_folding_method=colabdesign
+    ++metric.folding_models=[af2,esmfold2]
 ```
 
 For ligand binder / AME, swap the pipeline YAML and target name per Step 2's
@@ -280,7 +280,7 @@ default) is in [reference/overrides.md](reference/overrides.md).
 | `++generation.args.nsteps=200` | `400` | Diffusion steps (fewer = faster, lower quality) |
 | `++generation.dataloader.batch_size=8` | `16` (binder/ligand/AME) | Drop to 8 on a 40GB GPU |
 | `++generation.filter.filter_samples_limit=500` | `1000` | Top-N samples to keep after filtering |
-| `++metric.binder_folding_method=rf3_latest` | `colabdesign` (binder), `rf3_latest` (ligand/AME) | Evaluation refold backend — only `colabdesign` or an `rf3*` name is accepted |
+| `++metric.folding_models=[rf3,af2,esmfold2]` | `[af2, esmfold2]` (binder), `[rf3, af2, esmfold2]` (ligand/AME) | Every folder this campaign refolds with — complex, apo, designability, codesignability. The first complex-capable member is the one the complex thresholds are written against |
 | `++metric.num_redesign_seqs=8` | `8` (protein target) / `1` (ligand target), from `binder_eval_utils.py:58-59` | ProteinMPNN/LigandMPNN/SolubleMPNN sequences per design |
 | `aggregation.success_thresholds` (full dict, see below) | six for a protein binder: `i_pAE*31<=7.0`, `binder pLDDT>=0.9`, `binder scRMSD_ca<1.5`, `apo scRMSD_ca<2.0`, `complex scRMSD_ca<2.0`, `binder scRMSD_target_aligned_ca<2.0` | Loosen / tighten success criteria |
 

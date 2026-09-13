@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 
 import yaml
@@ -202,7 +203,7 @@ def target_msa_failures(cfg: dict, metric: dict) -> list[str]:
     pipeline's own ``_target_msas`` before it returns. Re-parsing a 16k-sequence
     a3m here to re-derive that would cost real time on every stage of every run.
     """
-    if not (metric.get("consensus_backends") or []):
+    if not _complex_folders_beyond_the_first(metric):
         return []
     if "ligand" in str(cfg.get("result_type", "")):
         return []
@@ -242,6 +243,51 @@ def hf_repo_present(root: Path, repo: str) -> bool:
     d=root/("models--"+repo.replace("/","--"))
     return d.is_dir() and any((d/"snapshots").glob("*"))
 
+_LEGACY_FOLDER_KEYS = (
+    "consensus_backends",
+    "apo_folding_models",
+    "monomer_folding_models",
+    "designability_folding_models",
+    "codesignability_folding_models",
+)
+
+
+def _declared_folders(metric):
+    """Every folder this config names, in the canonical vocabulary.
+
+    Reads metric.folding_models AND the keys it replaces, because a campaign
+    package mid-migration may still carry either. Missing folding_models here was
+    how a run reached evaluate without the weights it needed: the gate looked at
+    three keys, and the config had moved to a fourth.
+    """
+    names = set(metric.get("folding_models") or [])
+    for key in _LEGACY_FOLDER_KEYS:
+        names.update(metric.get(key) or [])
+    primary = metric.get("binder_folding_method")
+    if primary:
+        names.add(primary)
+    # colabfold and colabdesign are how af2 is run, not models of their own.
+    canonical = set()
+    for name in names:
+        text = str(name).strip().lower()
+        if text in ("colabfold", "colabdesign") or text.startswith("af2"):
+            canonical.add("af2")
+        elif text.startswith("rf3"):
+            canonical.add("rf3")
+        elif text:
+            canonical.add(text)
+    return canonical
+
+
+def _complex_folders_beyond_the_first(metric):
+    """Whether anything folds the complex besides the gated folder.
+
+    The target MSA is only consumed by a sequence-folding complex backend, so
+    this decides whether to demand one.
+    """
+    return {f for f in _declared_folders(metric) if f in ("esmfold2",)}
+
+
 def main() -> int:
     p=argparse.ArgumentParser(); p.add_argument("preflight",type=Path); p.add_argument("--resolved-config",type=Path,required=True); p.add_argument("--expected-designs",type=int,required=True)
     p.add_argument("--require-hf-repo",action="append",default=[],metavar="REPO",
@@ -257,7 +303,22 @@ def main() -> int:
     elif int(gpu.get("vram_gb",0))<a.min_vram_gb: failures.append(f"visible GPU has <{a.min_vram_gb} GB VRAM")
     for ck in ("complexa.ckpt","complexa_ae.ckpt"):
         if not data.get("checkpoints",{}).get(ck,{}).get("exists"): failures.append(f"missing {ck}")
-    if metric.get("binder_folding_method")=="colabdesign" and not cm.get("AF2_DIR",{}).get("exists"): failures.append("missing AF2_DIR")
+    folders = _declared_folders(metric)
+    # af2 on a COMPLEX runs through ColabDesign against AF2_DIR.
+    if "af2" in folders and not cm.get("AF2_DIR", {}).get("exists"):
+        failures.append("missing AF2_DIR (af2 folds the complex through ColabDesign)")
+    # af2 on a MONOMER runs colabfold_batch from its own environment, and there
+    # was no check for it at all -- a missing binary surfaced hours into a run,
+    # in the apo stage, rather than at the door.
+    if "af2" in folders:
+        exec_path = os.environ.get("COLABFOLD_EXEC_PATH")
+        on_path = shutil.which("colabfold_batch")
+        if not exec_path and not on_path:
+            failures.append(
+                "af2 refolds monomers with colabfold_batch, which is not on PATH and "
+                "COLABFOLD_EXEC_PATH is unset; set it to a colabfold_batch installed WITH its "
+                "[alphafold] extra (never into the complexa env)"
+            )
     # A tool is required because the config routes to it, not because it happens
     # to be absent. preflight.sh reports facts and is deliberately config-blind;
     # deciding what this run actually needs is this script's job. Every CBLN1 run
@@ -298,7 +359,7 @@ def main() -> int:
         if not hf_repo_present(hf,repo): failures.append(f"HF cache lacks usable snapshot for {repo} under {hf}")
     # Only when something in the config actually routes to them. Checking
     # unconditionally fails a perfectly good plain-ESMFold campaign.
-    backends={str(x) for k in ("consensus_backends","apo_folding_models","monomer_folding_models") for x in (metric.get(k) or [])}
+    backends=_declared_folders(metric)
     if "esmfold2" in backends or str(metric.get("esm_backend","")).startswith("esmc"):
         try:
             import esm  # noqa: F401

@@ -20,7 +20,7 @@ resolves against the cwd run_campaign.sh already cds to. That keeps the package 
 the work directory below lands beside the alignment, inside the package, for the same
 reason.
 
-Only the *target* gets an MSA. The binder never does -- `consensus_folding.py:163`
+Only the *target* gets an MSA. The binder never does -- `consensus_folding.py:257`
 passes `msa=None` for it unconditionally, because a de novo miniprotein has no
 meaningful alignment and a spurious one makes the prediction worse.
 
@@ -42,7 +42,7 @@ THE PUBLIC SERVER IS A SHARED FREE RESOURCE
 -------------------------------------------
 `https://api.colabfold.com` is run for the community. This script queries it once
 per target chain per campaign -- `PREPARE_STEPS` runs before EVERY stage
-(`run_campaign.sh:156`), so a re-run of `evaluate` would otherwise re-query -- by
+(`run_campaign.sh:175`), so a re-run of `evaluate` would otherwise re-query -- by
 skipping any output that already exists and still validates. Point `--host-url` at
 your own MMseqs2 server if you are doing this at volume, and set a contact in
 `--user-agent`: ColabFold asks for one and warns that it will become mandatory.
@@ -72,10 +72,10 @@ def missing(dep: str, what: str, how: str) -> SystemExit:
 def target_sequence(pdb: str, chain: str) -> str:
     """The chain sequence, read the way evaluation reads it.
 
-    Not the contig. `binder_eval.py:600` folds `_target_chain_sequences`, which is
+    Not the contig. `binder_eval.py:809` folds `_target_chain_sequences`, which is
     `extract_seq_from_pdb(path, chain_id=...)` over the WHOLE chain -- `target_input`
     never enters it. An MSA whose query is the contig subset would be rejected at
-    evaluate time by the query-length check in `consensus_folding.py:322`, hours in.
+    evaluate time by the query-length check in `consensus_folding.py:528`, hours in.
     Calling the pipeline's own function is what keeps the two identical.
     """
     try:
@@ -211,7 +211,7 @@ def write_provenance(a3m: Path, msa, seq: str, pdb: str, chain: str, host_url: s
     An a3m is an opaque blob months later, and the campaign's own metadata does not
     cover files fetched by a prepare step. The digest is what makes "the MSA changed"
     answerable -- and evaluation digests the same contents into its cache fingerprint
-    (`consensus_folding.py:500-509`), so a changed alignment invalidates rather than
+    (`consensus_folding.py:908-917`), so a changed alignment invalidates rather than
     serving scores computed against the old one.
     """
     side = a3m.with_suffix(a3m.suffix + ".provenance.json")
@@ -290,7 +290,7 @@ def main() -> int:
     # Printed to be pasted, like check_target_pdb.py's target_input. The plural form
     # is not optional for a multi-chain target: target_msa_paths takes one entry per
     # chain, null where a chain has none, or it raises with the counts
-    # (`consensus_folding.py:308`).
+    # (`consensus_folding.py:514`).
     print("\nadd to pipeline.yaml under metric.consensus_cfg:")
     if len(written) == 1:
         print(f"    target_msa: {written[0]}")
