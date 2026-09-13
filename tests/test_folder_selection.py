@@ -27,7 +27,9 @@ def _warnings(fn):
 
 def test_one_list_serves_every_track_it_can():
     resolved = resolve_folding_models({"folding_models": ["af2", "esmfold2"]})
-    assert resolved.monomer == ["af2", "esmfold2"]
+    assert resolved.designability == ["af2", "esmfold2"]
+    assert resolved.codesignability == ["af2", "esmfold2"]
+    assert resolved.apo == ["af2", "esmfold2"]
     assert resolved.complex == ["af2", "esmfold2"], "both fold a complex; only gating differed"
 
 
@@ -37,7 +39,7 @@ def test_a_folder_that_cannot_serve_a_track_is_named_not_dropped_in_silence():
     resolved, seen = _warnings(
         lambda: resolve_folding_models({"folding_models": ["af2", "esmfold", "rf3"]})
     )
-    assert resolved.monomer == ["af2", "esmfold"], "rf3 folds no isolated monomer here"
+    assert resolved.apo == ["af2", "esmfold"], "rf3 folds no isolated monomer here"
     assert resolved.complex == ["af2", "rf3"], "esmfold v1 folds no complex"
     assert any("esmfold does not refold complex" in m for m in seen)
     assert any("rf3 does not refold monomer" in m for m in seen)
@@ -59,7 +61,7 @@ def test_a_ligand_target_loses_af2_from_the_complex_track_with_a_reason():
         lambda: resolve_folding_models({"folding_models": ["af2", "esmfold2"]}, is_target_ligand=True)
     )
     assert resolved.complex == ["esmfold2"]
-    assert resolved.monomer == ["af2", "esmfold2"], "the monomer track is unaffected"
+    assert resolved.apo == ["af2", "esmfold2"], "the monomer tracks are unaffected"
     assert any("ColabDesign refuses one" in m for m in seen)
 
 
@@ -74,7 +76,11 @@ def test_the_legacy_keys_still_decide_what_a_running_campaign_folds():
         "consensus_backends": ["esmfold2"],
     }
     resolved, seen = _warnings(lambda: resolve_folding_models(legacy))
-    assert resolved.monomer == ["esmfold", "esmfold2", "af2"], "old names resolve to the new vocabulary"
+    # Per track, NOT unioned: these keys hold different values on purpose, and a
+    # resuming campaign must refold what it refolded.
+    assert resolved.designability == ["esmfold"], "monomer_folding_models still governs designability"
+    assert resolved.codesignability == ["esmfold"]
+    assert resolved.apo == ["esmfold2", "af2"], "and apo keeps its own, in the new vocabulary"
     assert resolved.complex == ["af2", "esmfold2"], "colabdesign is how af2 folds a complex"
     assert any("replaced by one metric.folding_models" in m for m in seen)
 
@@ -93,7 +99,8 @@ def test_a_config_naming_nothing_still_resolves_to_what_it_used_to():
     """No keys at all is the shipped default of several configs, and it must not
     become an error or a silently wider set."""
     resolved, _ = _warnings(lambda: resolve_folding_models({}))
-    assert resolved.monomer == ["esmfold"], "the historical default"
+    assert resolved.designability == ["esmfold"], "the historical default"
+    assert resolved.apo == ["esmfold"], "apo's own historical default, not the shared one"
     assert resolved.complex == [], "and no complex folder without one named"
 
 
@@ -132,3 +139,19 @@ def test_every_folder_name_a_config_may_use_resolves_somewhere():
     assert folder_family("rf3_latest") == "rf3", "a versioned harness"
     assert folder_family("esmfold2") == "esmfold2"
     assert folder_family("nonsense") is None
+
+
+def test_the_legacy_path_never_widens_a_track_by_union():
+    """The trap in wiring this: unioning the per-track keys would make a campaign
+    whose designability used ESMFold v1 and whose apo used ESMFold2 + AF2 suddenly
+    fold designability with all three -- changing what a resuming campaign refolds,
+    which is the one thing the legacy path exists to prevent."""
+    resolved = resolve_folding_models(
+        {
+            "monomer_folding_models": ["esmfold"],
+            "apo_folding_models": ["esmfold2", "colabfold"],
+        }
+    )
+    assert resolved.designability == ["esmfold"]
+    assert resolved.apo == ["esmfold2", "af2"]
+    assert resolved.monomer == ["esmfold", "esmfold2", "af2"], "the union is for REPORTING only"

@@ -22,6 +22,7 @@ two sources of truth for what folded is not a thing precedence should resolve.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from loguru import logger
 
@@ -51,19 +52,39 @@ class FolderSelectionError(ValueError):
 
 @dataclass
 class ResolvedFolders:
-    """Which folders serve which track, for one run."""
+    """Which folders serve which track, for one run.
 
-    monomer: list[str] = field(default_factory=list)
+    Per track rather than per capability, because the legacy keys genuinely hold
+    different values per track and a resuming campaign must refold what it
+    refolded. Under one ``folding_models`` list the three monomer tracks are
+    identical -- which is the point -- but the shape has to be able to express a
+    campaign where they are not.
+    """
+
+    designability: list[str] = field(default_factory=list)
+    codesignability: list[str] = field(default_factory=list)
+    apo: list[str] = field(default_factory=list)
     complex: list[str] = field(default_factory=list)
-    # Recorded per row so a result says which folders produced it, the way
+    # Recorded so a result says where its folder list came from, the way
     # redesign_conditioning records how its redesigns were made.
     source: str = FOLDING_MODELS_KEY
 
+    MONOMER_TRACKS: ClassVar[tuple[str, ...]] = ("designability", "codesignability", "apo")
+
     def for_track(self, track: str) -> list[str]:
-        return list(self.complex if track == "complex" else self.monomer)
+        return list(getattr(self, track))
+
+    @property
+    def monomer(self) -> list[str]:
+        """Every folder any monomer-style track uses, for reporting only."""
+        out: list[str] = []
+        for track in self.MONOMER_TRACKS:
+            out.extend(m for m in getattr(self, track) if m not in out)
+        return out
 
     def describe(self) -> str:
-        return f"monomer={self.monomer or '-'} complex={self.complex or '-'} (from {self.source})"
+        tracks = ", ".join(f"{t}={getattr(self, t) or '-'}" for t in (*self.MONOMER_TRACKS, "complex"))
+        return f"{tracks} (from {self.source})"
 
 
 def _named_legacy_keys(cfg_metric) -> list[str]:
@@ -100,8 +121,11 @@ def resolve_folding_models(cfg_metric, *, is_target_ligand: bool = False) -> Res
             f"rather than warned about."
         )
 
+    monomer = folders_for_track(requested, "monomer")
     resolved = ResolvedFolders(
-        monomer=folders_for_track(requested, "monomer"),
+        designability=list(monomer),
+        codesignability=list(monomer),
+        apo=list(monomer),
         complex=folders_for_track(requested, "complex"),
     )
     if is_target_ligand and "af2" in resolved.complex:
@@ -131,10 +155,6 @@ def _resolve_legacy(cfg_metric, named: list[str], *, is_target_ligand: bool) -> 
     values per track, and a campaign that resumes must fold what it folded before.
     """
     shared = list(cfg_metric.get("monomer_folding_models", ["esmfold"]) or [])
-    monomer: list[str] = []
-    for key in ("designability_folding_models", "codesignability_folding_models"):
-        monomer.extend(cfg_metric.get(key, shared) or [])
-    monomer.extend(cfg_metric.get("apo_folding_models", []) or [])
 
     complex_folders = list(cfg_metric.get("consensus_backends", []) or [])
     primary = cfg_metric.get("binder_folding_method")
@@ -142,7 +162,13 @@ def _resolve_legacy(cfg_metric, named: list[str], *, is_target_ligand: bool) -> 
         complex_folders.insert(0, primary)
 
     resolved = ResolvedFolders(
-        monomer=folders_for_track(monomer or shared, "monomer"),
+        designability=folders_for_track(cfg_metric.get("designability_folding_models", shared), "monomer"),
+        codesignability=folders_for_track(
+            cfg_metric.get("codesignability_folding_models", shared), "monomer"
+        ),
+        # Its own default, not the shared one: apo_folding_models has always
+        # stood alone, and a campaign that never set it folded apo with esmfold.
+        apo=folders_for_track(cfg_metric.get("apo_folding_models", ["esmfold"]), "monomer"),
         complex=folders_for_track(complex_folders, "complex"),
         source=", ".join(named) if named else "defaults",
     )

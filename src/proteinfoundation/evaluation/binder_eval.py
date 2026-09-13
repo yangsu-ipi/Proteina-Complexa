@@ -69,6 +69,7 @@ from proteinfoundation.metrics.consensus_folding import (
     score_binders,
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
+from proteinfoundation.metrics.folder_selection import resolve_folding_models
 from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF, INTERFACE_DERIVATION_VERSION
 from proteinfoundation.metrics.inverse_folding_models import (
     DEFAULT_INVERSE_FOLDING_MODEL,
@@ -250,30 +251,6 @@ def packed_aa_counts(counts_by_residue: dict[str, int]) -> list[int]:
         if residue in OF_RESTYPES:
             packed[OF_RESTYPES.index(residue)] += count
     return packed
-
-
-def _shadow_complex_resolution(cfg_metric, primary, advisory, is_target_ligand: bool) -> None:
-    """What one folding_models list would fold on the complex track, unobeyed.
-
-    The complex side is where the primary/advisory split lives, so it is where a
-    disagreement between the old four keys and one list matters most.
-    """
-    from proteinfoundation.metrics.column_names import folders_for_track
-    from proteinfoundation.metrics.folder_selection import resolve_folding_models
-
-    try:
-        resolved = resolve_folding_models(cfg_metric, is_target_ligand=is_target_ligand).for_track("complex")
-    except Exception as exc:
-        logger.warning(f"Folder resolution (shadow, complex) could not resolve this config: {exc}")
-        return
-    current = folders_for_track([primary, *advisory], "complex")
-    if resolved != current:
-        logger.warning(
-            f"Folder resolution (shadow, complex): one metric.folding_models list would use "
-            f"{resolved}, this run uses {current}. Nothing has changed."
-        )
-    else:
-        logger.info(f"Folder resolution (shadow, complex): agrees with this run -- {current}")
 
 
 def apo_fingerprint_for(backend: str, binder_pdb_path: str, sequences: list[str]) -> str:
@@ -531,6 +508,11 @@ def compute_binder_metrics(
     # rf3 model produced it is the mislabelling this scheme exists to remove.
     complex_backend = backend_for_folding_method(folding_model)
 
+    # Which folders refold, for every track this function drives. One resolver,
+    # so apo and the complex cross-check cannot end up describing different sets
+    # by reading different keys.
+    folders = resolve_folding_models(cfg_metric, is_target_ligand=is_target_ligand)
+
     # Evaluation parameters
     sequence_types = cfg_metric.get("sequence_types", ["self"])
     interface_cutoff = cfg_metric.get(
@@ -586,7 +568,7 @@ def compute_binder_metrics(
     # threshold should be set after seeing the distribution, not before, or
     # "the gate works" and "the gate is mis-calibrated" look the same.
     compute_apo = cfg_metric.get("compute_apo_metrics", False)
-    apo_folding_models = list(cfg_metric.get("apo_folding_models", ["esmfold"]) or [])
+    apo_folding_models = list(folders.apo)
     apo_rmsd_modes = list(cfg_metric.get("apo_rmsd_modes", ["ca"]) or [])
     reuse_cached_apo = cfg_metric.get("reuse_cached_apo_folds", True)
     # ESMFold2 is a diffusion sampler, so one fold is one draw. More seeds trade
@@ -695,11 +677,13 @@ def compute_binder_metrics(
     # set; emits {seq_type}_{backend}_{metric} columns and gates nothing. These
     # backends fold protein-protein complexes, so a ligand target has no target
     # sequence to fold against and the whole feature is skipped.
-    consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
-    # Shadow mode, as on the monomer side: reported, not obeyed. The complex
-    # track is the one where the old primary/advisory split lives, so this is
-    # where a disagreement matters most.
-    _shadow_complex_resolution(cfg_metric, folding_model, consensus_backends, is_target_ligand)
+    # Every complex folder the resolver named, except the one already folding as
+    # the primary. Two mechanisms still implement complex folding -- ColabDesign
+    # for af2, CONSENSUS_BACKENDS for esmfold2 -- so the list is split by which
+    # mechanism runs a member, not by whether its columns are allowed to matter.
+    # Unifying the two mechanisms is the next step; which folders run is decided
+    # here either way.
+    consensus_backends = [m for m in folders.complex if m != complex_backend]
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
     # The advisory folds are ESMFold2 too, so they answer to the same knob --
     # otherwise metric.n_esmfold2_seeds means "three seeds, except for the

@@ -49,6 +49,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
+from proteinfoundation.metrics.folder_selection import resolve_folding_models
 from proteinfoundation.metrics.folding_models import colabfold_model_siblings, read_fold_confidence
 from proteinfoundation.metrics.inverse_folding_models import (
     DEFAULT_INVERSE_FOLDING_MODEL,
@@ -911,32 +912,6 @@ def evaluate_self_consistency(
 _COMPLEX_PROTEIN_TYPES = {"binder", "motif_binder"}
 
 
-def _shadow_folder_resolution(cfg_metric, track: str, in_use) -> None:
-    """Report what one folding_models list would resolve to, without obeying it.
-
-    A migration step, not a feature: it makes the resolver's answer observable on
-    real configs before anything depends on it, so a disagreement is found in a
-    log line rather than in a pass rate.
-    """
-    from proteinfoundation.metrics.column_names import folders_for_track
-    from proteinfoundation.metrics.folder_selection import resolve_folding_models
-
-    try:
-        resolved = resolve_folding_models(cfg_metric).for_track(track)
-    except Exception as exc:  # never fail a run for a shadow check
-        logger.warning(f"Folder resolution (shadow, {track}) could not resolve this config: {exc}")
-        return
-    current = folders_for_track(in_use, track)
-    if resolved != current:
-        logger.warning(
-            f"Folder resolution (shadow, {track}): one metric.folding_models list would use "
-            f"{resolved}, this run uses {current}. Nothing has changed -- the per-track keys are "
-            f"still what folds."
-        )
-    else:
-        logger.info(f"Folder resolution (shadow, {track}): agrees with this run -- {current}")
-
-
 def _is_complex(protein_type: str) -> bool:
     """Check whether the protein type represents a complex requiring binder chain extraction.
 
@@ -1036,20 +1011,16 @@ def compute_monomer_metrics(
                 task_name = candidate
                 break
 
-    # Configure evaluation modes and models
-    # monomer_folding_models is the shared default; per-metric keys override if set.
-    shared_models = cfg_metric.get("monomer_folding_models", ["esmfold"])
+    # Which folders refold, from one resolver rather than from three keys read
+    # here. Under metric.folding_models every monomer-style track gets every
+    # folder that can serve it; under the legacy keys each track keeps its own,
+    # so a resuming campaign refolds exactly what it refolded.
+    folders = resolve_folding_models(cfg_metric)
     designability_modes = cfg_metric.get("designability_modes", ["ca"])
-    designability_folding_models = cfg_metric.get("designability_folding_models", shared_models)
+    designability_folding_models = folders.designability
 
     codesignability_modes = cfg_metric.get("codesignability_modes", ["ca", "all_atom"])
-    codesignability_folding_models = cfg_metric.get("codesignability_folding_models", shared_models)
-
-    # Shadow mode: resolved and reported, not yet obeyed. The four keys above are
-    # still what folds. This runs beside them so a real campaign says, in its own
-    # log, whether one list would fold what four keys currently do -- which is the
-    # evidence worth having before a change that moves verdicts.
-    _shadow_folder_resolution(cfg_metric, "monomer", designability_folding_models + codesignability_folding_models)
+    codesignability_folding_models = folders.codesignability
 
     # Resolve metric flags once.  compute_monomer_metrics=true cascades to all
     # sub-flags unless they are explicitly set to false.
