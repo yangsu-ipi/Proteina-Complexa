@@ -85,14 +85,36 @@ def test_the_legacy_keys_still_decide_what_a_running_campaign_folds():
     assert any("replaced by one metric.folding_models" in m for m in seen)
 
 
-def test_setting_both_is_refused_rather_than_resolved_by_precedence():
-    """Two sources of truth for what refolded is not something precedence should
-    settle: whichever lost would be invisible."""
+def test_both_forms_are_refused_when_they_disagree():
+    """Whichever lost would be invisible in the results, so precedence must not
+    settle it. The message has to name WHICH track disagrees and show both
+    resolutions, because the two keys usually live in different files."""
     with pytest.raises(FolderSelectionError) as raised:
-        resolve_folding_models(
-            {"folding_models": ["af2"], "apo_folding_models": ["esmfold2"]}
+        resolve_folding_models({"folding_models": ["af2"], "apo_folding_models": ["esmfold2"]})
+    message = str(raised.value)
+    assert "apo_folding_models" in message
+    assert "apo" in message and "disagree about" in message
+    assert "pipeline.yaml" in message, "and say where to make the edit"
+
+
+def test_both_forms_are_allowed_when_they_agree():
+    """The ordinary shape of a half-migrated Hydra composition: a base config
+    supplies the new key while a campaign's own pipeline.yaml still overrides the
+    old ones. That is not two people disagreeing, and refusing it would break
+    every in-flight campaign the moment the base config migrated."""
+    resolved, seen = _warnings(
+        lambda: resolve_folding_models(
+            {
+                "folding_models": ["af2", "esmfold2"],
+                "apo_folding_models": ["af2", "esmfold2"],
+                "monomer_folding_models": ["af2", "esmfold2"],
+                "binder_folding_method": "colabdesign",
+                "consensus_backends": ["esmfold2"],
+            }
         )
-    assert "apo_folding_models" in str(raised.value)
+    )
+    assert resolved.apo == ["af2", "esmfold2"]
+    assert any("resolve to the same folders" in m for m in seen), "allowed, but still say so"
 
 
 def test_a_config_naming_nothing_still_resolves_to_what_it_used_to():

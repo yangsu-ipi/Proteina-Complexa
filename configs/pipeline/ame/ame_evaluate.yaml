@@ -13,7 +13,23 @@ show_progress: false
 metric:
   compute_motif_binder_metrics: true
 
-  binder_folding_method: rf3_latest
+  # Every folder this campaign refolds with. One list, every track: the complex,
+  # the apo monomer, designability and codesignability. Each track gets the
+  # members that can serve it -- af2 and esmfold2 fold both a monomer and a
+  # complex, esmfold v1 only a monomer, rf3 only a complex -- and a member that
+  # cannot serve a track is named in the run log rather than dropped in silence.
+  #
+  # Replaces monomer_folding_models, designability_folding_models,
+  # codesignability_folding_models, apo_folding_models, consensus_backends and
+  # binder_folding_method. Setting any of those alongside this one is refused:
+  # two sources of truth for what refolded is not something precedence should
+  # settle.
+  #
+  # The FIRST complex-capable member is the one the complex thresholds are
+  # written against. Every other complex folder emits the same columns in its own
+  # backend slot, and whether a criterion reads them is a threshold question.
+  folding_models: [rf3, af2, esmfold2]
+
   sequence_types: [self, mpnn_fixed]
   inverse_folding_model: ligand_mpnn
 
@@ -43,7 +59,6 @@ metric:
   # primary backend above. Absolute cutoffs do not transfer between folding
   # models -- ESMFold2 runs on a compressed confidence scale -- so these are
   # diagnostic columns, not filters. Empty = off.
-  consensus_backends: []      # e.g. [esmfold2]
   # Score every sequence per type (default). Scoring only the ranked-best one
   # conditions the advisory sample on the primary backend's ranking, which
   # makes rank disagreement unmeasurable and biases any calibration to the
@@ -96,7 +111,6 @@ metric:
   compute_monomer_metrics: false
   # esmfold (facebook/esmfold_v1) or esmfold2 (single-chain, single-sequence,
   # Fast-Cutoff2025 checkpoint; override with ESMFOLD2_MONOMER_MODEL)
-  monomer_folding_models: [esmfold]
   # Reuse a cached refold of a design when nothing determining it changed
   # (design, folding models + their checkpoints, num_seq, MPNN temperature).
   # scRMSD values are always cached; the folded structures only when

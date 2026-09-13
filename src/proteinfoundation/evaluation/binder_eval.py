@@ -501,18 +501,27 @@ def compute_binder_metrics(
         cfg_dataset = eval_config.generation.dataloader.dataset
     target_task_name = cfg_dataset.task_name
 
-    # Initialize folding model
-    folding_model = cfg_metric.get("binder_folding_method", "colabdesign")
+    # Which folders refold, for every track this function drives. One resolver,
+    # so apo and the complex cross-check cannot end up describing different sets
+    # by reading different keys.
+    folders = resolve_folding_models(cfg_metric, is_target_ligand=is_target_ligand)
+
+    # Which complex folder is the one whose columns the thresholds are written
+    # against. The FIRST member that can fold a complex, so a config orders its
+    # list and says nothing else; binder_folding_method is the legacy way to name
+    # it and still wins where a campaign still sets it.
+    #
+    # "Primary" is now only this: the folder a criterion happens to name. It is
+    # no longer a different mechanism, and every other complex folder produces
+    # the same columns in its own backend slot.
+    folding_model = cfg_metric.get("binder_folding_method") or (
+        folders.complex[0] if folders.complex else "colabdesign"
+    )
     folding_model_specs = initialize_folding_model(folding_model, target_pdb_chain, target_task_name, is_target_ligand)
     # The backend slot for every complex column this run emits, and the value the
     # provenance column records. Resolved once: a column that says af2 while an
     # rf3 model produced it is the mislabelling this scheme exists to remove.
     complex_backend = backend_for_folding_method(folding_model)
-
-    # Which folders refold, for every track this function drives. One resolver,
-    # so apo and the complex cross-check cannot end up describing different sets
-    # by reading different keys.
-    folders = resolve_folding_models(cfg_metric, is_target_ligand=is_target_ligand)
 
     # Evaluation parameters
     sequence_types = cfg_metric.get("sequence_types", ["self"])

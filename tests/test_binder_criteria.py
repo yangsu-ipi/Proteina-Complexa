@@ -775,30 +775,33 @@ def test_a_frame_without_the_monomer_track_is_untouched():
     assert "_res_mpnn_best_sequence" not in pick_monomer_best_sequence(df).columns
 
 
-def test_every_evaluate_config_folds_apo_with_two_models():
-    """One folder agreeing with itself is not evidence that a binder holds its
-    fold without its target. The configs drifted apart before -- the ligand one
-    kept esmfold while the protein ones moved -- and nothing said so."""
-    import pathlib
+def test_every_evaluate_config_refolds_with_at_least_two_folders():
+    """One folder agreeing with itself is not evidence. This used to scan
+    apo_folding_models, which was the only track that had been moved to two
+    folders; the same argument applies to every track, and one folding_models
+    list is now what says so.
 
-    from omegaconf import OmegaConf
+    Kept from the original: no duplicates, and at least two. It caught a real
+    config drift before."""
+    import pathlib as _p
 
-    root = pathlib.Path(__file__).resolve().parents[1] / "configs"
-    seen = {}
-    for path in sorted(root.rglob("*.yaml")):
-        text = path.read_text()
-        if "apo_folding_models:" not in text:
+    import yaml
+
+    from proteinfoundation.metrics.folder_selection import resolve_folding_models
+
+    checked = 0
+    for path in sorted(_p.Path("configs").rglob("*.yaml")):
+        cfg = yaml.safe_load(path.read_text()) or {}
+        models = ((cfg.get("metric") or {}) if isinstance(cfg, dict) else {}).get("folding_models")
+        if not models:
             continue
-        metric = OmegaConf.load(path).get("metric") or {}
-        models = list(metric.get("apo_folding_models") or [])
-        if models:
-            seen[str(path.relative_to(root))] = models
-
-    assert seen, "the configs still set apo_folding_models somewhere"
-    for name, models in seen.items():
-        assert len(models) >= 2, f"{name} folds apo with one model: {models}"
-        assert len(set(models)) == len(models), f"{name} lists a model twice: {models}"
-
+        checked += 1
+        assert len(models) == len(set(models)), f"{path} names a folder twice: {models}"
+        assert len(models) >= 2, f"{path} refolds with one folder: {models}"
+        resolved = resolve_folding_models({"folding_models": models})
+        assert len(resolved.apo) >= 2, f"{path} resolves to one apo folder: {resolved.apo}"
+        assert len(resolved.designability) >= 2, f"{path}: {resolved.designability}"
+    assert checked >= 10, f"only {checked} configs declare folding_models; did a migration miss some?"
 
 def test_the_apo_criterion_gates_on_every_model_the_run_used():
     """The consequence of the line above, and the reason it is a decision rather

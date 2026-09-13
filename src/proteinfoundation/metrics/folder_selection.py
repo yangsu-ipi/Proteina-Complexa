@@ -45,6 +45,16 @@ LEGACY_FOLDER_KEYS: tuple[str, ...] = (
 
 FOLDING_MODELS_KEY = "folding_models"
 
+# Which legacy keys govern which track, so a comparison between the two forms
+# can tell "the old config asks for something else here" from "the old config
+# says nothing about this track".
+_TRACK_LEGACY_KEYS: dict[str, tuple[str, ...]] = {
+    "designability": ("monomer_folding_models", "designability_folding_models"),
+    "codesignability": ("monomer_folding_models", "codesignability_folding_models"),
+    "apo": ("apo_folding_models",),
+    "complex": ("binder_folding_method", "consensus_backends"),
+}
+
 
 class FolderSelectionError(ValueError):
     """A folder configuration that cannot be resolved into what will refold."""
@@ -104,10 +114,46 @@ def resolve_folding_models(cfg_metric, *, is_target_ligand: bool = False) -> Res
     requested = list(cfg_metric.get(FOLDING_MODELS_KEY) or [])
 
     if requested and named:
-        raise FolderSelectionError(
-            f"metric.{FOLDING_MODELS_KEY} is set alongside the key(s) it replaces ({', '.join(named)}). "
-            f"Two sources of truth for what refolded is not something precedence should resolve -- "
-            f"remove the old key(s), or remove {FOLDING_MODELS_KEY}."
+        # Both forms present is the ordinary shape of a half-migrated Hydra
+        # composition: a base config supplies the new key and a campaign's own
+        # pipeline.yaml still overrides the old ones. That is not two people
+        # disagreeing, so it is only refused when the two forms actually RESOLVE
+        # differently -- which is when something would be silently lost.
+        from_new = ResolvedFolders(
+            designability=folders_for_track(requested, "monomer"),
+            codesignability=folders_for_track(requested, "monomer"),
+            apo=folders_for_track(requested, "monomer"),
+            complex=folders_for_track(requested, "complex"),
+        )
+        from_old = _resolve_legacy(cfg_metric, named, is_target_ligand=is_target_ligand, quiet=True)
+        # Only tracks the legacy keys actually speak to. A campaign that
+        # overrides the monomer keys and inherits the complex one from a base
+        # config has no legacy opinion about the complex track, and an absent
+        # opinion is not a conflicting one -- comparing it would refuse the most
+        # ordinary half-migrated config there is.
+        differing = [
+            track
+            for track, keys in _TRACK_LEGACY_KEYS.items()
+            # Compared as SETS: order decides only how columns are listed, not
+            # what refolds, so the same folders named in a different order is not
+            # a disagreement worth refusing a campaign over.
+            if any(key in named for key in keys)
+            and set(from_new.for_track(track)) != set(from_old.for_track(track))
+        ]
+        if differing:
+            raise FolderSelectionError(
+                f"metric.{FOLDING_MODELS_KEY} and the key(s) it replaces ({', '.join(named)}) ask for "
+                f"different folders, and they disagree about: {', '.join(differing)}.\n"
+                f"  {FOLDING_MODELS_KEY} -> {from_new.describe()}\n"
+                f"  {', '.join(named)} -> {from_old.describe()}\n"
+                f"Whichever lost would be invisible in the results, so this is refused rather than "
+                f"resolved by precedence. Remove the old key(s) from the config that still sets them "
+                f"-- for a campaign package that is its own pipeline.yaml, not the base config."
+            )
+        logger.warning(
+            f"metric.{', metric.'.join(named)} are still set alongside metric.{FOLDING_MODELS_KEY}. "
+            f"They resolve to the same folders, so the run is unaffected -- but remove the old "
+            f"key(s): the next edit to either can make them disagree."
         )
 
     if not requested:
@@ -148,7 +194,9 @@ def resolve_folding_models(cfg_metric, *, is_target_ligand: bool = False) -> Res
     return resolved
 
 
-def _resolve_legacy(cfg_metric, named: list[str], *, is_target_ligand: bool) -> ResolvedFolders:
+def _resolve_legacy(
+    cfg_metric, named: list[str], *, is_target_ligand: bool, quiet: bool = False
+) -> ResolvedFolders:
     """Honour the per-track keys exactly as they behaved, and say so once.
 
     Deliberately NOT a merge into one list: these keys legitimately held different
@@ -174,7 +222,7 @@ def _resolve_legacy(cfg_metric, named: list[str], *, is_target_ligand: bool) -> 
     )
     if is_target_ligand:
         resolved.complex = [m for m in resolved.complex if m != "af2"]
-    if named:
+    if named and not quiet:
         logger.warning(
             f"metric.{', metric.'.join(named)} still name the folders for this run. They are "
             f"replaced by one metric.{FOLDING_MODELS_KEY} listing every folder the campaign uses; "
