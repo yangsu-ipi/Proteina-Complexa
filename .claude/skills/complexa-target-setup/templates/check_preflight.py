@@ -252,6 +252,41 @@ _LEGACY_FOLDER_KEYS = (
 )
 
 
+def _colabfold_env_without_alphafold(command):
+    """The env prefix of ``command``, if it has colabfold but not alphafold.
+
+    Mirrors folding_models._alphafold_missing_from, reimplemented here because
+    this script runs before the complexa env is necessarily importable. Read off
+    the filesystem, never by executing anything: a console script names its
+    interpreter in the shebang, and that interpreter's site-packages either holds
+    alphafold or does not. Returns None whenever the layout is not one this can
+    read -- an unreadable env is not evidence of a broken one.
+    """
+    resolved = command if command and os.sep in command else shutil.which(command or "")
+    if not resolved or not os.path.exists(resolved):
+        return None
+    try:
+        with open(resolved, "rb") as handle:
+            shebang = handle.readline(512).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not shebang.startswith("#!"):
+        return None
+    interpreter = shebang[2:].strip().split()[0]
+    # <prefix>/bin/python3.X -> <prefix>
+    prefix = os.path.dirname(os.path.dirname(interpreter))
+    if not os.path.isdir(prefix):
+        return None
+    import glob as _glob
+
+    site = _glob.glob(os.path.join(prefix, "lib", "python*", "site-packages"))
+    if not site:
+        return None
+    has_colabfold = any(os.path.isdir(os.path.join(d, "colabfold")) for d in site)
+    has_alphafold = any(os.path.isdir(os.path.join(d, "alphafold")) for d in site)
+    return prefix if has_colabfold and not has_alphafold else None
+
+
 def _declared_folders(metric):
     """Every folder this config names, in the canonical vocabulary.
 
@@ -319,6 +354,24 @@ def main() -> int:
                 "COLABFOLD_EXEC_PATH is unset; set it to a colabfold_batch installed WITH its "
                 "[alphafold] extra (never into the complexa env)"
             )
+        elif not exec_path:
+            # A NAME on PATH is not evidence of a folder. ColabFold is routinely
+            # installed without its [alphafold] extra for MSA retrieval alone, and
+            # that install drops a colabfold_batch shim into the very environment
+            # Complexa runs in -- earlier on PATH than any real one. The runtime
+            # refuses it; this gate used to accept it, so preflight passed and the
+            # run then errored per design and still exited 0, leaving a frame
+            # silently missing one folder. Caught on EFNB3, whose environment has
+            # exactly that shim.
+            env = _colabfold_env_without_alphafold(on_path)
+            if env:
+                failures.append(
+                    f"af2 resolves to colabfold_batch in {env}, a ColabFold without its "
+                    f"[alphafold] extra -- MSA retrieval only, it cannot fold. Set "
+                    f"COLABFOLD_EXEC_PATH to one that can (never pip install "
+                    f"colabfold[alphafold] into the complexa env: it downgrades absl-py, "
+                    f"biopython and chex and pins a jax a Blackwell card cannot use)"
+                )
     # A tool is required because the config routes to it, not because it happens
     # to be absent. preflight.sh reports facts and is deliberately config-blind;
     # deciding what this run actually needs is this script's job. Every CBLN1 run
