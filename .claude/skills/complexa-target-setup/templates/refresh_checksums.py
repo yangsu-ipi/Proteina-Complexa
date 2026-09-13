@@ -19,7 +19,20 @@ import fnmatch
 import hashlib
 from pathlib import Path
 
-EXCLUDED_DIRS = ("metadata", "inference", "evaluation_results", "logs", "__pycache__", ".msa_work")
+# Tool caches belong here beside __pycache__: anyone who runs ruff or pytest
+# inside the package leaves one, and hashing it makes the bundle checksum depend
+# on who last looked at the code rather than on what the code is.
+EXCLUDED_DIRS = (
+    "metadata",
+    "inference",
+    "evaluation_results",
+    "logs",
+    "__pycache__",
+    ".msa_work",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+)
 EXCLUDED_NAMES = ("CHECKSUMS.sha256", ".DS_Store")
 EXCLUDED_GLOBS = ("*.bak-*", "*.pyc", "slurm-*.out")
 
