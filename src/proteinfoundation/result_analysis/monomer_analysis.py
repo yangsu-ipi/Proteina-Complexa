@@ -343,7 +343,9 @@ def filter_monomer_by_designability(
     df: pd.DataFrame,
     thresholds: dict | None = None,
     metric_type: str = "designability",
-    require_all: bool = False,
+    # AND, matching the apo criterion and the resolved config. OR is the
+    # dangerous default: every folder added to a run would loosen the gate.
+    require_all: bool = True,
     path_store_results: str | None = None,
     filter_name: str | None = None,
 ) -> pd.DataFrame:
@@ -411,47 +413,70 @@ def filter_monomer_by_designability(
                 column_specs.append((col_name, spec["threshold"], spec["op"]))
                 logger.debug(f"  {col_name} {spec['op']} {spec['threshold']}")
             else:
-                logger.warning(f"  Column {canonical} not found in dataframe")
+                # Louder than a warning, because of what it does to the gate. A
+                # criterion whose column is absent simply drops out -- and under
+                # ANY logic that makes the gate EASIER to pass, silently. Same
+                # severity expand_model_criteria uses for the same situation.
+                logger.error(
+                    f"  Column {canonical} not found in dataframe, so this criterion cannot be "
+                    f"applied and no verdict from it will be emitted. Under ANY logic that makes "
+                    f"the gate easier to pass than it reads."
+                )
 
     if not column_specs:
         logger.warning(f"No valid columns found for {metric_type}, returning empty dataframe")
         return pd.DataFrame()
 
-    # Create filter mask
+    # Per column first, then combined. The per-column masks are what let the run
+    # report each FOLDER's own pass rate beside the combined verdict -- a gate
+    # that says "combined 41%" without "af2 58%, esmfold2 47%" hides exactly the
+    # disagreement between folders that running two of them exists to expose.
+    per_column: dict[str, pd.Series] = {}
+    for col_name, threshold, op in column_specs:
+        values = df[col_name]
+        if op == "<=":
+            mask = values <= threshold
+        elif op == "<":
+            mask = values < threshold
+        elif op == ">=":
+            mask = values >= threshold
+        elif op == ">":
+            mask = values > threshold
+        elif op == "==":
+            mask = values == threshold
+        else:
+            logger.error(f"  Unknown comparison {op!r} for {col_name}; that criterion is skipped")
+            continue
+        # A NaN compares False in every direction, which is the right answer in
+        # both logics: unmeasured is not passing, and it cannot rescue a design
+        # under ANY either.
+        per_column[col_name] = mask.fillna(False)
+
+    if not per_column:
+        logger.warning(f"No applicable criteria for {metric_type}, returning empty dataframe")
+        return pd.DataFrame()
+
     if require_all:
-        # Must pass ALL thresholds
         combined_mask = pd.Series([True] * len(df), index=df.index)
-        for col_name, threshold, op in column_specs:
-            if op == "<=":
-                combined_mask = combined_mask & (df[col_name] <= threshold)
-            elif op == "<":
-                combined_mask = combined_mask & (df[col_name] < threshold)
-            elif op == ">=":
-                combined_mask = combined_mask & (df[col_name] >= threshold)
-            elif op == ">":
-                combined_mask = combined_mask & (df[col_name] > threshold)
-            elif op == "==":
-                combined_mask = combined_mask & (df[col_name] == threshold)
+        for mask in per_column.values():
+            combined_mask = combined_mask & mask
     else:
-        # Must pass ANY threshold
         combined_mask = pd.Series([False] * len(df), index=df.index)
-        for col_name, threshold, op in column_specs:
-            if op == "<=":
-                combined_mask = combined_mask | (df[col_name] <= threshold)
-            elif op == "<":
-                combined_mask = combined_mask | (df[col_name] < threshold)
-            elif op == ">=":
-                combined_mask = combined_mask | (df[col_name] >= threshold)
-            elif op == ">":
-                combined_mask = combined_mask | (df[col_name] > threshold)
-            elif op == "==":
-                combined_mask = combined_mask | (df[col_name] == threshold)
+        for mask in per_column.values():
+            combined_mask = combined_mask | mask
 
     df_filtered = df[combined_mask]
 
-    # Log results
+    # Log results. At INFO, with each folder's own rate: under ANY logic adding a
+    # folder can only RAISE the combined rate and under ALL it can only lower it,
+    # so the combined number alone cannot tell a reader which happened.
     logic_type = "ALL" if require_all else "ANY"
-    logger.debug(f"{filter_name} filtering ({logic_type} logic): {len(df_filtered)}/{len(df)} samples passed")
+    total = max(len(df), 1)
+    per_model = ", ".join(f"{col}={int(mask.sum())}/{len(df)}" for col, mask in per_column.items())
+    logger.info(
+        f"{filter_name} filtering ({logic_type} over {len(per_column)} criteria): "
+        f"{len(df_filtered)}/{len(df)} ({100 * len(df_filtered) / total:.1f}%) passed. Per criterion: {per_model}"
+    )
 
     # Save results if path provided
     if path_store_results is not None:

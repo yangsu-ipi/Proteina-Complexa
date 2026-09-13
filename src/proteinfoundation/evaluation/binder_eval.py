@@ -64,7 +64,7 @@ from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     ComplexFoldContext,
     advisory_column,
-    assert_columns_are_advisory,
+    report_gated_and_reported_columns,
     available_backends,
     consensus_derived_suffixes,
     score_binders,
@@ -1196,7 +1196,7 @@ def compute_binder_metrics(
                         # serve both tracks: esmfold2 here is an advisory backend AND
                         # the apo folding model, and the apo criterion is gated on
                         # purpose.
-                        assert_columns_are_advisory(
+                        report_gated_and_reported_columns(
                             new_cols,
                             gated_columns(row_dict, seq_type, success_thresholds),
                             set(all_columns),

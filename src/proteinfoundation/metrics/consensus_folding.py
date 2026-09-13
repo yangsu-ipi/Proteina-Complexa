@@ -12,7 +12,7 @@ Everything here is deliberately advisory. The columns are named
 ``{seq_type}_complex_{metric}_all`` that
 ``binder_analysis_utils.build_column_name`` produces, and no threshold in
 ``DEFAULT_PROTEIN_BINDER_THRESHOLDS`` / ``DEFAULT_LIGAND_BINDER_THRESHOLDS``
-refers to a backend prefix. ``assert_columns_are_advisory`` enforces that rather
+refers to a backend prefix. ``report_gated_and_reported_columns`` enforces that rather
 than trusting it.
 
 Why non-gating is not a temporary stage. Absolute confidence cutoffs do not
@@ -822,13 +822,20 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
         )
 
 
-def assert_columns_are_advisory(
+def report_gated_and_reported_columns(
     columns: list[str], gated_columns: set[str], existing_columns: set[str] | None = None
 ) -> None:
-    """Fail loudly if an advisory column could be read as a gated one.
+    """Say which of this folder's columns decide a verdict, and which only report.
 
-    The whole contract of this module is that nothing it emits can change a
-    pass/fail decision.
+    This used to refuse any overlap: the module's contract was that nothing it
+    emitted could change a pass/fail. That contract described the old
+    primary/advisory split, which was never a property of a fold -- AF2 and
+    ESMFold2 both fold a complex, and which one gates is a question the threshold
+    config answers. With one registry, a second complex folder whose columns a
+    criterion deliberately reads is an ordinary thing to configure.
+
+    Still guarded: a column must not silently OVERWRITE one already built for
+    this row, which is a mistake in any configuration.
 
     Two lexical versions of this check have now been wrong, in opposite
     directions, and both because a column was classified by what its name
@@ -858,10 +865,21 @@ def assert_columns_are_advisory(
     """
     read_by_a_gate = sorted(set(columns) & gated_columns)
     if read_by_a_gate:
-        raise ValueError(
-            f"A pass criterion reads advisory columns: {read_by_a_gate}. An advisory fold must not "
-            f"decide a pass/fail; gate on the backend from binder_folding_method instead."
+        # No longer a refusal. "Advisory" was never a property of a fold -- it was
+        # a property of whether any threshold named its columns, and that is a
+        # question the threshold config answers. A second complex folder whose
+        # columns a criterion deliberately reads is now an ordinary thing to
+        # configure, so the check reports rather than refuses.
+        #
+        # What made the refusal worth having survives: a reader must be able to
+        # see, from the run's own log, which columns decided a verdict and which
+        # were only reported. That is the line below.
+        logger.info(
+            f"Complex folder columns read by a pass criterion: {read_by_a_gate}. "
+            f"Reported-only from this folder: {sorted(set(columns) - gated_columns)}"
         )
+    else:
+        logger.info(f"Complex folder columns, all reported-only (no criterion reads them): {len(columns)}")
     if existing_columns:
         collisions = sorted(set(columns) & existing_columns)
         if collisions:

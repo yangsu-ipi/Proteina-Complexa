@@ -119,4 +119,13 @@ aggregation:
   #       threshold: 2.0
   #       op: "<="
   #
-  # require_all_thresholds: false   # true = AND logic, false = OR logic
+  # AND across folders, matching the apo criterion. Two folders refolding the
+  # same design is a cross-check, and a cross-check that passes when EITHER
+  # folder agrees is not one -- adding a folder would make the gate easier,
+  # which is the opposite of what a second opinion is for. The apo criterion has
+  # always expanded {model} against the produced columns and required all of
+  # them; this makes designability and codesignability read the same way.
+  #
+  # With one folder configured, AND and OR are the same gate. The pass rate moves
+  # when a second folder joins, which is where the change should be measured.
+  require_all_thresholds: true

@@ -365,11 +365,11 @@ def test_the_per_chain_metrics_are_emitted_at_all():
 def test_the_advisory_per_chain_columns_cannot_be_mistaken_for_gated_ones():
     """ESMFold2 runs on a compressed scale -- a native protein folds to ~0.65 --
     so these must stay out of any gate. The guard is what enforces that."""
-    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+    from proteinfoundation.metrics.consensus_folding import advisory_column, report_gated_and_reported_columns
 
     columns = [advisory_column("mpnn", "esmfold2", m) for m in ("target_pLDDT", "binder_pLDDT")]
     gated = {"mpnn_complex_af2_target_pLDDT", "mpnn_complex_af2_binder_pLDDT", "mpnn_complex_af2_pLDDT"}
-    assert_columns_are_advisory(columns, gated)
+    report_gated_and_reported_columns(columns, gated)
 
 
 def _cbln1_row():
@@ -401,7 +401,7 @@ def test_a_model_can_serve_the_apo_gate_and_the_advisory_track_at_once():
     from proteinfoundation.metrics.consensus_folding import (
         CONSENSUS_METRIC_SUFFIXES,
         advisory_column,
-        assert_columns_are_advisory,
+        report_gated_and_reported_columns,
     )
     from proteinfoundation.result_analysis.binder_analysis_utils import DEFAULT_PROTEIN_BINDER_THRESHOLDS
 
@@ -412,25 +412,44 @@ def test_a_model_can_serve_the_apo_gate_and_the_advisory_track_at_once():
     advisory = [advisory_column("self", "esmfold2", m) for m in CONSENSUS_METRIC_SUFFIXES]
     advisory += [f"{c}_all" for c in advisory]
     advisory.append(advisory_column("self", "esmfold2", "pdb_path"))
-    assert_columns_are_advisory(advisory, gated, set(row))
+    report_gated_and_reported_columns(advisory, gated, set(row))
 
 
-def test_a_gate_that_really_reads_an_advisory_column_still_fails():
-    """The check has to keep refusing what it exists for, not merely stop
-    refusing the apo case."""
-    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+def test_a_criterion_reading_a_second_folders_column_is_reported_not_refused():
+    """This used to raise. "Advisory" was never a property of a fold -- it was a
+    property of whether any threshold named its columns, which the threshold
+    config answers. With one complex registry, gating on a second folder is an
+    ordinary thing to configure, so the check reports instead of refusing.
 
-    col = advisory_column("self", "esmfold2", "i_pAE")
-    with pytest.raises(ValueError, match="pass criterion reads advisory columns"):
-        assert_columns_are_advisory([col], {col})
+    What made the refusal worth having survives: the run says which columns
+    decided a verdict and which only reported."""
+    from loguru import logger
+
+    from proteinfoundation.metrics.consensus_folding import (
+        advisory_column,
+        report_gated_and_reported_columns,
+    )
+
+    gated = advisory_column("self", "esmfold2", "i_pAE")
+    reported = advisory_column("self", "esmfold2", "pAE")
+
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="INFO")
+    try:
+        report_gated_and_reported_columns([gated, reported], {gated})
+    finally:
+        logger.remove(sink)
+
+    assert any(gated in m and "read by a pass criterion" in m for m in seen)
+    assert any(reported in m and "Reported-only" in m for m in seen)
 
 
 def test_an_advisory_column_may_not_overwrite_one_already_built():
-    from proteinfoundation.metrics.consensus_folding import advisory_column, assert_columns_are_advisory
+    from proteinfoundation.metrics.consensus_folding import advisory_column, report_gated_and_reported_columns
 
     col = advisory_column("self", "esmfold2", "i_pAE")
     with pytest.raises(ValueError, match="collide with columns already built"):
-        assert_columns_are_advisory([col], set(), {col})
+        report_gated_and_reported_columns([col], set(), {col})
 
 
 def test_complex_plddt_is_gone_and_still_addressable():

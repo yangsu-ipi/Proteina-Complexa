@@ -25,7 +25,6 @@ VALID_RMSD_MODES = ["ca", "bb3o", "all_atom"]
 # long after the complex side had renamed that folder `af2`.
 from proteinfoundation.metrics.column_names import FOLDING_MODELS as VALID_FOLDING_MODELS  # noqa: F401
 
-
 # =============================================================================
 # Default Analysis Thresholds
 # =============================================================================
@@ -38,8 +37,15 @@ from proteinfoundation.metrics.column_names import FOLDING_MODELS as VALID_FOLDI
 # metrics whose scales differ per model. It still assumes the models are
 # comparably accurate: a systematically better or worse folder shifts the
 # pass rate without the threshold changing meaning.
+#
+# EVERY folder a run may use needs an entry here, not only the ones it usually
+# does. filter_monomers_by_thresholds iterates this dict rather than the columns
+# the run produced, so a folder missing from it is folded, costs its GPU time,
+# emits its columns -- and is then absent from the gate entirely. Under ANY logic
+# that silently loosens the gate rather than failing it.
 DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS = {
     "ca": {
+        "af2": {"threshold": 2.0, "op": "<="},
         "esmfold": {"threshold": 2.0, "op": "<="},
         "esmfold2": {"threshold": 2.0, "op": "<="},
     },
@@ -60,6 +66,7 @@ DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS = {
 # pass rate without the threshold changing meaning.
 DEFAULT_MONOMER_CA_CODESIGNABILITY_THRESHOLDS = {
     "ca": {
+        "af2": {"threshold": 2.0, "op": "<="},
         "esmfold": {"threshold": 2.0, "op": "<="},
         "esmfold2": {"threshold": 2.0, "op": "<="},
     },
@@ -71,6 +78,7 @@ DEFAULT_MONOMER_CA_CODESIGNABILITY_THRESHOLDS = {
 # pass rate without the threshold changing meaning.
 DEFAULT_MONOMER_ALL_ATOM_CODESIGNABILITY_THRESHOLDS = {
     "all_atom": {
+        "af2": {"threshold": 2.0, "op": "<="},
         "esmfold": {"threshold": 2.0, "op": "<="},
         "esmfold2": {"threshold": 2.0, "op": "<="},
     },

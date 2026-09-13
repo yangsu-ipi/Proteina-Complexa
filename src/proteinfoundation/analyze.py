@@ -2030,7 +2030,11 @@ def run_monomer_analysis(
     designability_thresholds = cfg_aggregation.get("designability_thresholds", None)
     ca_codesignability_thresholds = cfg_aggregation.get("ca_codesignability_thresholds", None)
     allatom_codesignability_thresholds = cfg_aggregation.get("allatom_codesignability_thresholds", None)
-    require_all = cfg_aggregation.get("require_all_thresholds", False)
+    # Defaults to AND, like the apo criterion and like the shipped configs. A
+    # config that omits the key must not get the opposite rule from one that
+    # spells it out -- and OR is the dangerous default here, because it makes
+    # every added folder loosen the gate.
+    require_all = cfg_aggregation.get("require_all_thresholds", True)
 
     def _get_thresholds(cfg_value, metric_type: str, mode_filter: str = None, default: dict = None):
         if cfg_value is not None:

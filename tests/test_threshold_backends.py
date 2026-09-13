@@ -166,3 +166,60 @@ def test_the_provenance_column_is_emitted_once_per_run_not_once_per_sequence_typ
     source = (Path(__file__).resolve().parents[1] / "src/proteinfoundation/evaluation/binder_eval.py").read_text()
     block = source[source.index("row_dict[COMPLEX_BACKEND_COLUMN] = complex_backend") :][:800]
     assert "if COMPLEX_BACKEND_COLUMN not in all_columns:" in block
+
+
+def test_the_monomer_gate_defaults_to_requiring_every_folder():
+    """OR is the dangerous default: it makes every folder ADDED to a run loosen
+    the gate, which is the opposite of what a cross-check is for. The apo
+    criterion has always expanded {model} against the produced columns and
+    required all of them; designability and codesignability now read the same
+    way, in the code default and in the shipped configs alike."""
+    import inspect
+    import pathlib as _p
+
+    from proteinfoundation import analyze as analyze_module
+
+    source = inspect.getsource(analyze_module)
+    assert 'get("require_all_thresholds", True)' in source, "the code default is AND"
+
+    for config in ("configs/pipeline/monomer/monomer_analyze.yaml",):
+        text = _p.Path(config).read_text()
+        assert "require_all_thresholds: true" in text, f"{config} must not disagree with the default"
+
+
+def test_with_one_folder_and_is_the_same_gate_as_or():
+    """Which is why this change can land before the folders do: today's runs
+    configure one folder per monomer criterion, so the rule swaps with no effect
+    and the pass rate moves only when a second folder actually joins."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.monomer_analysis import filter_monomer_by_designability
+
+    df = pd.DataFrame({"_res_scRMSD_ca_esmfold2": [1.0, 2.5, 1.9]})
+    thresholds = {"ca": {"esmfold2": {"threshold": 2.0, "op": "<="}}}
+    with_all = filter_monomer_by_designability(df, thresholds, "designability", require_all=True)
+    with_any = filter_monomer_by_designability(df, thresholds, "designability", require_all=False)
+    assert len(with_all) == len(with_any) == 2
+    assert list(with_all.index) == list(with_any.index)
+
+
+def test_every_folder_a_run_may_use_has_a_default_threshold():
+    """filter_monomer_by_designability iterates the THRESHOLD dict, not the columns
+    a run produced. A folder missing from it is folded, costs its GPU time, emits
+    its columns -- and is then absent from the gate entirely."""
+    from proteinfoundation.metrics.column_names import FOLDING_MODELS
+    from proteinfoundation.result_analysis.monomer_analysis_utils import (
+        DEFAULT_MONOMER_ALL_ATOM_CODESIGNABILITY_THRESHOLDS,
+        DEFAULT_MONOMER_CA_CODESIGNABILITY_THRESHOLDS,
+        DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS,
+    )
+
+    monomer_folders = {m for m in FOLDING_MODELS if m != "rf3"}
+    for name, spec in (
+        ("designability", DEFAULT_MONOMER_DESIGNABILITY_THRESHOLDS),
+        ("ca codesignability", DEFAULT_MONOMER_CA_CODESIGNABILITY_THRESHOLDS),
+        ("all-atom codesignability", DEFAULT_MONOMER_ALL_ATOM_CODESIGNABILITY_THRESHOLDS),
+    ):
+        for mode, models in spec.items():
+            missing = monomer_folders - set(models)
+            assert not missing, f"{name} [{mode}] has no threshold for {sorted(missing)}"

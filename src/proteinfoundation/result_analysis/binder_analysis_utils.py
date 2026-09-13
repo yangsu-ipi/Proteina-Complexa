@@ -731,7 +731,7 @@ def advisory_per_chain_columns(df: "pd.DataFrame") -> list[str]:
     """Advisory per-chain pLDDT columns present on the frame.
 
     Gated columns are excluded by their reserved ``complex`` segment, which is
-    the same marker :func:`assert_columns_are_advisory` enforces on the way in.
+    the same marker :func:`report_gated_and_reported_columns` enforces on the way in.
     """
     return [
         column
