@@ -64,9 +64,9 @@ from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     ComplexFoldContext,
     advisory_column,
-    report_gated_and_reported_columns,
     available_backends,
     consensus_derived_suffixes,
+    report_gated_and_reported_columns,
     score_binders,
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
@@ -77,10 +77,12 @@ from proteinfoundation.metrics.inverse_folding_models import (
     REDESIGN_SCORE_KIND,
     resolve_inverse_folding_model,
 )
+from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.metrics.tmol_interface import tmol_interface_metrics
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN
+from proteinfoundation.utils.colabdesign_utils import AF2_SAVE_LOCATION
 
 # =============================================================================
 # Safe Imports with Availability Flags
@@ -1220,6 +1222,22 @@ def compute_binder_metrics(
                         # and the verdicts refreshed -- see
                         # assert_frame_headline_indices_agree.
                         all_columns.extend(new_cols)
+
+        # The complex structures were never cleaned up at all. keep_folding_outputs
+        # governed the apo folds and the second complex folder's structures while
+        # the primary's -- n_af2_models per sequence per design, the largest set a
+        # run produces -- were written unconditionally and kept forever. One flag,
+        # honoured by every folder, and the PAE matrices survive either way.
+        if not cfg_metric.get("keep_folding_outputs", True):
+            for folder_dir in (AF2_SAVE_LOCATION, f"{complex_backend}_complex"):
+                removed, kept = drop_structures_keeping_sidecars(
+                    os.path.join(sample_root_path, folder_dir)
+                )
+                if removed or kept:
+                    logger.debug(
+                        f"{sample_root_path}/{folder_dir}: removed {removed} complex structures, "
+                        f"kept {kept} sidecars"
+                    )
 
         results.append(row_dict)
 

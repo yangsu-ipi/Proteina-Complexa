@@ -376,3 +376,50 @@ def test_a_stored_matrix_names_the_checkpoint_that_made_it():
     assert cf._esmfold2_model_id({}) == complex_model_id(), "the default, not an empty string"
     assert cf._esmfold2_model_id({"model_id": "someone/else"}) == "someone/else"
     assert cf._esmfold2_model_id({}), "never empty"
+
+
+def test_dropping_structures_keeps_what_cannot_be_recovered(tmp_path):
+    """keep_folding_outputs: false means "I do not need the PDBs", not "discard
+    everything derived from them". The two are not the same trade: a structure is
+    large and reproducible by refolding, while the PAE matrix is small and is the
+    only reason a later ipSAE cutoff costs a re-read instead of a campaign.
+
+    The monomer cleanup used to rmtree the whole directory, which threw away the
+    cheap irreplaceable artifact to save the expensive reproducible one."""
+    from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
+
+    root = tmp_path / "esmfold2_output" / "apo_mpnn"
+    root.mkdir(parents=True)
+    (root / "esm_1_seed7.pdb_esm_apo_mpnn").write_text("ATOM\n")
+    (root / "esm_1_seed7.pdb_esm_apo_mpnn.pae.npz").write_bytes(b"\x00")
+    (root / "esm_1_seed7.pdb_esm_apo_mpnn.confidence.json").write_text("{}")
+    (root / "scratch.a3m").write_text(">x\nAAAA\n")
+
+    removed, kept = drop_structures_keeping_sidecars(str(root))
+    assert (removed, kept) == (2, 2), "the structure and the scratch file go; both sidecars stay"
+    assert not (root / "esm_1_seed7.pdb_esm_apo_mpnn").exists()
+    assert (root / "esm_1_seed7.pdb_esm_apo_mpnn.pae.npz").exists()
+    assert (root / "esm_1_seed7.pdb_esm_apo_mpnn.confidence.json").exists()
+
+
+def test_dropping_structures_never_raises(tmp_path):
+    """Cleanup that fails must not fail a run whose metrics are already
+    computed."""
+    from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
+
+    assert drop_structures_keeping_sidecars(str(tmp_path / "never_existed")) == (0, 0)
+
+
+def test_every_complex_folder_honours_the_retention_flag():
+    """The primary complex structures -- n_af2_models per sequence per design,
+    the largest set a run produces -- were written unconditionally and never
+    cleaned up, while the apo folds and the second complex folder's structures
+    honoured keep_folding_outputs. One flag, every folder."""
+    import inspect
+
+    from proteinfoundation.evaluation import binder_eval, monomer_eval
+
+    for module, where in ((binder_eval, "the complex tracks"), (monomer_eval, "the monomer tracks")):
+        source = inspect.getsource(module)
+        assert "drop_structures_keeping_sidecars(" in source, f"{where} ignore keep_folding_outputs"
+        assert "shutil.rmtree(model_dir)" not in source, f"{where} still delete sidecars wholesale"

@@ -17,7 +17,6 @@ See monomer_eval_utils.py for data classes and column name patterns.
 
 import math
 import os
-import shutil
 from typing import Literal
 
 import numpy as np
@@ -58,6 +57,7 @@ from proteinfoundation.metrics.inverse_folding_models import (
 )
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
+from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
 from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb, pdb_name_from_path
 
@@ -892,15 +892,18 @@ def evaluate_self_consistency(
         per_model_seeds, rmsd_modes, pdb_path, derive=derive_structure_metrics
     )
 
-    # Cleanup if not keeping outputs
+    # Cleanup if not keeping outputs. The STRUCTURES go; the PAE matrices and the
+    # folder-reported confidences stay. keep_folding_outputs means "I do not need
+    # the PDBs", and rmtree read it as "discard everything derived from them" --
+    # throwing away the small irreplaceable artifact to save the large
+    # reproducible one. A later ipSAE cutoff is a re-read while the matrix exists
+    # and a refolded campaign once it does not.
     if not keep_outputs:
         for model in folding_models:
             model_dir = os.path.join(output_dir, f"{model}_output")
-            if os.path.exists(model_dir):
-                try:
-                    shutil.rmtree(model_dir)
-                except Exception as e:
-                    logger.warning(f"Could not clean up {model_dir}: {e}")
+            removed, kept = drop_structures_keeping_sidecars(model_dir)
+            if removed or kept:
+                logger.debug(f"{model_dir}: removed {removed} structures, kept {kept} sidecars")
 
     return result
 

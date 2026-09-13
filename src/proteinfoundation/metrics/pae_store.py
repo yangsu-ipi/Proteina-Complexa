@@ -47,6 +47,9 @@ import numpy as np
 from loguru import logger
 
 PAE_STORE_SUFFIX = ".pae.npz"
+# The folder-reported confidences, kept for the same reason the matrices are:
+# small, and not recoverable without folding again.
+CONFIDENCE_KEPT_SUFFIX = ".confidence.json"
 
 # Angstroms per quantisation level, and the largest value representable in 255 of
 # them. AF2 tops out at a 31.75 A bin centre and ESMFold2 at the same, so the cap
@@ -152,6 +155,36 @@ def load_pae(structure_path: str) -> dict | None:
     except Exception as exc:
         logger.warning(f"Ignoring unusable PAE sidecar {path}: {exc}")
         return None
+
+
+def drop_structures_keeping_sidecars(directory: str) -> tuple[int, int]:
+    """Delete the structures under *directory*, keep what was derived from them.
+
+    ``keep_folding_outputs: false`` means "I do not need the PDBs", not "discard
+    the PAE matrices". The two are not the same trade: a structure is large and
+    re-derivable from a refold, while the PAE matrix is small and the ONLY reason
+    a later ipSAE cutoff costs a re-read instead of a campaign. Deleting the
+    directory wholesale threw away the cheap irreplaceable thing to save the
+    expensive reproducible one.
+
+    Returns ``(structures removed, sidecars kept)``. Never raises: cleanup that
+    fails must not fail a run whose metrics are already computed.
+    """
+    removed = kept = 0
+    if not os.path.isdir(directory):
+        return 0, 0
+    for base, _dirs, files in os.walk(directory):
+        for name in files:
+            path = os.path.join(base, name)
+            if name.endswith(PAE_STORE_SUFFIX) or name.endswith(CONFIDENCE_KEPT_SUFFIX):
+                kept += 1
+                continue
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError as exc:
+                logger.warning(f"Could not remove {path}: {exc}")
+    return removed, kept
 
 
 def stored_pae_bytes(structure_path: str) -> int:
