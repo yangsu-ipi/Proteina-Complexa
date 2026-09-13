@@ -674,6 +674,39 @@ def apo_fold_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def shared_redesign_indices(row_sequences, shared_sequences) -> list[int] | None:
+    """Where this row's sequences sit in the shared redesign set, or None.
+
+    The apo columns must stay positionally aligned with the holo columns, which
+    hold the binder track's ``num_redesign_seqs`` sequences, while the shared
+    fold covers ``designability_num_seq`` of them. A SLICE would do today, since
+    the binder set is a seeded prefix -- and would mispair silently the first
+    time it stopped being one: when MPNN-score ranking reorders the subset, or
+    when a resumed run serves a set generated at a different size.
+
+    So the mapping is by sequence, matched first-unconsumed-first: ProteinMPNN
+    can emit duplicates at T=0.1, and consuming indices keeps the map injective
+    rather than pointing two rows at one fold.
+
+    None when any sequence is unmatched. The caller then drops the apo columns
+    for that design, exactly as the ``self`` branch does on a sequence mismatch:
+    absent columns are recoverable, a fold paired with the wrong sequence is not.
+    """
+    remaining = list(shared_sequences or [])
+    taken: list[int] = []
+    used: set[int] = set()
+    for sequence in row_sequences or []:
+        index = next(
+            (i for i, candidate in enumerate(remaining) if i not in used and candidate == sequence),
+            None,
+        )
+        if index is None:
+            return None
+        used.add(index)
+        taken.append(index)
+    return taken
+
+
 def apo_column(seq_type: str, mode: str, model: str) -> str:
     """Column for the apo scRMSD of one sequence type, mode and folding model.
 

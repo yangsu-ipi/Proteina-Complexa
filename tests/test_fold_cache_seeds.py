@@ -420,7 +420,11 @@ def test_the_apo_path_folds_every_seed_too():
     """apo_refold's redesign branch has its own fold-and-cache flow rather than
     delegating, so threading the codesignability path left it at one seed."""
     src = pathlib.Path("src/proteinfoundation/evaluation/binder_eval.py").read_text()
-    body = src[src.index("def apo_refold(") : src.index("def ", src.index("def apo_refold(") + 10)]
+    # Up to the next TOP-LEVEL def: "def " alone also matches a nested one, which
+    # silently truncated this body and failed the assertions below for a reason
+    # that had nothing to do with seeds.
+    start = src.index("def apo_refold(")
+    body = src[start : src.index("\ndef ", start + 10)]
     assert "_fold_seeds(" in body, "the apo branch must derive its seeds"
     assert "average_folds(" in body, "and average across them"
 

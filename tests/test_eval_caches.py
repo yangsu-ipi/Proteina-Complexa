@@ -621,3 +621,57 @@ def test_an_af2_request_adopts_the_folds_cached_under_the_old_folder_name(tmp_pa
         )
         is None
     ), "adoption is by key, not by filename"
+
+
+def test_shared_redesign_indices_maps_by_sequence_not_by_position():
+    """The apo columns stay aligned with the holo ones, which hold the binder
+    track's redesigns, while the shared fold covers designability's. A SLICE
+    works today -- the binder set is a seeded prefix -- and mispairs silently the
+    first time it is not: reordered by score ranking, or resumed at a different
+    size."""
+    from proteinfoundation.evaluation.binder_eval_utils import shared_redesign_indices
+
+    shared = ["AAA", "BBB", "CCC", "DDD"]
+    assert shared_redesign_indices(["AAA", "BBB"], shared) == [0, 1], "the prefix case"
+    assert shared_redesign_indices(["CCC", "AAA"], shared) == [2, 0], "and a reordered subset"
+
+
+def test_duplicate_redesigns_map_to_distinct_folds():
+    """ProteinMPNN can emit the same sequence twice at T=0.1. Consuming indices
+    keeps the map injective rather than pointing two rows at one fold."""
+    from proteinfoundation.evaluation.binder_eval_utils import shared_redesign_indices
+
+    assert shared_redesign_indices(["AAA", "AAA"], ["AAA", "AAA", "BBB"]) == [0, 1]
+
+
+def test_an_unmatched_redesign_drops_the_columns_rather_than_guessing():
+    """None, so the caller drops the apo columns for that design -- the same
+    choice the `self` branch makes on a sequence mismatch. Absent columns are
+    recoverable; a fold paired with the wrong sequence is not."""
+    from proteinfoundation.evaluation.binder_eval_utils import shared_redesign_indices
+
+    assert shared_redesign_indices(["AAA", "ZZZ"], ["AAA", "BBB"]) is None
+    assert shared_redesign_indices(["AAA", "AAA"], ["AAA"]) is None, "asked twice, present once"
+    assert shared_redesign_indices([], ["AAA"]) == []
+
+
+def test_the_redesign_apo_fold_is_delegated_not_duplicated():
+    """apo_refold's mpnn branch runs the same computation designability does --
+    the same sequences, folded alone, against the same backbone, by the same
+    folders. Delegated through the function that owns it rather than through a
+    second cache keyed to agree with the first.
+
+    And by EXACT equality on seq_type: mpnn_fixed is a different draw, and
+    pairing its sequences with unfixed-draw folds is one character from here."""
+    import inspect
+
+    from proteinfoundation.evaluation.binder_eval import apo_refold
+
+    source = inspect.getsource(apo_refold)
+    assert 'seq_type == "mpnn"' in source, "delegation must be exact-match"
+    assert 'startswith("mpnn")' not in source, "startswith would catch mpnn_fixed too"
+    assert "shared_redesign_indices(" in source, "and align by sequence, not by slice"
+    assert "monomer_fold_fingerprint(" not in source, (
+        "the apo path must not rebuild the designability key; two modules computing "
+        "one key split the cache the first time a default drifts"
+    )

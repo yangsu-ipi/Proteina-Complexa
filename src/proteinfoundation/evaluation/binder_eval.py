@@ -7,6 +7,7 @@ This module provides functions for evaluating protein binder designs:
 - Force field metrics (hydrogen bonds, electrostatics)
 """
 
+import functools
 import json
 import os
 from collections.abc import Callable
@@ -44,6 +45,7 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     get_metric_columns,
     per_sequence_pass,
     resolve_success_thresholds,
+    shared_redesign_indices,
 )
 from proteinfoundation.evaluation.esm_eval import (
     DEFAULT_ESM_BATCH_TOKENS,
@@ -257,6 +259,18 @@ def packed_aa_counts(counts_by_residue: dict[str, int]) -> list[int]:
     return packed
 
 
+def _at_indices(values, indices):
+    """Pick *indices* out of *values*, inf where the fold is missing.
+
+    Module level rather than nested: a nested def inside apo_refold truncates the
+    source-scanning tests that read its body, and this is the third time that has
+    bitten. inf rather than dropping the slot, because the apo lists stay
+    positionally aligned with the holo ones -- a short list shifts every later
+    column rather than announcing itself.
+    """
+    return [values[i] if i < len(values) else float("inf") for i in indices]
+
+
 def apo_fingerprint_for(backend: str, binder_pdb_path: str, sequences: list[str]) -> str:
     """One backend's apo fold key. Module level so the same call produces the key
     a fold is written under and the key an older name's fold is looked up by --
@@ -281,6 +295,13 @@ def apo_refold(
     keep_outputs: bool,
     reuse_cache: bool,
     n_esmfold2_seeds: int = 1,
+    *,
+    share_with_designability: bool = False,
+    shared_count: int | None = None,
+    binder_chain: str | None = None,
+    complex_pdb_path: str | None = None,
+    target_chains: list[str] | None = None,
+    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
 ) -> tuple[
     dict[tuple[str, str], list[float]],
     dict[str, dict[str, list[float]]],
@@ -364,6 +385,66 @@ def apo_refold(
             # run beats reconstructing that fingerprint here and writing into it.
             derive_for_result(result),
         )
+
+    # The redesigns' apo fold IS designability: the same sequences, folded alone,
+    # against the same binder backbone, by the same folders. Delegated for the
+    # same reason the `self` branch delegates to codesignability -- one fold
+    # shared by construction, rather than two caches that agree only while two
+    # fingerprints are kept in step by hand.
+    #
+    # Exact equality, never startswith: mpnn_fixed is a DIFFERENT draw (fixed
+    # interface positions, variant="fixed", its own seed), and pairing its
+    # sequences with unfixed-draw folds is one character away from here.
+    if seq_type == "mpnn" and share_with_designability:
+        result = evaluate_self_consistency(
+            pdb_path=binder_pdb_path,
+            output_dir=os.path.splitext(binder_pdb_path)[0],
+            use_pdb_seq=False,
+            rmsd_modes=rmsd_modes,
+            folding_models=folding_models,
+            num_seq_per_target=shared_count or len(sequences),
+            keep_outputs=keep_outputs,
+            reuse_cache=reuse_cache,
+            n_esmfold2_seeds=n_esmfold2_seeds,
+            binder_chain=binder_chain,
+            mpnn_pdb_path=complex_pdb_path,
+            target_chains=target_chains,
+            inverse_folding_model=inverse_folding_model,
+            redesign_cache_dir=sample_root_path,
+            derive_structure_metrics=True,
+        )
+        # By sequence, not by position. The binder set is a seeded prefix of the
+        # shared set today; a slice would mispair silently the first time it is
+        # not -- reordered by score ranking, or resumed at a different size.
+        indices = shared_redesign_indices(sequences, result.sequences)
+        if indices is None:
+            logger.error(
+                f"Apo/holo sequence mismatch for 'mpnn': this row reports {len(sequences)} "
+                f"redesigns that are not all present in the shared set of {len(result.sequences)}. "
+                f"Dropping the apo columns for this design rather than pairing a fold with another "
+                f"sequence's metrics."
+            )
+            return {}, {}, {}
+
+        take = functools.partial(_at_indices, indices=indices)
+        rmsds = {
+            (mode, m): take(result.rmsd_values.get(mode, {}).get(m, []))
+            for mode in rmsd_modes
+            for m in folding_models
+        }
+        confidence = per_model_confidence(
+            result.plddt, result.confidence, folding_models, len(result.sequences)
+        )
+        sliced_confidence = {
+            m: {metric: take(values) for metric, values in by_metric.items()}
+            for m, by_metric in confidence.items()
+        }
+        derived = derive_for_result(result)
+        sliced_derived = {
+            m: {metric: take(values) for metric, values in by_metric.items()}
+            for m, by_metric in derived.items()
+        }
+        return rmsds, sliced_confidence, sliced_derived
 
     suffix = f"apo_{seq_type}"
     from proteinfoundation.evaluation.monomer_eval_utils import (
@@ -1006,6 +1087,16 @@ def compute_binder_metrics(
                             keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                             reuse_cache=reuse_cached_apo,
                             n_esmfold2_seeds=n_esmfold2_seeds,
+                            # The redesigns' apo fold and designability are the
+                            # same computation on the same sequences. Shared
+                            # through the function that owns it, not through a
+                            # second cache keyed to agree with the first.
+                            share_with_designability=True,
+                            shared_count=redesign_set_size(cfg_metric),
+                            binder_chain=binder_chain,
+                            complex_pdb_path=pdb_path,
+                            target_chains=gen_target_chain,
+                            inverse_folding_model=inverse_folding_model,
                         )
                     except Exception as exc:
                         logger.error(f"Apo refolding failed for {seq_type} at sample {idx}: {exc}")
