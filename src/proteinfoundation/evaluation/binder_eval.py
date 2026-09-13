@@ -248,6 +248,30 @@ def packed_aa_counts(counts_by_residue: dict[str, int]) -> list[int]:
     return packed
 
 
+def _shadow_complex_resolution(cfg_metric, primary, advisory, is_target_ligand: bool) -> None:
+    """What one folding_models list would fold on the complex track, unobeyed.
+
+    The complex side is where the primary/advisory split lives, so it is where a
+    disagreement between the old four keys and one list matters most.
+    """
+    from proteinfoundation.metrics.column_names import folders_for_track
+    from proteinfoundation.metrics.folder_selection import resolve_folding_models
+
+    try:
+        resolved = resolve_folding_models(cfg_metric, is_target_ligand=is_target_ligand).for_track("complex")
+    except Exception as exc:
+        logger.warning(f"Folder resolution (shadow, complex) could not resolve this config: {exc}")
+        return
+    current = folders_for_track([primary, *advisory], "complex")
+    if resolved != current:
+        logger.warning(
+            f"Folder resolution (shadow, complex): one metric.folding_models list would use "
+            f"{resolved}, this run uses {current}. Nothing has changed."
+        )
+    else:
+        logger.info(f"Folder resolution (shadow, complex): agrees with this run -- {current}")
+
+
 def apo_fingerprint_for(backend: str, binder_pdb_path: str, sequences: list[str]) -> str:
     """One backend's apo fold key. Module level so the same call produces the key
     a fold is written under and the key an older name's fold is looked up by --
@@ -669,6 +693,10 @@ def compute_binder_metrics(
     # backends fold protein-protein complexes, so a ligand target has no target
     # sequence to fold against and the whole feature is skipped.
     consensus_backends = list(cfg_metric.get("consensus_backends", []) or [])
+    # Shadow mode, as on the monomer side: reported, not obeyed. The complex
+    # track is the one where the old primary/advisory split lives, so this is
+    # where a disagreement matters most.
+    _shadow_complex_resolution(cfg_metric, folding_model, consensus_backends, is_target_ligand)
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
     # The advisory folds are ESMFold2 too, so they answer to the same knob --
     # otherwise metric.n_esmfold2_seeds means "three seeds, except for the

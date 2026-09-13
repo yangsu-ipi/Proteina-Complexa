@@ -56,6 +56,59 @@ _BACKEND_ALIASES: dict[str, str] = {"colabfold": "af2"}
 FOLDING_MODELS: tuple[str, ...] = ("af2", "esmfold2", "esmfold", "rf3")
 
 
+# What each folder can actually refold. A capability, not a policy: ESMFold v1
+# predicts no complex, RF3 predicts no isolated monomer here, and everything else
+# does both. The old primary/advisory split described neither -- it described
+# which columns were allowed to decide a verdict, which is a property of the
+# THRESHOLDS, not of the model.
+_FOLDER_CAPABILITIES: dict[str, frozenset[str]] = {
+    "af2": frozenset({"monomer", "complex"}),
+    "esmfold2": frozenset({"monomer", "complex"}),
+    "esmfold": frozenset({"monomer"}),
+    "rf3": frozenset({"complex"}),
+}
+
+# The tracks a refold can belong to. `monomer` covers apo, designability and
+# codesignability -- one chain, folded alone -- and `complex` covers the holo
+# refold of binder plus target.
+FOLD_TRACKS: tuple[str, ...] = ("monomer", "complex")
+
+
+def folder_family(name: str) -> str | None:
+    """The folder *name* belongs to, or None if nothing recognises it.
+
+    Resolves the two ways a name can be indirect: an implementation alias
+    (`colabfold` -> af2) and a versioned harness (`colabdesign` -> af2,
+    `rf3_latest` -> rf3). The same two mappings :func:`backend_for_folding_method`
+    applies, without its refusal -- a caller asking "can this folder do X" wants
+    False for an unknown name, not an exception.
+    """
+    canonical = canonical_backend(name)
+    for prefix, family in _FOLDING_METHOD_FAMILIES:
+        if canonical == prefix or canonical.startswith(prefix + "_"):
+            return family
+    return None
+
+
+def folder_can(name: str, track: str) -> bool:
+    """Whether *name* can serve *track*. Unknown folders can serve nothing."""
+    return track in _FOLDER_CAPABILITIES.get(folder_family(name) or "", frozenset())
+
+
+def folders_for_track(names, track: str) -> list[str]:
+    """The members of *names* that can refold *track*, canonical and deduplicated.
+
+    Order is the caller's, because a reader comparing two folders' columns wants
+    them in the order the config named them.
+    """
+    out: list[str] = []
+    for name in names or ():
+        family = folder_family(name)
+        if family and folder_can(family, track) and family not in out:
+            out.append(family)
+    return out
+
+
 def prior_backend_names(name: str) -> tuple[str, ...]:
     """What this folder used to be called, for readers of older artifacts.
 
