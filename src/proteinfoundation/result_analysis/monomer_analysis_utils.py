@@ -20,7 +20,10 @@ from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold,
 VALID_RMSD_MODES = ["ca", "bb3o", "all_atom"]
 
 # Valid folding models
-VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]
+# Re-exported, not redefined. Two copies of this list lived here and in
+# result_analysis, neither read by anything, and both still said `colabfold`
+# long after the complex side had renamed that folder `af2`.
+from proteinfoundation.metrics.column_names import FOLDING_MODELS as VALID_FOLDING_MODELS  # noqa: F401
 
 
 # =============================================================================

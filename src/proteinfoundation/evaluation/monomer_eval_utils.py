@@ -38,7 +38,10 @@ from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
 VALID_RMSD_MODES = ["ca", "bb3o", "all_atom"]
 # esmfold2 folds single-chain single-sequence via the Fast checkpoint; see
 # folding_models.run_esmfold2 and metrics.esmfold2_loader.
-VALID_FOLDING_MODELS = ["esmfold", "esmfold2", "colabfold"]
+# Re-exported, not redefined. Two copies of this list lived here and in
+# result_analysis, neither read by anything, and both still said `colabfold`
+# long after the complex side had renamed that folder `af2`.
+from proteinfoundation.metrics.column_names import FOLDING_MODELS as VALID_FOLDING_MODELS  # noqa: F401
 
 # Default folding configuration
 DEFAULT_DESIGNABILITY_MODES = ["ca"]
@@ -768,8 +771,28 @@ def average_folds(folds: dict[int, dict]) -> dict | None:
     return averaged
 
 
+def legacy_fold_fingerprints(model: str | None, fingerprint_for) -> dict[str, str]:
+    """``{old_name: fingerprint}`` for folders *model* used to be called.
+
+    *fingerprint_for* is the caller's own fingerprint function, taken as an
+    argument rather than reconstructed here: the key depends on inputs only the
+    caller has, and a second implementation of it is how two modules come to
+    disagree about one cache.
+    """
+    from proteinfoundation.metrics.column_names import prior_backend_names
+
+    if not model:
+        return {}
+    return {old: fingerprint_for(old) for old in prior_backend_names(model)}
+
+
 def read_monomer_folds(
-    output_dir: str, suffix: str, fingerprint: str, name: str | None = None, model: str | None = None
+    output_dir: str,
+    suffix: str,
+    fingerprint: str,
+    name: str | None = None,
+    model: str | None = None,
+    also_accept: dict[str, str] | None = None,
 ) -> dict[int, dict] | None:
     """Every stored fold for this design, as ``{seed: fold}``, or None.
 
@@ -790,13 +813,23 @@ def read_monomer_folds(
     would ever ask for. The symptom was four entries for three seeds: three folded
     fresh, one orphan unreachable.
     """
-    path = next((p for p in monomer_fold_cache_paths(output_dir, suffix, model) if os.path.exists(p)), None)
+    # This backend's own file first, then the files it was called by an older
+    # name, then the legacy shared one. Each is accepted only against the
+    # fingerprint that name would have written, so an adopted cache is one this
+    # run would have produced -- not merely one that happens to be there.
+    candidates = list(monomer_fold_cache_paths(output_dir, suffix, model))
+    accepted = {fingerprint}
+    for legacy_model, legacy_fingerprint in (also_accept or {}).items():
+        candidates.extend(monomer_fold_cache_paths(output_dir, suffix, legacy_model))
+        accepted.add(legacy_fingerprint)
+
+    path = next((p for p in candidates if os.path.exists(p)), None)
     if path is None:
         return None
     try:
         with open(path) as handle:
             cached = json.load(handle)
-        if cached.get("fingerprint") != fingerprint:
+        if cached.get("fingerprint") not in accepted:
             return None
         folds = cached.get("folds")
         if folds is None:

@@ -27,7 +27,7 @@ def scRMSD(
     rmsd_modes: list[str] = ["ca"],
     motif_index: list[str] = None,
     motif_residue_indices: list[int] | None = None,
-    folding_models: list[Literal["esmfold", "colabfold"]] = ["esmfold"],
+    folding_models: list[Literal["af2", "esmfold2", "esmfold"]] = ["esmfold"],
     cache_dir: str | None = None,
     keep_outputs: bool = False,
 ) -> dict[str, float | list[float]]:

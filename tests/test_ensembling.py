@@ -1098,7 +1098,7 @@ def test_no_colabfold_at_all_says_so_rather_than_failing_as_a_shell_error(tmp_pa
         folding_models.run_colabfold(["MKV"], str(tmp_path / "out"))
     message = str(raised.value)
     assert "COLABFOLD_EXEC_PATH" in message
-    assert "apo_folding_models" in message, "the other way out is to stop asking for the backend"
+    assert "folding_models" in message, "the other way out is to stop asking for the backend"
     assert "not the alternative" in message, "and the tempting wrong fix stays countermanded"
 
 

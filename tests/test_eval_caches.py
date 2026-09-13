@@ -12,6 +12,7 @@ key that is too coarse fails silently and looks like a speedup.
 
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -558,3 +559,65 @@ def test_a_cache_written_before_best_rmsd_was_dropped_still_reads(tmp_path):
     lopsided = dict(legacy, rmsd_values={"ca": {"esmfold2": [1.25]}, "bb3": {"esmfold2": [1.4]}})
     rebuilt = _result_from_cache(lopsided, ["ca", "bb3"], str(tmp_path / "ref.pdb"))
     assert rebuilt is not None and rebuilt.rmsd_values["bb3"]["esmfold2"] == [1.4]
+
+
+def test_an_af2_request_adopts_the_folds_cached_under_the_old_folder_name(tmp_path):
+    """The folder name rides in BOTH the cache filename and the fingerprint, so
+    renaming colabfold to af2 would otherwise refold every structure that folder
+    ever produced -- to learn what is already on disk. Adopted only against the
+    fingerprint the OLD name would have written, so a hit is a fold this run
+    would have produced, not merely a file that happens to be there."""
+    from proteinfoundation.evaluation.monomer_eval_utils import (
+        legacy_fold_fingerprints,
+        monomer_fold_cache_path,
+        read_monomer_folds,
+    )
+
+    def fingerprint_for(backend: str) -> str:
+        return f"fp-for-{backend}"
+
+    assert legacy_fold_fingerprints("af2", fingerprint_for) == {"colabfold": "fp-for-colabfold"}
+    assert legacy_fold_fingerprints("esmfold2", fingerprint_for) == {}, "only a renamed folder has one"
+
+    legacy_path = monomer_fold_cache_path(str(tmp_path), "apo_mpnn", "colabfold")
+    pathlib.Path(legacy_path).write_text(
+        json.dumps(
+            {
+                "fingerprint": "fp-for-colabfold",
+                "schema": 3,
+                "folds": {
+                    "77": {
+                        "sequences": ["MKV"],
+                        "rmsd_values": {"ca": {"af2": [1.5]}},
+                        "folded_paths": {"af2": [None]},
+                        "plddt": {"af2": [0.9]},
+                        "confidence": {},
+                        "structures_kept": False,
+                    }
+                },
+            }
+        )
+    )
+
+    adopted = read_monomer_folds(
+        str(tmp_path),
+        "apo_mpnn",
+        "fp-for-af2",
+        model="af2",
+        also_accept=legacy_fold_fingerprints("af2", fingerprint_for),
+    )
+    assert adopted is not None, "the old name's folds are this folder's folds"
+    assert adopted[77]["rmsd_values"]["ca"]["af2"] == [1.5]
+
+    # A file under the old name whose fingerprint does not match is still refused.
+    pathlib.Path(legacy_path).write_text(json.dumps({"fingerprint": "something-else", "folds": {}}))
+    assert (
+        read_monomer_folds(
+            str(tmp_path),
+            "apo_mpnn",
+            "fp-for-af2",
+            model="af2",
+            also_accept=legacy_fold_fingerprints("af2", fingerprint_for),
+        )
+        is None
+    ), "adoption is by key, not by filename"

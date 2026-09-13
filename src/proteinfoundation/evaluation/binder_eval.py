@@ -59,7 +59,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
-from proteinfoundation.metrics.column_names import backend_for_folding_method, rename
+from proteinfoundation.metrics.column_names import backend_for_folding_method, canonical_backend, rename
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
@@ -130,7 +130,12 @@ def initialize_folding_model(
     """
     target_pdb_chain = sorted(target_pdb_chain)
 
-    if folding_model == "colabdesign":
+    # `af2` is the model; `colabdesign` is the harness that runs it for a complex,
+    # the way `colabfold` is the CLI that runs it for a monomer. Both names reach
+    # here because the config vocabulary is the model's, and a run that named its
+    # columns af2 and then died because the constructor wanted the harness name
+    # would be the worst of both.
+    if canonical_backend(folding_model) == "af2":
         if is_target_ligand:
             raise ValueError("ColabDesign does not support ligand-protein complex folding")
         return {"model_name": "colabdesign"}
@@ -243,6 +248,20 @@ def packed_aa_counts(counts_by_residue: dict[str, int]) -> list[int]:
     return packed
 
 
+def apo_fingerprint_for(backend: str, binder_pdb_path: str, sequences: list[str]) -> str:
+    """One backend's apo fold key. Module level so the same call produces the key
+    a fold is written under and the key an older name's fold is looked up by --
+    two spellings of one fingerprint is how a cache silently splits."""
+    from proteinfoundation.metrics.folding_models import folding_model_identity
+
+    return apo_fold_fingerprint(
+        binder_pdb_path=binder_pdb_path,
+        sequences=sequences,
+        folding_models=[backend],
+        model_identities={backend: folding_model_identity(backend)},
+    )
+
+
 def apo_refold(
     seq_type: str,
     sequences: list[str],
@@ -342,6 +361,7 @@ def apo_refold(
     from proteinfoundation.evaluation.monomer_eval_utils import (
         _fold_seeds,
         average_folds,
+        legacy_fold_fingerprints,
         merge_model_folds,
         read_monomer_folds,
     )
@@ -356,18 +376,22 @@ def apo_refold(
     # averaged with themselves.
     per_model: dict[str, dict] = {}
     for model in folding_models:
-        fingerprint = apo_fold_fingerprint(
-            binder_pdb_path=binder_pdb_path,
-            sequences=sequences,
-            folding_models=[model],
-            model_identities={model: folding_model_identity(model)},
-        )
+        fingerprint = apo_fingerprint_for(model, binder_pdb_path, sequences)
         # Sequences are an argument here rather than an output, so the seeds can
         # be derived up front -- unlike the codesignability path, where they come
         # out of the inverse folder and the cache has to be read first.
         seeds = _fold_seeds(name, suffix, list(sequences), [model], n_esmfold2_seeds)
         stored = (
-            read_monomer_folds(sample_root_path, suffix, fingerprint, name=name, model=model)
+            read_monomer_folds(
+                sample_root_path,
+                suffix,
+                fingerprint,
+                name=name,
+                model=model,
+                also_accept=legacy_fold_fingerprints(
+                    model, lambda b: apo_fingerprint_for(b, binder_pdb_path, sequences)
+                ),
+            )
             if reuse_cache
             else None
         )

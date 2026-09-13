@@ -40,6 +40,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     _fold_seeds,
     average_folds,
     folded_paths_by_model,
+    legacy_fold_fingerprints,
     merge_model_folds,
     monomer_fold_fingerprint,
     read_monomer_folds,
@@ -191,7 +192,7 @@ def fold_sequences(
     sequences: list[str],
     output_dir: str,
     name: str,
-    folding_models: list[Literal["esmfold", "colabfold"]] = ["esmfold"],
+    folding_models: list[Literal["af2", "esmfold2", "esmfold"]] = ["esmfold"],
     suffix: str = "fold",
     cache_dir: str | None = None,
     keep_outputs: bool = False,
@@ -215,7 +216,7 @@ def fold_sequences(
     Returns:
         Dictionary mapping model names to lists of FoldingResults
     """
-    from proteinfoundation.metrics.folding_models import run_colabfold, run_esmfold, run_esmfold2
+    from proteinfoundation.metrics.folding_models import fold_monomer
 
     # Set cache directory (expand ~ to home directory)
     if os.getenv("CACHE_DIR"):
@@ -242,35 +243,16 @@ def fold_sequences(
         os.makedirs(model_output_dir, exist_ok=True)
 
         try:
-            if model == "esmfold":
-                out_paths = run_esmfold(
-                    sequences,
-                    model_output_dir,
-                    name,
-                    suffix=suffix,
-                    cache_dir=cache_dir,
-                    keep_outputs=True,
-                )
-            elif model == "esmfold2":
-                out_paths = run_esmfold2(
-                    sequences,
-                    model_output_dir,
-                    name,
-                    suffix=suffix,
-                    cache_dir=cache_dir,
-                    keep_outputs=True,
-                    seed=seed,
-                )
-            elif model == "colabfold":
-                out_paths = run_colabfold(
-                    sequences,
-                    model_output_dir,
-                    suffix=suffix,
-                    cache_dir=cache_dir,
-                    keep_outputs=keep_outputs,
-                )
-            else:
-                raise ValueError(f"Unsupported folding model: {model}")
+            out_paths = fold_monomer(
+                model,
+                sequences,
+                model_output_dir,
+                name,
+                suffix=suffix,
+                cache_dir=cache_dir,
+                keep_outputs=keep_outputs,
+                seed=seed,
+            )
 
             # Convert paths to FoldingResults
             model_results = []
@@ -715,7 +697,7 @@ def evaluate_self_consistency(
     output_dir: str,
     use_pdb_seq: bool = False,
     rmsd_modes: list[Literal["ca", "bb3", "bb3o", "all_atom"]] = ["ca"],
-    folding_models: list[Literal["esmfold", "colabfold"]] = ["esmfold"],
+    folding_models: list[Literal["af2", "esmfold2", "esmfold"]] = ["esmfold"],
     num_seq_per_target: int = 8,
     pmpnn_sampling_temp: float = 0.1,
     cache_dir: str | None = None,
@@ -821,7 +803,19 @@ def evaluate_self_consistency(
     # folder -- the expensive step the cache exists to skip. Read-then-derive
     # keeps that skip; derive-then-read would re-run ProteinMPNN on every resume.
     stored_by_model = {
-        m: (read_monomer_folds(output_dir, suffix, fingerprints[m], model=m) if reuse_cache else None)
+        m: (
+            read_monomer_folds(
+                output_dir,
+                suffix,
+                fingerprints[m],
+                model=m,
+                # A folder that was renamed still has its folds on disk under the
+                # old name and the old key; adopt them rather than refold.
+                also_accept=legacy_fold_fingerprints(m, fingerprint_for),
+            )
+            if reuse_cache
+            else None
+        )
         for m in folding_models
     }
     sequences = None

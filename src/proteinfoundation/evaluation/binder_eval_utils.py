@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 # Re-exported rather than restated: metrics.tmol_interface owns the mapping from
 # TMOL's reward keys to these column names, and the advisory track reads the same
 # four off its own structures. Two lists would agree until one of them was edited.
+from proteinfoundation.metrics.column_names import canonical_backend
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS
 
 # atomworks/biotite are imported inside the two functions that read structures.
@@ -686,7 +687,13 @@ def apo_column(seq_type: str, mode: str, model: str) -> str:
     rather than extending a name that means something else. See
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
-    return f"{seq_type}_apo_{model}_binder_scRMSD_{mode}"
+    # Canonical, not as configured. These builders mint names by f-string rather
+    # than through metric_column, which is how `colabfold` -- an implementation
+    # name that is not in BACKENDS -- got into a backend slot and then survived
+    # every migration as UNCLASSIFIED. Resolving here means a config still using
+    # the old name produces columns in the current vocabulary instead of quietly
+    # minting the off-scheme one again.
+    return f"{seq_type}_apo_{canonical_backend(model)}_binder_scRMSD_{mode}"
 
 
 def apo_derived_column(seq_type: str, model: str, metric: str) -> str:
@@ -698,7 +705,7 @@ def apo_derived_column(seq_type: str, model: str, metric: str) -> str:
     be subtracted. Nothing defined across an interface appears here: an apo fold
     is one chain.
     """
-    return f"{seq_type}_apo_{model}_{metric}"
+    return f"{seq_type}_apo_{canonical_backend(model)}_{metric}"
 
 
 def apo_confidence_column(seq_type: str, model: str, metric: str) -> str:
@@ -710,7 +717,7 @@ def apo_confidence_column(seq_type: str, model: str, metric: str) -> str:
     the same goes for its pTM and its mean PAE, which is why they carry the same
     ``binder_`` scope the complex columns of those names carry.
     """
-    return f"{seq_type}_apo_{model}_binder_{metric}"
+    return f"{seq_type}_apo_{canonical_backend(model)}_binder_{metric}"
 
 
 def apo_plddt_column(seq_type: str, model: str) -> str:

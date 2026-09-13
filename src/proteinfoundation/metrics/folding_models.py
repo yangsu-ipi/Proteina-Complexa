@@ -250,6 +250,75 @@ def run_esmfold(
     return out_esm_paths
 
 
+def fold_monomer(
+    model: str,
+    sequences: list[str],
+    out_dir: str,
+    name: str,
+    *,
+    suffix: str = "",
+    cache_dir: str | None = None,
+    keep_outputs: bool = True,
+    seed: int | None = None,
+) -> list[str | None]:
+    """Fold sequences with one backend, named in the vocabulary the columns use.
+
+    One uniform signature over three runners with three different ones, so a
+    caller selects a folder by name instead of branching on it -- and so the set
+    of folders that exist is a table someone can read rather than a chain of
+    elifs. ``af2`` is the canonical name; the runner behind it is the ColabFold
+    CLI, which is an implementation detail of how AlphaFold2 gets run for a
+    monomer, exactly as ColabDesign is for a complex.
+    """
+    from proteinfoundation.metrics.column_names import canonical_backend
+
+    canonical = canonical_backend(model)
+    runner = MONOMER_FOLDERS.get(canonical)
+    if runner is None:
+        raise ValueError(
+            f"Unsupported folding model {model!r} (resolved to {canonical!r}); "
+            f"known: {sorted(MONOMER_FOLDERS)}"
+        )
+    return runner(
+        sequences,
+        out_dir,
+        name,
+        suffix=suffix,
+        cache_dir=cache_dir,
+        keep_outputs=keep_outputs,
+        seed=seed,
+    )
+
+
+def _fold_with_esmfold(sequences, out_dir, name, *, suffix, cache_dir, keep_outputs, seed):
+    # keep_outputs is True regardless: the structures are what a later RMSD mode
+    # is measured from, and the caller deletes the directory when it is done.
+    return run_esmfold(sequences, out_dir, name, suffix=suffix, cache_dir=cache_dir, keep_outputs=True)
+
+
+def _fold_with_esmfold2(sequences, out_dir, name, *, suffix, cache_dir, keep_outputs, seed):
+    return run_esmfold2(
+        sequences, out_dir, name, suffix=suffix, cache_dir=cache_dir, keep_outputs=True, seed=seed
+    )
+
+
+def _fold_with_af2(sequences, out_dir, name, *, suffix, cache_dir, keep_outputs, seed):
+    # No name and no seed: colabfold_batch names queries positionally and is
+    # deterministic, which is why _fold_seeds gives it one seed however many a
+    # sampler beside it wants. The positional naming is also why its job
+    # directory is scoped per track -- see fold_sequences.
+    return run_colabfold(sequences, out_dir, suffix=suffix, cache_dir=cache_dir, keep_outputs=keep_outputs)
+
+
+# The folders a monomer-style refold can ask for, keyed by canonical name. The
+# only place that mapping exists.
+MONOMER_FOLDERS = {
+    "esmfold": _fold_with_esmfold,
+    "esmfold2": _fold_with_esmfold2,
+    "af2": _fold_with_af2,
+}
+
+
 def folding_model_identity(model: str) -> str:
     """Which weights a monomer folding backend will actually use.
 
@@ -257,13 +326,22 @@ def folding_model_identity(model: str) -> str:
     serving structures from a different model. esmfold2 resolves through the
     shared loader, which honours ESMFOLD2_MONOMER_MODEL.
     """
-    if model == "esmfold2":
+    from proteinfoundation.metrics.column_names import canonical_backend
+
+    canonical = canonical_backend(model)
+    if canonical == "esmfold2":
         from proteinfoundation.metrics.esmfold2_loader import monomer_model_id
 
         return monomer_model_id()
-    if model == "esmfold":
+    if canonical == "esmfold":
         return "facebook/esmfold_v1"
-    return model
+    # af2 returns its own name, and that is a known gap rather than an oversight.
+    # ColabFold owns its parameter store by design -- this repo does not choose
+    # it and cannot read a release from it -- so swapping installations does NOT
+    # invalidate these folds. The portable alternative does not exist: the only
+    # handle is COLABFOLD_EXEC_PATH, and keying on a filesystem path would make a
+    # campaign refold every structure the moment it moved between boxes.
+    return canonical
 
 
 def run_esmfold2(
@@ -520,7 +598,7 @@ def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: s
         logger.warning(f"Ignoring unusable ColabFold scores file {matches[0]}: {exc}")
         return
     write_fold_confidence(pdb_path, ptm=scored.get("ptm"), pae=scored.get("pae"))
-    save_pae(pdb_path, scored.get("pae"), backend="colabfold", model=os.path.basename(matches[0]))
+    save_pae(pdb_path, scored.get("pae"), backend="af2", model=os.path.basename(matches[0]))
 
 
 COLABFOLD_RANK_MARKER = "_rank_"
@@ -630,18 +708,19 @@ def run_colabfold(
     named = bool(os.environ.get("COLABFOLD_EXEC_PATH"))
     if not named and not shutil.which(command_name):
         raise RuntimeError(
-            f"apo folding asked for colabfold, but there is no {command_name} on PATH and "
+            f"a refold asked for af2, whose monomer implementation is colabfold_batch, but there is "
+            f"no {command_name} on PATH and "
             f"COLABFOLD_EXEC_PATH is unset. ColabFold's folder lives in an environment of its "
             f"own (install-colabfold.sh builds one in envs/colabfold); set COLABFOLD_EXEC_PATH "
             f"to its colabfold_batch. Installing colabfold[alphafold] into THIS environment is "
             f"not the alternative: it downgrades absl-py, biopython and chex and pins a jax that "
-            f"a Blackwell card cannot use. To run apo on ESMFold2 alone instead, drop colabfold "
-            f"from apo_folding_models."
+            f"a Blackwell card cannot use. To refold with ESMFold2 alone instead, drop af2 "
+            f"from folding_models."
         )
     msa_only_env = _alphafold_missing_from(command_name)
     if msa_only_env and not named:
         raise RuntimeError(
-            f"{command_name} resolves to {msa_only_env}, a ColabFold installed without its "
+            f"af2 resolves to {command_name} in {msa_only_env}, a ColabFold installed without its "
             f"[alphafold] extra -- MSA retrieval only, it cannot fold. Set COLABFOLD_EXEC_PATH to "
             f"a colabfold_batch that can (install-colabfold.sh builds one in envs/colabfold). Do "
             f"NOT pip install colabfold[alphafold] into this environment as ColabFold's own error "

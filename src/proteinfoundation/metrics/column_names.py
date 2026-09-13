@@ -42,6 +42,41 @@ KINDS: tuple[str, ...] = ("complex", "apo")
 # only in this one, which is what makes generated-vs-refolded a one-slot diff.
 BACKENDS: tuple[str, ...] = ("af2", "esmfold2", "esmfold", "rf3", "protenix", "boltz2", "generated")
 
+# Implementation names that mean a model already in BACKENDS. `colabfold` is the
+# CLI that runs AlphaFold2 for a monomer, the way `colabdesign` is the harness
+# that runs it for a complex -- neither is a model, and the complex side has
+# always called this one `af2`. Kept as an accepted INPUT so an old config or an
+# old CSV still resolves; never produced.
+_BACKEND_ALIASES: dict[str, str] = {"colabfold": "af2"}
+
+# Every folder a refold can be asked for, in the vocabulary the columns use.
+# One list: two copies of this lived in monomer_eval_utils and
+# monomer_analysis_utils, neither read by anything, and that is how `colabfold`
+# stayed alive in three places after the complex side had renamed it.
+FOLDING_MODELS: tuple[str, ...] = ("af2", "esmfold2", "esmfold", "rf3")
+
+
+def prior_backend_names(name: str) -> tuple[str, ...]:
+    """What this folder used to be called, for readers of older artifacts.
+
+    The inverse of :data:`_BACKEND_ALIASES`. A rename is cheap in a column header
+    and expensive in a cache: the folder name rides in both the filename and the
+    fingerprint, so without this a campaign refolds every structure the folder
+    ever produced to learn what it already knows.
+    """
+    canonical = canonical_backend(name)
+    return tuple(old for old, new in _BACKEND_ALIASES.items() if new == canonical)
+
+
+def canonical_backend(name: str) -> str:
+    """The canonical folder name for *name*, resolving implementation aliases.
+
+    Idempotent, so it can be applied wherever a name enters without a caller
+    having to know whether it has been applied already.
+    """
+    resolved = str(name or "").strip().lower()
+    return _BACKEND_ALIASES.get(resolved, resolved)
+
 # Which part of the structure. Compound values are deliberate: `interface` alone
 # means both sides, which is right for an additive quantity like dSASA and wrong
 # for a composition, where you want each side separately. Omitted scope means
@@ -98,7 +133,7 @@ def backend_for_folding_method(folding_method: str) -> str:
     after a raw config string would claim provenance the scheme cannot check,
     and the failure would be a new column silently appearing beside the old.
     """
-    name = str(folding_method or "").strip().lower()
+    name = canonical_backend(folding_method)
     for prefix, family in _FOLDING_METHOD_FAMILIES:
         if name == prefix or name.startswith(prefix + "_"):
             return family
@@ -232,6 +267,16 @@ def classify(old: str, complex_backend: str = DEFAULT_COMPLEX_BACKEND) -> tuple[
     base = old[: -len(tail)] if tail else old
 
     if base.startswith("_res_"):
+        # The _res_* family is out of the slot scheme by decision (see the note
+        # above), and stays there. One exception, anchored to the suffix: these
+        # carry the FOLDER as a trailing token, and a folder was renamed. Nowhere
+        # else records which model produced a _res_ number, so leaving it is not
+        # "unchanged", it is a column naming a folder that no longer exists.
+        if "scRMSD" in base:
+            head, _, folder = base.rpartition("_")
+            canonical = canonical_backend(folder)
+            if folder and canonical != folder and canonical in BACKENDS:
+                return "backend alias", f"{head}_{canonical}{tail}"
         return "aggregate", old
     seq, rest = _split_seq_type(base)
     if seq is None:
@@ -245,7 +290,14 @@ def classify(old: str, complex_backend: str = DEFAULT_COMPLEX_BACKEND) -> tuple[
     for kind in KINDS:
         if rest.startswith(kind + "_"):
             after_kind = rest[len(kind) + 1 :]
-            if any(after_kind.startswith(backend + "_") for backend in BACKENDS):
+            head, sep, remainder = after_kind.partition("_")
+            canonical = canonical_backend(head)
+            if sep and canonical in BACKENDS:
+                # An alias in the slot is not "already migrated" -- it is in the
+                # right SHAPE with the wrong NAME, which is why these columns
+                # fell through to UNCLASSIFIED and survived every migration.
+                if canonical != head:
+                    return "backend alias", f"{seq}_{kind}_{canonical}_{remainder}{tail}"
                 return "already migrated", old
     if rest == "aa_interface_counts":
         return "generated-defined interface", f"{seq}_complex_generated_binder_interface_aa_counts{tail}"
