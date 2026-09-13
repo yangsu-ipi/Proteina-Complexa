@@ -59,7 +59,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
-from proteinfoundation.metrics.column_names import backend_for_folding_method, canonical_backend, rename
+from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family, rename
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     advisory_column,
@@ -70,7 +70,11 @@ from proteinfoundation.metrics.consensus_folding import (
 )
 from proteinfoundation.metrics.ensembling import GEOMETRY_REDUCTION_VERSION
 from proteinfoundation.metrics.interface import DEFAULT_CONTACT_CUTOFF, INTERFACE_DERIVATION_VERSION
-from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, REDESIGN_SCORE_KIND, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import (
+    DEFAULT_INVERSE_FOLDING_MODEL,
+    REDESIGN_SCORE_KIND,
+    resolve_inverse_folding_model,
+)
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.metrics.tmol_interface import tmol_interface_metrics
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -135,7 +139,7 @@ def initialize_folding_model(
     # here because the config vocabulary is the model's, and a run that named its
     # columns af2 and then died because the constructor wanted the harness name
     # would be the worst of both.
-    if canonical_backend(folding_model) == "af2":
+    if folder_family(folding_model) == "af2":
         if is_target_ligand:
             raise ValueError("ColabDesign does not support ligand-protein complex folding")
         return {"model_name": "colabdesign"}
@@ -328,7 +332,6 @@ def apo_refold(
         evaluate_self_consistency,
         fold_and_measure_seeds,
     )
-    from proteinfoundation.metrics.folding_models import folding_model_identity
     from proteinfoundation.utils.pdb_utils import pdb_name_from_path
 
     # The apo fold of the co-designed sequence *is* codesignability: same sequence

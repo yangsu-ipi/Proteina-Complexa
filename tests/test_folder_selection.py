@@ -95,3 +95,40 @@ def test_a_config_naming_nothing_still_resolves_to_what_it_used_to():
     resolved, _ = _warnings(lambda: resolve_folding_models({}))
     assert resolved.monomer == ["esmfold"], "the historical default"
     assert resolved.complex == [], "and no complex folder without one named"
+
+
+def test_the_complex_constructor_accepts_the_model_and_the_harness():
+    """Regression. `colabdesign` is the harness `af2` runs in for a complex, and
+    it resolves through the FAMILY table, not the alias map -- canonical_backend
+    leaves it alone. Getting that wrong made initialize_folding_model reject
+    'colabdesign', which is the shipped default of every binder config, so every
+    binder campaign died at the first design.
+
+    The suite did not catch it because nothing called this constructor by name.
+    A real run did, immediately."""
+    from proteinfoundation.evaluation.binder_eval import initialize_folding_model
+
+    for name in ("colabdesign", "af2"):
+        specs = initialize_folding_model(name, ["A"], "task", False)
+        assert specs["model_name"] == "colabdesign", f"{name} must construct the AF2 complex folder"
+
+    with pytest.raises(ValueError, match="does not support ligand"):
+        initialize_folding_model("colabdesign", ["A"], "task", True)
+
+    with pytest.raises(ValueError, match="not supported"):
+        initialize_folding_model("no_such_folder", ["A"], "task", False)
+
+
+def test_every_folder_name_a_config_may_use_resolves_somewhere():
+    """The three ways a folder can be named -- model, monomer implementation,
+    complex harness, versioned harness -- must all land on the same family, or a
+    config that says one thing and a constructor that expects another disagree
+    silently until a campaign dies."""
+    from proteinfoundation.metrics.column_names import folder_family
+
+    assert folder_family("af2") == "af2"
+    assert folder_family("colabfold") == "af2", "the monomer implementation"
+    assert folder_family("colabdesign") == "af2", "the complex harness"
+    assert folder_family("rf3_latest") == "rf3", "a versioned harness"
+    assert folder_family("esmfold2") == "esmfold2"
+    assert folder_family("nonsense") is None
