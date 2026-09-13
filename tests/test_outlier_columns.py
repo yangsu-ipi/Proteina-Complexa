@@ -218,3 +218,59 @@ def test_the_binder_half_of_the_af2_plddt_is_gated():
     spec = DEFAULT_PROTEIN_BINDER_THRESHOLDS["complex_binder_pLDDT"]
     assert (spec["threshold"], spec["op"]) == (0.9, ">=")
     assert build_column_name("mpnn", spec["column_prefix"], spec["metric"]) == "mpnn_complex_af2_binder_pLDDT_all"
+
+
+def test_the_best_redesign_is_chosen_by_the_ensemble_not_by_a_folder_name():
+    """The default ranking column used to be sorted(candidates)[0] -- alphabetical
+    -- so the folder that happened to sort first decided the ordering. Adding af2
+    would have put _res_scRMSD_ca_af2_all ahead of _res_scRMSD_ca_esmfold2_all and
+    silently re-ranked every row of every campaign.
+
+    Ranking by the mean makes the order change when the MEASUREMENT changes, never
+    because of a name."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    # af2 likes sequence 0; esmfold2 likes sequence 1; together they prefer 1.
+    df = pd.DataFrame(
+        {
+            "_res_mpnn_sequences": [["SEQ_A", "SEQ_B"]],
+            "_res_scRMSD_ca_af2_all": [[0.5, 1.9]],
+            "_res_scRMSD_ca_esmfold2_all": [[9.0, 1.0]],
+        }
+    )
+    picked = pick_monomer_best_sequence(df.copy())["_res_mpnn_best_sequence"].iloc[0]
+    assert picked == "SEQ_B", "mean(0.5,9.0)=4.75 vs mean(1.9,1.0)=1.45"
+
+    # Alphabetically-first-folder ranking would have said SEQ_A, which is the
+    # behaviour this replaces.
+    by_af2 = pick_monomer_best_sequence(df.copy(), ranking_column="_res_scRMSD_ca_af2_all")
+    assert by_af2["_res_mpnn_best_sequence"].iloc[0] == "SEQ_A", "explicit override still honoured"
+
+
+def test_a_folder_that_measured_nothing_is_dropped_from_the_mean():
+    """Same rule every other reduction here uses: a folder that produced no
+    number for a sequence did not produce a worse one."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    df = pd.DataFrame(
+        {
+            "_res_mpnn_sequences": [["SEQ_A", "SEQ_B"]],
+            "_res_scRMSD_ca_af2_all": [[float("nan"), 1.0]],
+            "_res_scRMSD_ca_esmfold2_all": [[3.0, float("inf")]],
+        }
+    )
+    picked = pick_monomer_best_sequence(df.copy())["_res_mpnn_best_sequence"].iloc[0]
+    assert picked == "SEQ_B", "SEQ_A scores 3.0 from one folder; SEQ_B scores 1.0 from the other"
+
+
+def test_no_ranking_column_at_all_leaves_the_first_sequence():
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis import pick_monomer_best_sequence
+
+    df = pd.DataFrame({"_res_mpnn_sequences": [["ONLY_A", "ONLY_B"]]})
+    assert pick_monomer_best_sequence(df.copy())["_res_mpnn_best_sequence"].iloc[0] == "ONLY_A"

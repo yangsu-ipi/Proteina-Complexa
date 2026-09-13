@@ -8,6 +8,7 @@ computation for both protein and ligand binders.
 
 import glob
 import json
+import math
 import os
 
 import numpy as np
@@ -426,42 +427,78 @@ def pick_monomer_best_sequence(
     ``_res_mpnn_sequences`` and a per-redesign metric list, changing no
     measurement. So it is made here, and which metric orders it is configurable
     rather than being whichever model happened to be first in a list.
+
+    Ranked by the MEAN over every folder's column, not by one of them. The
+    default used to be ``sorted(candidates)[0]`` -- alphabetical -- which made
+    the ordering a property of a folder's NAME: adding af2 would have put
+    ``_res_scRMSD_ca_af2_all`` ahead of ``_res_scRMSD_ca_esmfold_all`` and
+    silently re-ranked every row of every campaign. Never pick one of N by an
+    arbitrary criterion when the N are meant to be a cross-check; the ensemble is
+    the answer they jointly give, and the order then changes when the measurement
+    changes rather than when a name does.
+
+    A folder that measured nothing for a sequence is dropped from that sequence's
+    mean rather than counted, the same rule every other reduction here uses.
+    ``ranking_column`` still overrides, for a caller that deliberately wants one
+    folder's opinion.
     """
     if "_res_mpnn_sequences" not in df.columns:
         return df
-    if ranking_column is None:
-        candidates = [
-            c for c in df.columns
+
+    if ranking_column is not None:
+        ranking_columns = [ranking_column] if ranking_column in df.columns else []
+    else:
+        # EVERY folder's per-redesign column, not one of them. The default used
+        # to be sorted(candidates)[0] -- alphabetical -- so the folder that
+        # happened to sort first decided the ordering, and adding one silently
+        # re-ranked every row of every campaign (af2 sorts ahead of esmfold*).
+        # Ranking by the ensemble means the order changes when the MEASUREMENT
+        # changes, never because of a name.
+        ranking_columns = sorted(
+            c
+            for c in df.columns
             if c.startswith("_res_") and c.endswith("_all") and "scRMSD" in c and "co_" not in c
-        ]
-        ranking_column = sorted(candidates)[0] if candidates else None
-    if ranking_column is None or ranking_column not in df.columns:
+        )
+
+    if not ranking_columns:
         logger.warning(
             "No per-redesign column to rank monomer sequences by; "
             "_res_mpnn_best_sequence left as the first sequence."
         )
 
+    def mean_over_folders(row_values: list, index: int) -> float | None:
+        """One sequence's score, meaned over the folders that measured it."""
+        usable = []
+        for values in row_values:
+            if not isinstance(values, list) or index >= len(values):
+                continue
+            value = values[index]
+            if isinstance(value, (int, float)) and value == value and math.isfinite(value):
+                usable.append(float(value))
+        return sum(usable) / len(usable) if usable else None
+
     best = []
-    for sequences, values in zip(
-        df["_res_mpnn_sequences"],
-        df[ranking_column] if ranking_column in df.columns else [None] * len(df),
-        strict=False,
-    ):
+    per_row = [df[c] if c in df.columns else [None] * len(df) for c in ranking_columns]
+    for position, sequences in enumerate(df["_res_mpnn_sequences"]):
         if not isinstance(sequences, list) or not sequences:
             best.append("")
             continue
-        usable = [
-            (v, i) for i, v in enumerate(values[: len(sequences)])
-            if isinstance(values, list) and v is not None and v == v
-        ] if isinstance(values, list) else []
-        if not usable:
+        row_values = [column.iloc[position] if hasattr(column, "iloc") else column[position] for column in per_row]
+        scored = [
+            (score, i)
+            for i in range(len(sequences))
+            if (score := mean_over_folders(row_values, i)) is not None
+        ]
+        if not scored:
             best.append(sequences[0])
             continue
-        pick = max(usable)[1] if direction == "maximize" else min(usable)[1]
+        pick = max(scored)[1] if direction == "maximize" else min(scored)[1]
         best.append(sequences[pick])
+
     df["_res_mpnn_best_sequence"] = best
     logger.info(
-        f"Monomer best sequence chosen by {direction} {ranking_column} over {len(df)} rows"
+        f"Monomer best sequence chosen by {direction} of the mean over "
+        f"{len(ranking_columns)} folder column(s) {ranking_columns} across {len(df)} rows"
     )
     return df
 
