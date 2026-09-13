@@ -476,11 +476,15 @@ def test_a_retrofitted_campaign_env_is_told_what_to_add():
 # ---------------------------------------------------------------------------
 
 SUBMIT = TEMPLATES / "submit_campaign.sh"
-GENERIC_SBATCH = TEMPLATES / "campaign.sbatch.generic"
+# campaign.sbatch IS the generic one now: the per-kind variant it used to sit
+# beside carried a hardcoded --gres and --time, which is the drift this file's
+# own test below exists to prevent.
+GENERIC_SBATCH = TEMPLATES / "campaign.sbatch"
+MSA_SBATCH = TEMPLATES / "prepare_msa.sbatch"
 
 
 def test_the_submitter_and_generic_sbatch_parse():
-    for script in (SUBMIT, GENERIC_SBATCH):
+    for script in (SUBMIT, GENERIC_SBATCH, MSA_SBATCH):
         assert subprocess.run(["bash", "-n", str(script)]).returncode == 0, script.name
 
 
@@ -536,8 +540,13 @@ def test_the_pooled_report_runs_last_and_not_for_smoke():
     text = SUBMIT.read_text()
     stages = text[text.index("STAGES=(") : text.index("\n", text.index("STAGES=("))]
     assert stages.rstrip(")").endswith("pooled:cpu"), "last in the chain"
-    smoke = text[text.index("  smoke) STAGES=(") :][:120]
-    assert "pooled" not in smoke
+    # Read from the `smoke)` branch to the `;;` that ends it, rather than from a
+    # fixed literal and a character count. The branch grew a second line when the
+    # prepare stage became conditional, and a scan anchored to its old one-line
+    # shape reported the property gone when only the layout had moved.
+    branch = text[text.index("\n  smoke)") :]
+    branch = branch[: branch.index(";;")]
+    assert "pooled" not in branch, "smoke designs are a throwaway check, not part of the pool"
 
 
 def metadata_state(pkg):
@@ -698,6 +707,11 @@ def test_the_generic_sbatch_takes_the_stage_rather_than_hardcoding_it():
     assert 'run_campaign.sh" "$@"' in text
     assert "--job-name" not in text, "the name differs per stage and comes from the submitter"
     assert "--gres" not in text, "so does the GPU request"
+    assert "--mem" not in text, (
+        "so does host memory: a CPU stage that reserves the GPU stage's memory waits "
+        "in the queue for something it will not use"
+    )
+    assert "--time" not in text, "and the wall clock, which differs most of all between generate and evaluate"
 
 
 def test_a_single_run_can_differ_from_the_campaign_config():
@@ -726,6 +740,37 @@ def test_overrides_reach_every_stage_of_a_chain():
     assert "EXTRA_OVERRIDES" in stage_call
 
 
+def test_a_package_with_no_prepare_steps_chains_no_prepare_job():
+    """The stage exists for campaigns that must build an input -- a target MSA,
+    an extracted chain. A campaign whose inputs are on disk declares no steps, and
+    chaining an empty job ahead of generate for it is a queue wait that produces
+    nothing."""
+    submitter = SUBMIT.read_text()
+    assert "HAS_PREPARE" in submitter
+    assert "${PREPARE_STEPS+set}" in submitter, "unset and empty must both mean no stage"
+
+
+def test_the_prepare_stage_is_chained_when_the_campaign_declares_steps(tmp_path):
+    """It has to run BEFORE generate, not beside it: generate resolves the config,
+    and a ${oc.env:TARGET_MSA} pointing at a file the prepare step has not written
+    yet fails inside Hydra, several frames deep, after the checkpoint has loaded."""
+    pkg = campaign_package(tmp_path, prepare_steps=("scripts/prepare_target_msa.py --out data/msa/t.a3m",))
+    proc, stages = submit(pkg, "production")
+    assert proc.returncode == 0, proc.stderr
+    assert stages[0] == ["prepare"], stages
+    assert [s[-1] for s in stages[1:]][:1] == ["generate"], stages
+
+
+def test_declared_prepare_steps_without_the_sbatch_fail_at_the_door(tmp_path):
+    """Not four hours later, when the chain reaches a template that is not there
+    and the generate job has already run."""
+    pkg = campaign_package(tmp_path, prepare_steps=("scripts/prepare_target_msa.py",))
+    (pkg / "slurm" / "prepare_msa.sbatch").unlink()
+    proc, _ = submit(pkg, "production")
+    assert proc.returncode == 2
+    assert "PREPARE_STEPS" in proc.stderr and "prepare_msa.sbatch" in proc.stderr
+
+
 def test_the_pooled_report_takes_no_metric_overrides():
     """It reads finished CSVs and applies thresholds; a metric override there
     would describe folding that already happened."""
@@ -747,8 +792,14 @@ def test_the_stage_is_still_optional_with_overrides_present():
 # ---------------------------------------------------------------------------
 
 
-def campaign_package(tmp_path, *, followups=(), pooled=False):
-    """The smallest package submit_campaign.sh will act on."""
+def campaign_package(tmp_path, *, followups=(), pooled=False, prepare_steps=()):
+    """The smallest package submit_campaign.sh will act on.
+
+    ``prepare_steps`` declares PREPARE_STEPS, which is what makes the prepare
+    stage part of the chain. Off by default because most packages have their
+    inputs on disk already, and a campaign that declares no steps must not get an
+    empty job chained ahead of generate.
+    """
     pkg = tmp_path / "camp"
     (pkg / "slurm").mkdir(parents=True)
     (pkg / "scripts").mkdir(parents=True)
@@ -763,7 +814,14 @@ def campaign_package(tmp_path, *, followups=(), pooled=False):
         "TASK_NAME=T\nCONFIG_NAME=pipeline\nRUN_PREFIX=pfx\n"
         f'CAMPAIGN_DIR="${{CAMPAIGN_DIR:-{pkg}}}"\n'
         "SHARDS=2\nPRODUCTION_SEEDS=64\nPRODUCTION_RNG_SEED=5\n"
+        + (
+            "PREPARE_STEPS=(\n" + "".join(f'  "{step}"\n' for step in prepare_steps) + ")\n"
+            if prepare_steps
+            else ""
+        )
     )
+    if prepare_steps:
+        (pkg / "slurm" / "prepare_msa.sbatch").write_text("#!/usr/bin/env bash\n")
     # What a follow-up is sized from: production's actual yield, and the runs it
     # must not duplicate.
     (pkg / "metadata" / "run_outputs_production.json").write_text(
@@ -831,7 +889,14 @@ def submit(pkg, *args, **env):
     # DRY_RUN prints the planned sbatch lines to stderr; each ends with the
     # arguments run_campaign.sh would receive.
     planned = [line for line in proc.stderr.splitlines() if line.startswith("sbatch ")]
-    stages = [line.rsplit("campaign.sbatch ", 1)[1].split() for line in planned]
+    stages = []
+    for line in planned:
+        if "prepare_msa.sbatch" in line:
+            # The prepare job takes no stage argument -- the sbatch file IS the
+            # stage -- so it has nothing after the template path to split off.
+            stages.append(["prepare"])
+            continue
+        stages.append(line.rsplit("campaign.sbatch ", 1)[1].split())
     return proc, stages
 
 

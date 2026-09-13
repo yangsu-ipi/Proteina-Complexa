@@ -25,10 +25,14 @@ benefit.
     capture_metadata.py           authored: run provenance
     prepare_<target>.py           authored: target-specific PDB prep
   slurm/
-    campaign.sbatch       TEMPLATE (campaign.sbatch.generic), verbatim -- what
-                          submit_campaign.sh chains; the stage comes as an argument
-    <name>_smoke.sbatch   TEMPLATE (campaign.sbatch), header + last line edited;
-                          only for running one stage by hand, without the chain
+    campaign.sbatch       TEMPLATE, verbatim -- what submit_campaign.sh chains;
+                          the stage comes as an argument. GPU count, host memory
+                          and time are passed by submit_campaign.sh, so CPU
+                          stages reserve neither a card nor GPU-sized memory
+    prepare_msa.sbatch    TEMPLATE, verbatim -- CPU-only, runs PREPARE_STEPS.
+                          Chained ahead of generate, so a campaign whose target
+                          MSA does not exist yet builds it inside the dependency
+                          chain instead of failing at evaluate, hours in
   community_models -> $COMPLEXA_REPO/community_models   (symlink, made by run_campaign.sh)
   inference/              <- generation output; created by the run
   evaluation_results/     <- evaluation output; created by the run

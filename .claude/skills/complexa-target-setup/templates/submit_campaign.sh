@@ -59,14 +59,42 @@ if [[ -n "${CAMPAIGN_DIR_FROM_ENV:-}" ]]; then
 fi
 CAMPAIGN_DIR="$HERE"
 export CAMPAIGN_DIR
+cd "$CAMPAIGN_DIR"
+mkdir -p logs/slurm metadata
 
 SBATCH_TEMPLATE="$CAMPAIGN_DIR/slurm/campaign.sbatch"
+MSA_SBATCH_TEMPLATE="$CAMPAIGN_DIR/slurm/prepare_msa.sbatch"
 [[ -f "$SBATCH_TEMPLATE" ]] || { echo "missing $SBATCH_TEMPLATE" >&2; exit 2; }
+
+# The prepare stage exists only for campaigns that declared PREPARE_STEPS -- a
+# target MSA to build, a PDB to extract. A campaign whose inputs are already on
+# disk declares none, and chaining an empty job ahead of generate for it would
+# be a queue wait that produces nothing. Checked here rather than inside the
+# stage loop so a package that DOES declare steps but never copied the sbatch
+# template fails at the door, not four hours later when the chain reaches it.
+if [[ ${PREPARE_STEPS+set} == set ]] && ((${#PREPARE_STEPS[@]})); then
+  HAS_PREPARE=1
+  [[ -f "$MSA_SBATCH_TEMPLATE" ]] || {
+    echo "campaign.env declares ${#PREPARE_STEPS[@]} PREPARE_STEPS but $MSA_SBATCH_TEMPLATE is missing" >&2
+    exit 2
+  }
+else
+  HAS_PREPARE=0
+fi
 
 # Defaults rather than required settings: a campaign that never thought about
 # wall clock still submits, and one that did can say so in campaign.env.
-GPU_TIME="${SLURM_TIME_GPU:-3-00:00:00}"
 CPU_TIME="${SLURM_TIME_CPU:-04:00:00}"
+MSA_TIME="${SLURM_TIME_MSA:-04:00:00}"
+# Defaulted rather than required, because this file runs under `set -u`: a
+# campaign.env predating these variables would otherwise fail as an unbound
+# variable at submit time, naming a shell variable instead of the setting.
+# Generate and evaluate get separate walltimes because they are no longer
+# comparable -- evaluate refolds with every configured folder, five AF2
+# parameter sets and three ESMFold2 seeds per fold.
+GEN_TIME="${SLURM_TIME_GENERATE:-1-00:00:00}"
+EVAL_TIME="${SLURM_TIME_EVALUATE:-7-00:00:00}"
+GPU_MEM="${SLURM_GPU_MEM:-58G}"
 
 RUN_ARGS=("$KIND")
 TAG="$KIND"
@@ -115,8 +143,12 @@ EXTRA_OVERRIDES=("$@")
 # those two produced. The pooled report is the campaign total rather than this
 # run's, and smoke designs are a throwaway check that is not part of the pool.
 STAGES=(generate:gpu filter:cpu evaluate:gpu analyze:cpu pooled:cpu)
+((HAS_PREPARE)) && STAGES=(prepare:msa "${STAGES[@]}")
 case "$KIND" in
-  smoke) STAGES=(generate:gpu filter:cpu evaluate:gpu analyze:cpu) ;;
+  smoke)
+    STAGES=(generate:gpu filter:cpu evaluate:gpu analyze:cpu)
+    ((HAS_PREPARE)) && STAGES=(prepare:msa "${STAGES[@]}")
+    ;;
   production|followup) ;;
   *) echo "submit_campaign.sh does not submit '$KIND'" >&2; exit 2 ;;
 esac
@@ -175,7 +207,7 @@ if [[ -n "$SIZED" ]]; then
   if [[ -n "${FOLLOWUP_INDEX:-}" ]]; then
     RESUME=(--index "$FOLLOWUP_INDEX")
     echo "follow-up index pinned by the environment: ${FOLLOWUP_INDEX}"
-  elif [[ "$FIRST_STAGE" != generate ]]; then
+  elif [[ "$FIRST_STAGE" != prepare && "$FIRST_STAGE" != generate ]]; then
     RESUME=(--resume)
   fi
   # Planned once, here, so every job in the chain is the same follow-up. Left to
@@ -202,21 +234,27 @@ if [[ -n "$SIZED" ]]; then
   echo "  deduplicated against ${FOLLOWUP_POOL_MANIFEST}"
 fi
 
-submit() {  # name kind_of_node dependency args...
-  local name="$1" node="$2" dep="$3"; shift 3
+submit() {  # name stage kind_of_node dependency args...
+  local name="$1" stage="$2" node="$3" dep="$4"; shift 4
   local flags=(--parsable --job-name="$name")
   if [[ "$node" == gpu ]]; then
-    flags+=(--gres="gpu:${SHARDS}" --time="$GPU_TIME")
+    local gpu_time="$GEN_TIME"
+    [[ "$stage" == evaluate ]] && gpu_time="$EVAL_TIME"
+    flags+=(--gres="gpu:${SHARDS}" --mem="$GPU_MEM" --time="$gpu_time")
+  elif [[ "$node" == msa ]]; then
+    flags+=(--time="$MSA_TIME")
   else
     flags+=(--time="$CPU_TIME")
   fi
   [[ -n "$dep" ]] && flags+=(--dependency="afterok:${dep}")
   flags+=(--export="ALL,CAMPAIGN_DIR=${CAMPAIGN_DIR}${FOLLOWUP_INDEX:+,FOLLOWUP_INDEX=${FOLLOWUP_INDEX}}${RUN_NUMBER:+,RUN_NUMBER=${RUN_NUMBER}}")
+  local template="$SBATCH_TEMPLATE"
+  [[ "$stage" == prepare ]] && template="$MSA_SBATCH_TEMPLATE"
   if [[ -n "${DRY_RUN:-}" ]]; then
-    echo "sbatch ${flags[*]} $SBATCH_TEMPLATE $*" >&2
+    echo "sbatch ${flags[*]} $template $*" >&2
     echo "DRY"
   else
-    sbatch "${flags[@]}" "$SBATCH_TEMPLATE" "$@"
+    sbatch "${flags[@]}" "$template" "$@"
   fi
 }
 
@@ -242,9 +280,11 @@ for entry in "${SELECTED[@]}"; do
     # submitted. It takes no run kind and no metric overrides: it reads finished
     # CSVs and applies thresholds, so an override there would describe folding
     # that already happened.
-    dep="$(submit "${TAG}-pooled" "$node" "$dep" pooled)"
+    dep="$(submit "${TAG}-pooled" "$stage" "$node" "$dep" pooled)"
+  elif [[ "$stage" == prepare ]]; then
+    dep="$(submit "${TAG}-prepare" "$stage" "$node" "$dep")"
   else
-    dep="$(submit "${TAG}-${stage}" "$node" "$dep" "${RUN_ARGS[@]}" "$stage" ${EXTRA_OVERRIDES[@]+"${EXTRA_OVERRIDES[@]}"})"
+    dep="$(submit "${TAG}-${stage}" "$stage" "$node" "$dep" "${RUN_ARGS[@]}" "$stage" ${EXTRA_OVERRIDES[@]+"${EXTRA_OVERRIDES[@]}"})"
   fi
   echo "  ${stage} -> job ${dep}"
 done

@@ -295,7 +295,9 @@ campaign's choices as arguments.
 | `verify_run_outputs.py` | reconciles generated / retained / evaluated counts | `--shards`, `--trim-report`, `--require-column` |
 | `refresh_checksums.py` | hashes the package, skipping run output | none |
 | `run_campaign.sh` | the whole stage sequence, GPU pinning, env setup | reads `campaign.env` |
-| `campaign.sbatch` | one per run kind | SBATCH header + last line |
+| `submit_campaign.sh` | chains the stages as SLURM dependencies, one command per run | reads `campaign.env` |
+| `campaign.sbatch` | one entry point for every stage; the stage is an argument | none — `submit_campaign.sh` passes GPUs, memory and time |
+| `prepare_msa.sbatch` | CPU-only `PREPARE_STEPS` stage, chained ahead of generate | reads `campaign.env` |
 | `campaign.env.example` | **every** campaign-specific value | this is the file you edit |
 
 `PACKAGE.md` in the same directory gives the canonical package layout. Start from it rather
