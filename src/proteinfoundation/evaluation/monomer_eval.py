@@ -52,13 +52,13 @@ from proteinfoundation.metrics.folder_selection import resolve_folding_models
 from proteinfoundation.metrics.folding_models import colabfold_model_siblings, read_fold_confidence
 from proteinfoundation.metrics.inverse_folding_models import (
     DEFAULT_INVERSE_FOLDING_MODEL,
-    inverse_fold,
     resolve_inverse_folding_model,
 )
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
 from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
-from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
+from proteinfoundation.metrics.redesign_set import redesign_set_size, shared_redesign_set
+from proteinfoundation.metrics.seeding import mpnn_seed, redesign_context_chains
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, load_pdb, pdb_name_from_path
 
 # =============================================================================
@@ -97,7 +97,7 @@ def designability_mpnn_chains(binder_chain: str | None, target_chains: list[str]
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
     chain_to_design = binder_chain if binder_chain is not None else "A"
-    return list(target_chains or []) + [chain_to_design]
+    return redesign_context_chains(target_chains, chain_to_design)
 
 
 def get_sequences_for_evaluation(
@@ -110,6 +110,7 @@ def get_sequences_for_evaluation(
     mpnn_pdb_path: str | None = None,
     target_chains: list[str] | None = None,
     inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
+    redesign_cache_dir: str | None = None,
 ) -> list[str]:
     """
     Get sequences for structure prediction evaluation.
@@ -170,21 +171,24 @@ def get_sequences_for_evaluation(
                 f"cache key are not describing them correctly."
             )
 
-        # Seeded so a resumed run reproduces the redesigns rather than drawing
-        # new ones, and so the numbers computed from them are a property of the
-        # design rather than of when the job happened to run.
-        seed = mpnn_seed(pdb_name_from_path(design_pdb), context_chains, [chain_to_design])
-
-        gen_seqs = inverse_fold(
-            model_type=inverse_folding_model,
-            pdb_file_path=design_pdb,
+        # One set for the design, shared with the binder track: both redesign this
+        # backbone with the same folder, context, alphabet, temperature and seed,
+        # so a second generation reproduces the first's work. Seeded so a resumed
+        # run reproduces the redesigns rather than drawing new ones, and so the
+        # numbers computed from them are a property of the design rather than of
+        # when the job happened to run.
+        gen_seqs = shared_redesign_set(
+            design_name=pdb_name_from_path(design_pdb),
+            mpnn_input_pdb=design_pdb,
             out_dir_root=tmp_path,
-            all_chains=context_chains,
-            pdb_path_chains=[chain_to_design],
-            num_seq_per_target=num_seq_per_target,
-            omit_AAs=MPNN_OMIT_AAS,
-            sampling_temp=pmpnn_sampling_temp,
-            seed=seed,
+            # Beside the design, which is the directory the binder track uses too
+            # -- the two are the same path, and that is what lets one cache serve
+            # both rather than each writing its own beside its own scratch.
+            cache_dir=redesign_cache_dir or os.path.dirname(design_pdb),
+            context_chains=context_chains,
+            chains_to_design=[chain_to_design],
+            count=num_seq_per_target,
+            inverse_folding_model=inverse_folding_model,
         )
         return [v["seq"] for v in gen_seqs]
 
@@ -710,6 +714,7 @@ def evaluate_self_consistency(
     inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
     n_esmfold2_seeds: int = 1,
     derive_structure_metrics: bool = False,
+    redesign_cache_dir: str | None = None,
 ) -> DesignabilityResult:
     """
     Unified function to evaluate designability/codesignability.
@@ -857,6 +862,10 @@ def evaluate_self_consistency(
             num_seq_per_target=num_seq_per_target,
             pmpnn_sampling_temp=pmpnn_sampling_temp,
             tmp_path=output_dir,
+            # Beside the DESIGN, not beside this call's scratch directory: the
+            # binder track writes there too, and a cache each track keeps beside
+            # its own scratch is two caches that never meet.
+            redesign_cache_dir=redesign_cache_dir or os.path.dirname(pdb_path),
             binder_chain=binder_chain,
             mpnn_pdb_path=mpnn_pdb_path,
             target_chains=target_chains,
@@ -1172,7 +1181,9 @@ def compute_monomer_metrics(
                     use_pdb_seq=False,  # Use ProteinMPNN
                     rmsd_modes=designability_modes,
                     folding_models=designability_folding_models,
-                    num_seq_per_target=cfg_metric.get("designability_num_seq", 8),
+                    # The SHARED count, so the binder track's redesigns and these
+                    # are one set rather than two draws of the same distribution.
+                    num_seq_per_target=redesign_set_size(cfg_metric),
                     keep_outputs=cfg_metric.get("keep_folding_outputs", True),
                     binder_chain=binder_chain,
                     reuse_cache=cfg_metric.get("reuse_cached_monomer_folds", True),
@@ -1233,12 +1244,15 @@ def compute_monomer_metrics(
                     mpnn_seqs = get_sequences_for_evaluation(
                         pdb_path=eval_pdb_path,
                         use_pdb_seq=False,
-                        num_seq_per_target=cfg_metric.get("designability_num_seq", 8),
+                        # The SHARED count, so the binder track's redesigns and these
+                    # are one set rather than two draws of the same distribution.
+                    num_seq_per_target=redesign_set_size(cfg_metric),
                         tmp_path=tmp_dir,
                         binder_chain=binder_chain,
                         mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
                         target_chains=target_chains,
                         inverse_folding_model=inverse_folding_model,
+                        redesign_cache_dir=os.path.dirname(eval_pdb_path),
                     )
                 rec_rates = [sum(a == b for a, b in zip(seq, s, strict=False)) / len(seq) for s in mpnn_seqs]
                 metrics["_res_co_seq_rec"].append(max(rec_rates) if rec_rates else 0.0)

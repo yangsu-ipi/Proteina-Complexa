@@ -78,6 +78,7 @@ from proteinfoundation.metrics.inverse_folding_models import (
     resolve_inverse_folding_model,
 )
 from proteinfoundation.metrics.pae_store import drop_structures_keeping_sidecars
+from proteinfoundation.metrics.redesign_set import redesign_set_size
 from proteinfoundation.metrics.seeding import SEED_DERIVATION_VERSION
 from proteinfoundation.metrics.tmol_interface import tmol_interface_metrics
 from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
@@ -858,6 +859,7 @@ def compute_binder_metrics(
                     interface_cutoff=interface_cutoff,
                     is_target_ligand=is_target_ligand,
                     num_redesign_seqs=num_redesign_seqs,
+                    shared_redesign_count=redesign_set_size(cfg_metric),
                     fixed_residues_override=fixed_residues_override,
                     n_af2_models=n_af2_models,
                 )

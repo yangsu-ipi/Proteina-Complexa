@@ -241,3 +241,111 @@ def test_long_output_is_tailed_not_dropped():
     text = str(mpnn_failure()("ProteinMPNN", "python run.py", sp.CalledProcessError(1, "c", output="", stderr=err)))
     assert "line 1999" in text, "the end of a traceback is the part that names the error"
     assert len(text) < 6000
+
+
+def test_one_inverse_fold_call_serves_both_tracks(tmp_path, monkeypatch):
+    """The duplication this exists to delete: the binder track and the
+    designability track redesign the SAME backbone with the same folder, context,
+    alphabet, temperature and -- because mpnn_seed excludes the sequence count --
+    the same seed. So the second run reproduced the first's work exactly, and
+    paid ProteinMPNN twice for it.
+
+    Counted rather than reasoned about: a stub records every call."""
+    from proteinfoundation.metrics import redesign_set
+
+    calls = []
+
+    def fake_inverse_fold(**kwargs):
+        calls.append(kwargs)
+        n = kwargs["num_seq_per_target"]
+        return [{"seq": f"SEQ{i}", "score": float(i), "seqid": 1.0} for i in range(n)]
+
+    monkeypatch.setattr(
+        "proteinfoundation.metrics.inverse_folding_models.inverse_fold", fake_inverse_fold
+    )
+
+    shared = dict(
+        design_name="design_x",
+        mpnn_input_pdb=str(tmp_path / "design.pdb"),
+        out_dir_root=str(tmp_path / "scratch"),
+        cache_dir=str(tmp_path),
+        context_chains=["A", "B"],
+        chains_to_design=["B"],
+        inverse_folding_model="soluble_mpnn",
+    )
+
+    # Designability asks for eight; the binder track then asks for the same eight
+    # and slices two. One generation.
+    eight = redesign_set.shared_redesign_set(count=8, **shared)
+    again = redesign_set.shared_redesign_set(count=8, **shared)
+    assert len(calls) == 1, f"the set was generated {len(calls)} times"
+    assert [d["seq"] for d in again] == [d["seq"] for d in eight]
+    assert eight[:2] == again[:2], "and the binder track's slice is the same two sequences"
+
+
+def test_a_longer_request_is_not_answered_from_a_shorter_cache(tmp_path, monkeypatch):
+    """The count is in the KEY even though it is not in the seed. The seed
+    excludes it so a shorter run is a prefix of a longer one; the key includes it
+    so a cache holding two cannot answer a request for eight -- the missing six
+    are not derivable from the two."""
+    from proteinfoundation.metrics import redesign_set
+
+    calls = []
+
+    def fake_inverse_fold(**kwargs):
+        calls.append(kwargs["num_seq_per_target"])
+        return [{"seq": f"S{i}", "score": 0.0} for i in range(kwargs["num_seq_per_target"])]
+
+    monkeypatch.setattr(
+        "proteinfoundation.metrics.inverse_folding_models.inverse_fold", fake_inverse_fold
+    )
+    shared = dict(
+        design_name="d",
+        mpnn_input_pdb=str(tmp_path / "d.pdb"),
+        out_dir_root=str(tmp_path / "s"),
+        cache_dir=str(tmp_path),
+        context_chains=["A", "B"],
+        chains_to_design=["B"],
+        inverse_folding_model="soluble_mpnn",
+    )
+    redesign_set.shared_redesign_set(count=2, **shared)
+    redesign_set.shared_redesign_set(count=8, **shared)
+    assert calls == [2, 8], "a longer request regenerates rather than returning a short set"
+
+
+def test_mpnn_fixed_never_shares_with_the_unfixed_draw(tmp_path):
+    """It holds interface positions fixed and seeds with variant='fixed', so it is
+    a different draw by construction. Sharing it would pair fixed-position
+    sequences with unfixed-position folds -- one character of seq_type matching
+    between correct and silently wrong."""
+    from proteinfoundation.metrics.redesign_set import redesign_set_fingerprint, redesign_set_path
+
+    common = dict(
+        design_name="d",
+        context_chains=["A", "B"],
+        chains_to_design=["B"],
+        count=8,
+        inverse_folding_model="soluble_mpnn",
+    )
+    plain = redesign_set_fingerprint(**common)
+    fixed = redesign_set_fingerprint(**common, variant="fixed", fixed_positions=["B12", "B15"])
+    assert plain != fixed, "a different draw must not share a key"
+    assert redesign_set_path("/x", "") != redesign_set_path("/x", "fixed"), "nor a file"
+
+    # And which positions were fixed decides the sequences, so it decides the key.
+    other = redesign_set_fingerprint(**common, variant="fixed", fixed_positions=["B12", "B16"])
+    assert fixed != other
+
+
+def test_the_redesign_count_does_not_move_with_an_unrelated_flag():
+    """A count conditioned on compute_designability would change which sequences
+    a campaign PRODUCES when an unrelated metric is toggled -- not merely which
+    are measured -- and the apo scRMSD of sequence i would stop being a property
+    of the design."""
+    from proteinfoundation.metrics.redesign_set import redesign_set_size
+
+    base = {"num_redesign_seqs": 2, "designability_num_seq": 8}
+    assert redesign_set_size(base) == 8
+    assert redesign_set_size({**base, "compute_designability": False}) == 8
+    assert redesign_set_size({"num_redesign_seqs": 16, "designability_num_seq": 8}) == 16
+    assert redesign_set_size({}) == 8, "the historical designability default"

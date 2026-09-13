@@ -87,6 +87,26 @@ MPNN_OMIT_AAS = ["C"]
 MPNN_SAMPLING_TEMP = 0.1
 
 
+def redesign_context_chains(target_chains, binder_chain: str | None) -> list[str]:
+    """The chains ProteinMPNN sees when it redesigns a binder.
+
+    Its context, not the set it redesigns: only the binder is ever redesigned,
+    while the target is present so the redesign is interface-aware.
+
+    ONE definition, because two tracks redesign the same backbone and their
+    sequences are only shareable while they agree about this. They had identical
+    bodies in two modules -- complex_mpnn_chains in metrics.binder_metrics and
+    designability_mpnn_chains in evaluation.monomer_eval, differing only in
+    argument order -- so "they agree" was a coincidence maintained by hand rather
+    than a fact. It lives here because this module already owns the other inputs
+    the seed is derived from.
+
+    For a plain monomer, or a binder whose target chains could not be determined,
+    there is no context to add and this is the binder alone.
+    """
+    return list(target_chains or []) + [binder_chain if binder_chain is not None else "A"]
+
+
 def mpnn_seed(
     design_name: str,
     context_chains: list[str],

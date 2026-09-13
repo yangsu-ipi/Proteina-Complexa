@@ -23,13 +23,23 @@ from proteinfoundation.metrics.interface import (
     interface_residues as find_interface_residues,
 )
 from proteinfoundation.metrics.interface import resseqs, sequence_indices
-from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, inverse_fold, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import (
+    DEFAULT_INVERSE_FOLDING_MODEL,
+    inverse_fold,
+    resolve_inverse_folding_model,
+)
 from proteinfoundation.metrics.metric_utils import (
     get_interface_residues_atomistic,
     replace_seq_in_generated_pdb,
     rmsd_metric,
 )
-from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, MPNN_SAMPLING_TEMP, mpnn_seed
+from proteinfoundation.metrics.redesign_set import shared_redesign_set
+from proteinfoundation.metrics.seeding import (
+    MPNN_OMIT_AAS,
+    MPNN_SAMPLING_TEMP,
+    mpnn_seed,
+    redesign_context_chains,
+)
 from proteinfoundation.utils.align_utils import kabsch_align_ind, kabsch_align_ligand
 from proteinfoundation.utils.pdb_utils import extract_seq_from_pdb, pdb_name_from_path, sort_AtomArray_by_chain_id
 
@@ -46,7 +56,7 @@ def complex_mpnn_chains(gen_target_chain: list[str], binder_chain: str) -> list[
     separately and left to drift. See
     ``docs/design-notes/apo-holo-redesign-sharing.md``.
     """
-    return gen_target_chain + [binder_chain]
+    return redesign_context_chains(gen_target_chain, binder_chain)
 
 
 def updated_structure_path(pdb_file_path: str | Path, is_target_ligand: bool) -> str:
@@ -260,6 +270,9 @@ def run_binder_eval(
     gen_target_chain: list[str] = None,  # If none, use target_pdb_chain as gen_target_chain
     binder_chain: str = None,  # If none, use the last chain id in the refolded complex
     num_redesign_seqs: int = None,  # If none, default to 8 for protein targets, 1 for ligand targets
+    # How many redesigns to GENERATE, which is the count both tracks ask for so
+    # the set can be shared. num_redesign_seqs is how many this track USES.
+    shared_redesign_count: int | None = None,
     fixed_residues_override: list[str] | None = None,
     n_af2_models: int = 1,
 ) -> dict[str, list[dict[str, dict]]]:
@@ -403,23 +416,23 @@ def run_binder_eval(
         mpnn_tmp_path = os.path.join(tmp_path, "mpnn")
         os.makedirs(mpnn_tmp_path, exist_ok=True)
 
-        mpnn_sequences = inverse_fold(
-            model_type=inverse_folding_model,
-            pdb_file_path=mpnn_input_pdb,
+        # One set for the whole design, shared with the designability track: both
+        # redesign this backbone with the same folder, context, alphabet,
+        # temperature and seed, so the second run reproduced the first's work.
+        # Generated at the SHARED size and sliced here -- asking for the same
+        # count from both sides is what keeps the prefix property confined to one
+        # function instead of assumed at every use.
+        shared = shared_redesign_set(
+            design_name=name,
+            mpnn_input_pdb=mpnn_input_pdb,
             out_dir_root=mpnn_tmp_path,
-            all_chains=complex_mpnn_chains(gen_target_chain, binder_chain),
-            pdb_path_chains=[binder_chain],
-            fix_pos=None,
-            num_seq_per_target=num_redesign_seqs,
-            omit_AAs=MPNN_OMIT_AAS,
-            sampling_temp=MPNN_SAMPLING_TEMP,
-            # Seeded on the design rather than on mpnn_input_pdb: for ProteinMPNN
-            # that file is the _updated view of the same design, and designability
-            # reads the design itself. Both must derive the same seed for the two
-            # tracks to be able to share one redesign set.
-            seed=mpnn_seed(name, complex_mpnn_chains(gen_target_chain, binder_chain), [binder_chain]),
-            verbose=False,
+            cache_dir=tmp_path,
+            context_chains=complex_mpnn_chains(gen_target_chain, binder_chain),
+            chains_to_design=[binder_chain],
+            count=max(int(num_redesign_seqs), int(shared_redesign_count or num_redesign_seqs)),
+            inverse_folding_model=inverse_folding_model,
         )
+        mpnn_sequences = shared[:num_redesign_seqs]
         sequences_dict["mpnn"].extend(mpnn_sequences)
         all_sequences.extend(mpnn_sequences)
         sequence_types_list.extend(["mpnn"] * len(mpnn_sequences))
