@@ -49,7 +49,11 @@ from proteinfoundation.evaluation.motif_eval_utils import compute_and_store_ss
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
 from proteinfoundation.metrics.ensembling import mean_plddt_from_pdb
 from proteinfoundation.metrics.folding_models import colabfold_model_siblings, read_fold_confidence
-from proteinfoundation.metrics.inverse_folding_models import DEFAULT_INVERSE_FOLDING_MODEL, inverse_fold, resolve_inverse_folding_model
+from proteinfoundation.metrics.inverse_folding_models import (
+    DEFAULT_INVERSE_FOLDING_MODEL,
+    inverse_fold,
+    resolve_inverse_folding_model,
+)
 from proteinfoundation.metrics.metric_utils import rmsd_metric
 from proteinfoundation.metrics.novelty import novelty_from_list
 from proteinfoundation.metrics.seeding import MPNN_OMIT_AAS, mpnn_seed
@@ -226,7 +230,15 @@ def fold_sequences(
     for model in folding_models:
         logger.info(f"Running {model} on {len(sequences)} sequences")
 
-        model_output_dir = os.path.join(output_dir, f"{model}_output")
+        # Scoped by track, not just by backend. Two tracks share one output_dir --
+        # designability and codesignability both pass tmp_dir, the apo track passes
+        # sample_root_path for both apo_self and apo_mpnn -- and ESMFold/ESMFold2
+        # survive that because they receive `name` and `suffix` and encode both in
+        # their filenames. ColabFold does not: it names queries positionally
+        # (seq_1..seq_N) and collects by that prefix, so a second track's kept
+        # copies sit in the same directory answering to the same names, and the
+        # collector can return another track's structure for another sequence.
+        model_output_dir = os.path.join(output_dir, f"{model}_output", suffix or "default")
         os.makedirs(model_output_dir, exist_ok=True)
 
         try:

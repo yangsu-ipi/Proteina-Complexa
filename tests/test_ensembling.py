@@ -1345,3 +1345,77 @@ def test_advisory_samples_reduce_by_mean_not_by_the_luckiest_draw(tmp_path):
 
     ragged = [{"i_pAE": 0.2}, {"i_pAE": float("nan")}]
     assert _mean_sample_metrics(ragged)["i_pAE"] == pytest.approx(0.2), "a dead sample is dropped"
+
+
+def _colabfold_stub(tmp_path, monkeypatch, structures_by_call):
+    """A colabfold_batch that writes the files a real run would, per call."""
+    import pathlib
+
+    from proteinfoundation.metrics import folding_models
+
+    calls = {"n": 0}
+
+    def fake_run(command, **kwargs):
+        out_dir = command.split()[2]          # ... <fasta_dir> <out>/structures ...
+        os.makedirs(out_dir, exist_ok=True)
+        for name in structures_by_call[calls["n"]]:
+            pathlib.Path(out_dir, name).write_text("ATOM\n")
+        calls["n"] += 1
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr(folding_models.subprocess, "run", fake_run)
+    monkeypatch.setenv("COLABFOLD_EXEC_PATH", str(tmp_path / "colabfold_batch"))
+    (tmp_path / "colabfold_batch").write_text("#!/bin/sh\n")
+    return calls
+
+
+def test_two_tracks_sharing_an_output_dir_do_not_collect_each_others_structures(tmp_path, monkeypatch):
+    """Designability and codesignability both pass output_dir=tmp_dir, and the apo
+    track passes sample_root_path for both apo_self and apo_mpnn. ESMFold survives
+    that because it is handed `name` and `suffix`; ColabFold is not, names its
+    queries positionally seq_1..seq_N, and collects by that prefix -- so the second
+    track's scan matched the first track's kept copies and could return another
+    sequence's structure under another track's name."""
+    import pathlib as _p
+
+    from proteinfoundation.evaluation.monomer_eval import fold_sequences
+
+    native = "seq_1_unrelaxed_rank_001_alphafold2_ptm_model_3_seed_000.pdb"
+    calls = _colabfold_stub(tmp_path, monkeypatch, {0: [native], 1: [native]})
+
+    shared = str(tmp_path / "shared")
+    first = fold_sequences(["MKV"], shared, "design", ["colabfold"], suffix="mpnn", keep_outputs=True)
+    second = fold_sequences(["MKV"], shared, "design", ["colabfold"], suffix="pdb", keep_outputs=True)
+
+    a = first["colabfold"][0].pdb_path
+    b = second["colabfold"][0].pdb_path
+    assert calls["n"] == 2, "both tracks actually folded"
+    assert a and b and a != b, "two tracks must not be handed the same file"
+    assert _p.Path(a).parent != _p.Path(b).parent, "and must not even share a directory"
+    for path in (a, b):
+        assert path.count("_mpnn") + path.count("_pdb") == 1, f"exactly one track suffix: {path}"
+
+
+def test_a_refold_into_its_own_directory_does_not_copy_its_own_output(tmp_path, monkeypatch):
+    """colabfold_batch SKIPS a query whose output already exists, so a re-fold
+    produces nothing new. The collector must then use the structures left in
+    place -- and must not mistake the previous run's KEPT copies for fresh
+    predictions, which would append a second suffix."""
+    from proteinfoundation.evaluation.monomer_eval import fold_sequences
+
+    native = "seq_1_unrelaxed_rank_001_alphafold2_ptm_model_3_seed_000.pdb"
+    # Second call writes nothing: that is what skip-if-present looks like.
+    calls = _colabfold_stub(tmp_path, monkeypatch, {0: [native], 1: []})
+
+    out = str(tmp_path / "same")
+    first = fold_sequences(["MKV"], out, "design", ["colabfold"], suffix="apo_mpnn", keep_outputs=True)
+    second = fold_sequences(["MKV"], out, "design", ["colabfold"], suffix="apo_mpnn", keep_outputs=True)
+
+    assert calls["n"] == 2
+    a, b = first["colabfold"][0].pdb_path, second["colabfold"][0].pdb_path
+    assert a == b, "the re-fold resolves to the structure already on disk"
+    assert "apo_mpnn_apo_mpnn" not in b, "and never copies its own kept copy"

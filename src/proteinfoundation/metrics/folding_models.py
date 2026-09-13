@@ -2,6 +2,7 @@ import functools
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Literal
@@ -523,6 +524,9 @@ def _record_colabfold_confidence(structures_dir: str, seq_name: str, pdb_path: s
 
 
 COLABFOLD_RANK_MARKER = "_rank_"
+# ColabFold's own structure filenames end at the seed; anything after it was
+# appended by this repo when the prediction was copied and kept.
+COLABFOLD_NATIVE_PDB = re.compile(r"_seed_\d+\.pdb$")
 COLABFOLD_MODEL_MARKER = "_model_"
 # What --num-models defaults to, and what this repo does not override. Used only
 # to notice a short set, never to fabricate one.
@@ -660,6 +664,21 @@ def run_colabfold(
     if relax:
         batch_command = batch_command + " --num-relax 1 --use-gpu-relax"
 
+    # What was in the structures directory BEFORE this run, so the collector can
+    # consider only what this call produced. Belt to the braces of the per-track
+    # job directory: ColabFold names queries positionally (seq_1..seq_N), so any
+    # directory it shares with another fold of another track answers to the same
+    # names. With the job directory scoped this should always be empty; if it is
+    # not, something else is writing here and the collector must not mistake it
+    # for its own output.
+    structures_dir = f"{path_to_colabfold_out}/structures"
+    pre_existing = set(os.listdir(structures_dir)) if os.path.isdir(structures_dir) else set()
+    if pre_existing:
+        logger.warning(
+            f"{structures_dir} already holds {len(pre_existing)} files before folding; ignoring them. "
+            f"A ColabFold output directory should belong to one fold of one track."
+        )
+
     try:
         result = subprocess.run(batch_command, shell=True, check=True)
         if result.returncode != 0:
@@ -678,15 +697,39 @@ def run_colabfold(
     # computed. The rank_001 path is what is RETURNED, so every caller sees the
     # same contract it always did -- the rest are found beside it by
     # colabfold_model_siblings, which is how the ensemble is later reduced.
-    structures_dir = f"{path_to_colabfold_out}/structures"
-    produced = sorted(os.listdir(structures_dir)) if os.path.isdir(structures_dir) else []
+    on_disk = sorted(os.listdir(structures_dir)) if os.path.isdir(structures_dir) else []
+    fresh = [name for name in on_disk if name not in pre_existing]
+
+    def ranked_in(names: list[str], seq_name: str) -> list[str]:
+        """ColabFold's own predictions for one query -- not this repo's copies of them.
+
+        A prediction is named ``..._seed_<n>.pdb``; the copies kept beside it carry
+        the track suffix after that. Matching only the native ending is what keeps
+        a re-fold from copying its own previous output and minting
+        ``..._apo_mpnn_apo_mpnn.pdb``.
+        """
+        return sorted(
+            name
+            for name in names
+            if name.startswith(f"{seq_name}_")
+            and COLABFOLD_RANK_MARKER in name
+            and COLABFOLD_NATIVE_PDB.search(name)
+        )
+
     pdb_file_paths = []
     for seq_name in seq_names:
-        ranked = sorted(
-            name
-            for name in produced
-            if name.startswith(f"{seq_name}_") and COLABFOLD_RANK_MARKER in name and name.endswith(".pdb")
-        )
+        # What this call produced, preferred over what was already here. The
+        # fallback is not laxity: colabfold_batch SKIPS a query whose output
+        # exists, so a re-fold into a directory it has already written produces
+        # nothing new and the structures it means are the ones already there.
+        ranked = ranked_in(fresh, seq_name)
+        if not ranked:
+            ranked = ranked_in(on_disk, seq_name)
+            if ranked:
+                logger.debug(
+                    f"ColabFold wrote nothing new for {seq_name}; using the structures it left in "
+                    f"place, which is what its own skip-if-present means"
+                )
         if not ranked:
             logger.warning(f"No PDB file found for sequence: {seq_name}")
             pdb_file_paths.append(None)
