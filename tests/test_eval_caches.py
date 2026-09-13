@@ -149,7 +149,7 @@ def test_apo_key_separates_folding_models():
 def _stub_backend(calls):
     # Takes `seed`: score_binders derives seeds and passes one per fold, so a
     # backend is now a pure function of (target, binder, cfg, out_pdb, seed).
-    def scorer(target_seqs, seq, cfg, out_pdb, seed=0):
+    def scorer(target_seqs, seq, cfg, out_pdb, seed=0, context=None):
         calls.append((seq, out_pdb, seed))
         if out_pdb:
             os.makedirs(os.path.dirname(out_pdb), exist_ok=True)

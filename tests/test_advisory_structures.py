@@ -51,7 +51,7 @@ def test_a_failed_structure_write_stops_the_run(tmp_path, monkeypatch):
     what triggers the refold, it means folding again on every future run."""
     import proteinfoundation.metrics.consensus_folding as cf
 
-    def exploding_scorer(target_seqs, binder_seq, cfg, out_pdb_path, seed):
+    def exploding_scorer(target_seqs, binder_seq, cfg, out_pdb_path, seed, context=None):
         raise AdvisoryStructureWriteError("cannot write")
 
     monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", exploding_scorer)
@@ -71,7 +71,7 @@ def test_a_fold_that_merely_fails_is_still_survivable(tmp_path, monkeypatch):
     340. Only the systematic failure is fatal."""
     import proteinfoundation.metrics.consensus_folding as cf
 
-    def flaky_scorer(target_seqs, binder_seq, cfg, out_pdb_path, seed):
+    def flaky_scorer(target_seqs, binder_seq, cfg, out_pdb_path, seed, context=None):
         raise RuntimeError("this one binder exploded")
 
     monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", flaky_scorer)

@@ -271,3 +271,55 @@ def test_a_fresh_advisory_fold_is_derived_on_the_run_that_made_it(tmp_path, monk
     cached_at = source.index("_derive_into_scores(scores")
     fresh_at = source.index("_derive_into_scores(fresh")
     assert cached_at < fresh_at, "cached entries first, then the folds this run just made"
+
+
+def test_af2_is_a_complex_folder_like_any_other():
+    """The primary/advisory split was never a split in capability: AF2 and
+    ESMFold2 both fold a complex. It was a split in what each mechanism was
+    HANDED -- the sequence-only contract could not express a folder that
+    templates on a structure, so the only folder that did one lived in the other
+    mechanism, and which folders could cross-check which was decided by that
+    accident."""
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_BACKENDS, available_backends
+
+    assert "af2" in CONSENSUS_BACKENDS, "af2 folds a complex; it belongs in the registry"
+    assert "esmfold2" in CONSENSUS_BACKENDS
+    assert set(available_backends()) >= {"af2", "esmfold2"}
+
+
+def test_every_complex_backend_takes_the_same_context():
+    """Widened rather than special-cased: one context, each backend takes what it
+    needs. A backend with a different signature would reintroduce the split."""
+    import inspect
+
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_BACKENDS
+
+    for name, scorer in CONSENSUS_BACKENDS.items():
+        params = list(inspect.signature(scorer).parameters)
+        assert params[:3] == ["target_seqs", "binder_seq", "cfg"], f"{name}: {params}"
+        assert "context" in params, f"{name} cannot be handed the structural context"
+
+
+def test_a_sequence_only_caller_is_refused_by_af2_with_the_reason(tmp_path):
+    """AF2 templates on the designed complex, so it cannot serve a caller holding
+    only sequences. Refused by name rather than folding something else."""
+    import pytest
+
+    from proteinfoundation.metrics.consensus_folding import _score_af2
+
+    with pytest.raises(ValueError, match="ComplexFoldContext"):
+        _score_af2(["TARGET"], "BINDER", {}, None, 0, None)
+
+
+def test_a_deterministic_complex_folder_gets_one_seed(tmp_path, monkeypatch):
+    """Same rule _fold_seeds applies on the monomer side: repeating a seed on a
+    deterministic model is one fold counted twice, and its ensemble comes from
+    its parameter sets instead."""
+    import inspect
+
+    from proteinfoundation.metrics import consensus_folding
+
+    source = inspect.getsource(consensus_folding.score_binders)
+    assert 'if backend == "esmfold2" else 1' in source, (
+        "n_seeds must apply to the sampler, not to every complex folder"
+    )

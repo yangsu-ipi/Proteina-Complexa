@@ -62,6 +62,7 @@ from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_bi
 from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family, rename
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
+    ComplexFoldContext,
     advisory_column,
     assert_columns_are_advisory,
     available_backends,
@@ -1147,6 +1148,20 @@ def compute_binder_metrics(
                         # scRMSD columns compare to.
                         reference_pdb_path=pdb_path,
                         derive_tmol=derive_consensus_tmol,
+                        # What a folder needs beyond the sequences. ESMFold2
+                        # ignores every field and folds from sequence; AF2
+                        # templates on the design and reads the target. Passing
+                        # the same context to both is what lets either serve
+                        # this track -- which is the whole of the old
+                        # primary/advisory distinction, now gone.
+                        context=ComplexFoldContext(
+                            design_pdb=pdb_path,
+                            target_pdb=target_pdb_path,
+                            target_chains=tuple(gen_target_chain),
+                            binder_chain=binder_chain,
+                            design_name=os.path.basename(sample_root_path),
+                            output_dir=sample_root_path,
+                        ),
                     )
                     # `advisory` is parallel to `seqs`, so the headline must be the
                     # same sequence the primary columns describe. Using 0 here made

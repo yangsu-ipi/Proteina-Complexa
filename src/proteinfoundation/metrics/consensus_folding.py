@@ -67,8 +67,10 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import string
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 from loguru import logger
@@ -189,12 +191,38 @@ def advisory_chain_ids(n_target_chains: int) -> list[str]:
     return list(string.ascii_uppercase[:needed])
 
 
+@dataclass
+class ComplexFoldContext:
+    """What a complex folder may need beyond the sequences.
+
+    The old split between the "primary" complex refold and the "advisory" one was
+    not a split in capability -- AF2 and ESMFold2 both fold a complex -- but in
+    what each mechanism was handed. The sequence-only contract could not express
+    a folder that templates on a structure, so the only folder that did one lived
+    in the other mechanism, and which folders could cross-check which was decided
+    by that accident.
+
+    Widened here rather than special-cased: every backend receives the same
+    context and takes what it needs. ESMFold2 ignores all of it and folds from
+    sequence; AF2 templates on ``design_pdb`` and reads the target from
+    ``target_pdb``.
+    """
+
+    design_pdb: str | None = None
+    target_pdb: str | None = None
+    target_chains: tuple[str, ...] = ()
+    binder_chain: str | None = None
+    design_name: str = "design"
+    output_dir: str | None = None
+
+
 def _score_esmfold2(
     target_seqs: list[str],
     binder_seq: str,
     cfg: dict,
     out_pdb_path: str | None = None,
     seed: int = 0,
+    context: ComplexFoldContext | None = None,
 ) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
 
@@ -579,8 +607,75 @@ def clear_consensus_model_cache() -> None:
     clear_esmfold2_cache()
 
 
+def _score_af2(
+    target_seqs: list[str],
+    binder_seq: str,
+    cfg: dict,
+    out_pdb_path: str | None = None,
+    seed: int = 0,
+    context: ComplexFoldContext | None = None,
+) -> dict[str, float]:
+    """Fold target+binder with AlphaFold2, through the harness that already does it.
+
+    This is the same ColabDesign call the gated complex refold makes; registering
+    it here is what removes the primary/advisory distinction as a matter of
+    MECHANISM. Which folder's columns decide a verdict is a threshold question,
+    and is answered in analyze.
+
+    AF2 here templates on the designed complex -- binder included -- because
+    ``predict_initial_guess`` is on. That makes it a more permissive predictor
+    than a template-free one, and it is why an AF2 complex number and an ESMFold2
+    complex number are not two independent opinions about the same thing. They
+    are still worth having side by side; they are not worth gating on one
+    threshold. See docs and the per-folder thresholds.
+
+    *seed* is accepted and ignored: ColabDesign's prediction is deterministic
+    given its parameter sets, so repeating a seed would be the same fold counted
+    twice. Its ensemble comes from ``n_af2_models`` instead, which is the same
+    reason _fold_seeds gives a deterministic monomer folder one seed.
+    """
+    if context is None or not context.design_pdb or not context.target_pdb:
+        raise ValueError(
+            "af2 folds a complex by templating on the designed structure, so it needs a "
+            "ComplexFoldContext carrying design_pdb and target_pdb. A caller that has only "
+            "sequences cannot use this backend -- use esmfold2, which folds from sequence."
+        )
+
+    from proteinfoundation.utils.colabdesign_utils import get_af2_advanced_settings, run_af_eval
+
+    settings = get_af2_advanced_settings(num_af2_models=int(cfg.get("n_af2_models", 1) or 1))
+    stats, paths = run_af_eval(
+        trajectory_pdb=context.design_pdb,
+        binder_sequences=[{"seq": binder_seq}],
+        design_name=context.design_name,
+        output_path=context.output_dir or os.path.dirname(out_pdb_path or "") or ".",
+        target_settings={"starting_pdb": context.target_pdb, "chains": ",".join(context.target_chains)},
+        advanced_settings=settings,
+        binder_length=len(binder_seq),
+        binder_chain=context.binder_chain or "B",
+        sequence_type_list=["self"],
+    )
+    if not stats:
+        return {}
+    metrics = {k: float(v) for k, v in stats[0].items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
+    produced = (paths or [None])[0]
+    if out_pdb_path and produced and os.path.exists(produced):
+        # The advisory store owns where a kept structure lives, so the harness's
+        # own output is copied to the path this caller asked for rather than the
+        # caller being told to look somewhere else.
+        os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
+        shutil.copy(produced, out_pdb_path)
+        metrics["pdb_path"] = out_pdb_path
+    elif produced:
+        metrics["pdb_path"] = produced
+    return metrics
+
+
 CONSENSUS_BACKENDS: dict[str, Callable[[list[str], str, dict], dict[str, float]]] = {
     "esmfold2": _score_esmfold2,
+    # Registered beside it, not above it. The distinction that used to live here
+    # -- one folder gates, the rest advise -- was never a property of the models.
+    "af2": _score_af2,
 }
 
 
@@ -1280,6 +1375,7 @@ def score_binders(
     keep_structures: bool = False,
     reference_pdb_path: str | None = None,
     derive_tmol: bool = False,
+    context: "ComplexFoldContext | None" = None,
 ) -> list[dict[str, float | str]]:
     """Advisory metrics for each binder against the target, in input order.
 
@@ -1322,7 +1418,12 @@ def score_binders(
     # for: it names a specific sample, and repeating it would be the same fold
     # counted twice.
     pinned = cfg.get("seed")
-    n_seeds = max(1, int(cfg.get("n_seeds", cfg.get("n_esmfold2_seeds", 1))))
+    # A sampler wants several draws; a deterministic folder wants one, however
+    # many a sampler beside it asks for. Same rule _fold_seeds applies on the
+    # monomer side, for the same reason: repeating a seed on a deterministic
+    # model is one fold counted twice, and its ensemble comes from its parameter
+    # sets instead.
+    n_seeds = max(1, int(cfg.get("n_seeds", cfg.get("n_esmfold2_seeds", 1)))) if backend == "esmfold2" else 1
 
     def seeds_for(seq: str) -> list[int]:
         if pinned is not None:
@@ -1454,7 +1555,7 @@ def score_binders(
                 advisory_structure_path(cache_dir, backend, seq, seed) if (cache_dir and keep_structures) else None
             )
             try:
-                metrics = scorer(target_seqs, seq, cfg, out_pdb, seed)
+                metrics = scorer(target_seqs, seq, cfg, out_pdb, seed, context)
             except AdvisoryStructureWriteError:
                 # Systematic, not per-design: the next binder writes to the same
                 # kind of path and fails the same way. Tolerating it here is what
