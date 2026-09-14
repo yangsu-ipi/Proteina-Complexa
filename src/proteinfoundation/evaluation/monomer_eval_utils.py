@@ -261,6 +261,24 @@ def incomplete_fold_models(entry: dict) -> dict[str, list[int]]:
     return out
 
 
+def fold_is_settled(entry: dict) -> bool:
+    """Whether this stored fold needs no further attempt.
+
+    Settled means either it measured everything, or it has already been retried
+    up to :data:`MAX_FOLD_ATTEMPTS` and what it holds is as good as it will get.
+
+    The rule lives here because it has to be asked in TWO places, and it was only
+    asked in one. ``fold_and_measure_seeds`` filtered stored seeds by it, but
+    ``evaluate_self_consistency`` short-circuits above that call when every seed
+    is PRESENT -- and presence is not usability. A design whose af2 fold returned
+    inf for one sequence still has its seed on disk, so the short-circuit served
+    the cache and returned before the filter below it ever ran. The retry was
+    dead on exactly the resume path it was written for, and two EFNB3 designs
+    proved it by coming back with fold_attempts still unset after a full re-run.
+    """
+    return not incomplete_fold_models(entry) or fold_attempts_of(entry) >= MAX_FOLD_ATTEMPTS
+
+
 def fold_attempts_of(entry: dict) -> int:
     """How many times this fold has been attempted. Absent means once."""
     try:

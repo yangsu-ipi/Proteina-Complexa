@@ -32,7 +32,6 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     get_binder_chain_from_complex,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
-    MAX_FOLD_ATTEMPTS,
     MONOMER_CONFIDENCE_SUFFIXES,
     DesignabilityResult,
     FoldingResult,
@@ -40,6 +39,7 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     _fold_seeds,
     average_folds,
     fold_attempts_of,
+    fold_is_settled,
     folded_paths_by_model,
     incomplete_fold_models,
     legacy_fold_fingerprints,
@@ -657,7 +657,10 @@ def fold_and_measure_seeds(
         entry = stored[seed]
         incomplete = incomplete_fold_models(entry)
         attempts = fold_attempts_of(entry)
-        if incomplete and attempts < MAX_FOLD_ATTEMPTS:
+        # One rule, asked in two places -- here and in the full-hit short-circuit
+        # in evaluate_self_consistency, which used to ask a different and weaker
+        # question and so returned above this filter entirely.
+        if not fold_is_settled(entry):
             logger.info(
                 f"Cached fold for {name} ({model}, seed {seed}) has no usable measurement for "
                 f"{ {m: len(ix) for m, ix in incomplete.items()} } sequence(s) after {attempts} "
@@ -867,7 +870,15 @@ def evaluate_self_consistency(
         complete = True
         for model in folding_models:
             wanted = _fold_seeds(name, suffix, sequences, [model], n_esmfold2_seeds)
-            have = {s for s in wanted if (stored_by_model.get(model) or {}).get(s)}
+            # Settled, not merely present. A seed whose fold returned inf for one
+            # sequence is on disk like any other, so counting presence made this
+            # short-circuit serve it and return above the retry in
+            # fold_and_measure_seeds -- which is where MAX_FOLD_ATTEMPTS lives.
+            have = {
+                s
+                for s in wanted
+                if (entry := (stored_by_model.get(model) or {}).get(s)) and fold_is_settled(entry)
+            }
             if len(have) != len(wanted):
                 complete = False
                 logger.info(

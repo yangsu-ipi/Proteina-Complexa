@@ -1110,3 +1110,54 @@ def test_the_retry_runs_once_and_reuses_colabfolds_skip_if_present():
     assert len(calls) == 2, f"exactly one retry, not a loop; found {len(calls)} call(s)"
     assert "colabfold_declines" in src, "the reason decides whether a retry is worth anything"
     assert "_is_retry" not in src, "once-only is structural here, not a flag to thread"
+
+
+# ----------------------------- the short-circuit has to ask the same question
+
+
+def test_a_present_but_unusable_fold_does_not_count_as_cached():
+    """The bug this exists to stop coming back.
+
+    ``fold_and_measure_seeds`` filtered stored seeds by whether they had actually
+    measured anything -- but ``evaluate_self_consistency`` short-circuits above
+    that call whenever every seed is PRESENT, and presence is not usability. A
+    design whose af2 fold returned inf for one sequence still has its seed on
+    disk, so the short-circuit served the cache and returned before the filter
+    ever ran. MAX_FOLD_ATTEMPTS was dead on exactly the resume path it was
+    written for.
+
+    Two EFNB3 designs proved it: a full re-run on the fixed code left them with
+    fold_attempts still unset and the same inf in place.
+    """
+    from proteinfoundation.evaluation.monomer_eval_utils import fold_is_settled
+
+    unusable = {"rmsd_values": {"ca": {"af2": [float("inf"), 1.2]}}}
+    assert fold_is_settled(unusable) is False
+
+
+def test_a_fold_that_measured_everything_is_settled():
+    from proteinfoundation.evaluation.monomer_eval_utils import fold_is_settled
+
+    assert fold_is_settled({"rmsd_values": {"ca": {"af2": [0.9, 1.2]}}}) is True
+
+
+def test_a_fold_that_used_up_its_attempts_is_settled_even_though_it_failed():
+    """Settled is not the same as good. Once the bound is reached, what is on
+    disk is as good as it will get, and a resume must stop retrying it rather
+    than refolding forever."""
+    from proteinfoundation.evaluation.monomer_eval_utils import MAX_FOLD_ATTEMPTS, fold_is_settled
+
+    spent = {"rmsd_values": {"ca": {"af2": [float("inf"), 1.2]}}, "fold_attempts": MAX_FOLD_ATTEMPTS}
+    assert fold_is_settled(spent) is True
+
+
+def test_both_call_sites_use_the_one_rule():
+    """The rule was asked two different ways in two places, which is how they
+    drifted. Structural, because a future edit can reintroduce the weaker
+    question with entirely different code."""
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "proteinfoundation" / "evaluation" / "monomer_eval.py"
+    text = src.read_text()
+    assert text.count("fold_is_settled(") == 2, "both the short-circuit and the seed filter must ask it"
+    assert "attempts < MAX_FOLD_ATTEMPTS" not in text, "the inline form is what drifted; use the helper"
