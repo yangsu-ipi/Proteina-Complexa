@@ -67,6 +67,7 @@ from proteinfoundation.evaluation.binder_eval import (  # Availability flags for
     compute_interface_metrics_on_refolded_structures,
 )
 from proteinfoundation.evaluation.binder_eval_utils import get_target_info
+from proteinfoundation.evaluation.fold_only import apply_fold_only, save_results_csv
 from proteinfoundation.evaluation.monomer_eval import compute_monomer_metrics
 from proteinfoundation.evaluation.motif_binder_eval import compute_motif_binder_metrics
 from proteinfoundation.evaluation.motif_binder_eval_utils import get_motif_binder_target_info
@@ -84,7 +85,7 @@ from proteinfoundation.evaluation.utils import (
 )
 
 # Import shared column filtering from analysis utilities
-from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES, filter_columns_for_csv
+from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.result_analysis.binder_analysis import save_combined_success_criteria_json
 from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
 
@@ -725,6 +726,17 @@ def main(cfg: DictConfig) -> None:
 
     # Determine which evaluations to run based on metric flags
     cfg_metric = cfg.get("metric", {})
+    # A fold-only pass warms the caches and writes nothing. The campaign runner
+    # uses it to give each folder the whole card in turn -- see the evaluate
+    # stage in run_campaign.sh -- so this is read before anything else decides
+    # what to load.
+    fold_only = bool(cfg_metric.get("fold_only", False))
+    if fold_only:
+        disabled = apply_fold_only(cfg_metric)
+        logger.info(
+            "Fold-only pass: refolding and caching only, no CSV will be written"
+            + (f" (turned off: {', '.join(disabled)})" if disabled else "")
+        )
     run_monomer, run_binder, run_motif, run_motif_binder = get_enabled_evaluations(cfg_metric)
 
     # Validate configuration and compatibility
@@ -744,6 +756,8 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"  Binder eval:   {run_binder}")
     logger.info(f"  Motif eval:    {run_motif}")
     logger.info(f"  Motif binder:  {run_motif_binder}")
+    if fold_only:
+        logger.info(f"  Fold only:     True  (folders={list(cfg_metric.get('folding_models', [])) or 'legacy keys'})")
     logger.info("=" * 70)
     logger.info("")
 
@@ -882,13 +896,9 @@ def main(cfg: DictConfig) -> None:
             input_mode=input_mode,
         )
 
-        csv_filename = f"monomer_results_{config_name}_{job_id}.csv"
-        csv_path = os.path.join(output_dir, csv_filename)
-        # Filter out config/metadata columns before saving
-        monomer_df_filtered = filter_columns_for_csv(monomer_df)
-        monomer_df_filtered.to_csv(csv_path, index=False)
-        logger.info(f"Monomer results saved to {csv_path}")
-        all_results["monomer"] = monomer_df_filtered
+        all_results["monomer"] = save_results_csv(
+            monomer_df, output_dir, "monomer", config_name, job_id, fold_only=fold_only
+        )
 
     # Binder evaluation
     if run_binder:
@@ -910,13 +920,9 @@ def main(cfg: DictConfig) -> None:
             input_mode=input_mode,
         )
 
-        csv_filename = f"binder_results_{config_name}_{job_id}.csv"
-        csv_path = os.path.join(output_dir, csv_filename)
-        # Filter out config/metadata columns before saving
-        binder_df_filtered = filter_columns_for_csv(binder_df)
-        binder_df_filtered.to_csv(csv_path, index=False)
-        logger.info(f"Binder results saved to {csv_path}")
-        all_results["binder"] = binder_df_filtered
+        all_results["binder"] = save_results_csv(
+            binder_df, output_dir, "binder", config_name, job_id, fold_only=fold_only
+        )
 
     # Motif evaluation
     if run_motif:
@@ -933,16 +939,9 @@ def main(cfg: DictConfig) -> None:
             input_mode=input_mode,
         )
 
-        csv_filename = f"motif_results_{config_name}_{job_id}.csv"
-        csv_path = os.path.join(output_dir, csv_filename)
-        # Filter out config/metadata columns before saving
-        motif_df_filtered = filter_columns_for_csv(motif_df)
-        motif_df_filtered.to_csv(csv_path, index=False)
-        # Also save a transposed version for easier debugging (TODO: remove later)
-        # csv_path_T = csv_path.replace(".csv", "_transposed.csv")
-        # motif_df_filtered.T.to_csv(csv_path_T)
-        logger.info(f"Motif results saved to {csv_path}")
-        all_results["motif"] = motif_df_filtered
+        all_results["motif"] = save_results_csv(
+            motif_df, output_dir, "motif", config_name, job_id, fold_only=fold_only
+        )
 
     # Motif binder evaluation
     if run_motif_binder:
@@ -959,12 +958,9 @@ def main(cfg: DictConfig) -> None:
             input_mode=input_mode,
         )
 
-        csv_filename = f"motif_binder_results_{config_name}_{job_id}.csv"
-        csv_path = os.path.join(output_dir, csv_filename)
-        motif_binder_df_filtered = filter_columns_for_csv(motif_binder_df)
-        motif_binder_df_filtered.to_csv(csv_path, index=False)
-        logger.info(f"Motif binder results saved to {csv_path}")
-        all_results["motif_binder"] = motif_binder_df_filtered
+        all_results["motif_binder"] = save_results_csv(
+            motif_binder_df, output_dir, "motif_binder", config_name, job_id, fold_only=fold_only
+        )
 
     # ==========================================================================
     # Timing & completion summary
@@ -977,9 +973,15 @@ def main(cfg: DictConfig) -> None:
     for df in all_results.values():
         nsamples = max(nsamples, len(df))
 
-    # Update timing CSV in sample_storage_path (legacy location)
+    # Update timing CSV in sample_storage_path (legacy location).
+    #
+    # Skipped for a fold-only pass. Several of them run over the same designs,
+    # each folding one backend, so any single one's wall clock is a fraction of
+    # the evaluation's -- and the last to finish would be the one on record.
     timing_csv_path = os.path.join(sample_storage_path, f"timing_{job_id}.csv")
-    if os.path.exists(timing_csv_path):
+    if fold_only:
+        logger.info(f"Fold-only pass: not recording {evaluation_time:.1f}s against the run's evaluation time")
+    elif os.path.exists(timing_csv_path):
         read_and_update_timing_csv(timing_csv_path, job_id, evaluation_time, nsamples)
     else:
         timing_dir = os.path.dirname(timing_csv_path)

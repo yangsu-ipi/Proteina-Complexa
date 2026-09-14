@@ -101,6 +101,35 @@ Generation and evaluation run one process per shard, each pinned to its own GPU.
 analyze are single-process and operate on the whole campaign. `run_campaign.sh` runs the one
 stage it is given; `submit_campaign.sh` is what chains them.
 
+### Evaluate runs one folder per process
+
+`evaluate` is five passes per shard, not one. Four fold -- AF2 monomer, ESMFold2
+monomer, AF2 complex, ESMFold2 complex -- and the fifth reads every cache they
+wrote, runs ESM once, and writes the CSVs. The folding passes carry
+`metric.fold_only=true` and deliberately write no CSV: each runs a subset of the
+folders, so each would produce a subset of the columns, and nothing downstream
+could tell that from a finished run.
+
+This needs no extra cache. Folds were already stored per backend, and no fold
+fingerprint carries the folder *list*, so a pass configured `[af2]` writes
+exactly what a pass configured `[af2, esmfold2]` reads.
+
+The point is that each pass has one GPU tenant. The single fused pass it replaced
+held PyTorch and JAX at once -- 71.7 GB of an 81.9 GB card, measured on EFNB3 --
+and everything else had to fit in the remainder, which is what
+`XLA_MEM_FRACTION_EVALUATE` used to partition. There is nothing left to
+partition, so that knob is gone from `campaign.env`. `XLA_MEM_FRACTION_GENERATE`
+stays, because generation genuinely is co-resident: its AF2 reward scores
+lookahead samples inside the sampling loop, beside the diffusion model.
+
+`EVALUATE_PASSES=fused` restores the old single-process shape, for a campaign
+whose caches were written by it and for bisecting a folding failure against it.
+
+**`af2` must be first in `metric.folding_models`.** `binder_eval_cache.json` is
+one file keyed on the first complex folder; a pass that made ESMFold2 primary
+would rewrite it under a new fingerprint and discard every AF2 complex already
+folded. The stage refuses to start if the list disagrees.
+
 ## Running a campaign
 
     scripts/submit_campaign.sh production

@@ -210,15 +210,18 @@ python scripts/check_preflight.py "metadata/preflight_${KIND_TAG}.json" --resolv
 # CUDA_VISIBLE_DEVICES [0,1], pick device 0, and fight over one card.
 run_gpu_stage() {
   local module=$1 shard=$2 fraction=$3
+  shift 3
   srun --exclusive --nodes=1 --ntasks=1 --cpus-per-task=8 --gres=gpu:1 \
     env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_MEM_FRACTION="$fraction" \
     python -m "$module" --config-path "$CAMPAIGN_DIR" --config-name "$CONFIG_NAME" \
-    "++job_id=$shard" "++base_config_name=$CONFIG_NAME" "${OVERRIDES[@]}"
+    "++job_id=$shard" "++base_config_name=$CONFIG_NAME" "${OVERRIDES[@]}" "$@"
 }
 
 all_shards() {
-  local module=$1 fraction=$2 pids=()
-  for ((s = 0; s < SHARDS; s++)); do run_gpu_stage "$module" "$s" "$fraction" & pids+=($!); done
+  local module=$1 fraction=$2
+  shift 2
+  local pids=()
+  for ((s = 0; s < SHARDS; s++)); do run_gpu_stage "$module" "$s" "$fraction" "$@" & pids+=($!); done
   for pid in "${pids[@]}"; do wait "$pid"; done
 }
 
@@ -233,9 +236,107 @@ if [[ "$STAGE" == all || "$STAGE" == filter ]]; then
   python -m proteinfoundation.filter --config-path "$CAMPAIGN_DIR" --config-name "$CONFIG_NAME" \
     "++job_id=0" "++base_config_name=$CONFIG_NAME" "${OVERRIDES[@]}"
 fi
+# One folder per process, each with the whole card.
+#
+# The fused pass held PyTorch and JAX at once: 71.7 GB of an 81.9 GB card during
+# EFNB3's binder phase, 88% of it, most of which is PyTorch's caching allocator
+# sitting on blocks it will never hand back. Everything else on that card then
+# had to fit in the remainder -- colabfold's child process, ColabDesign's XLA
+# arena, an MPNN subprocess's half-gigabyte CUDA context -- and
+# XLA_PYTHON_CLIENT_MEM_FRACTION was the knob that partitioned it. It had to be
+# right, it was tuned by experiment, and it is wrong again the moment a model
+# changes size.
+#
+# Splitting by folder makes each pass single-tenant, so there is nothing to
+# partition. XLA_SOLE_TENANT is not a partition: it says "take the card", and
+# being off by a little costs unused memory rather than a dead run.
+#
+# Every pass reads what the ones before it wrote. This needs no new cache and no
+# new fingerprint, because folds were already stored per backend --
+# monomer_fold_cache_{track}_{model}.json, consensus_fold_cache_{backend}.json --
+# and no fold fingerprint carries the folder LIST: monomer_eval's
+# fingerprint_for() hashes a one-element list, and binder_eval's
+# cache_fingerprint_base hashes folders.complex[0] alone, with the advisory
+# backends resolved ninety lines later and never reaching the hash. So a pass
+# configured [af2] writes exactly what a pass configured [af2,esmfold2] reads.
+#
+# ORDER IS LOAD-BEARING on the complex passes. binder_eval_cache.json is ONE
+# file keyed on folders.complex[0]. A pass configured [esmfold2] alone would
+# make ESMFold2 the primary complex folder, rewrite that file under a different
+# fingerprint, and discard every AF2 complex already folded -- measured at ~42
+# GPU-hours on CBLN1. af2 stays first in every complex pass, and the guard below
+# refuses to start if the campaign's own list disagrees.
+XLA_SOLE_TENANT="${XLA_SOLE_TENANT:-0.9}"
+EVALUATE_PASSES="${EVALUATE_PASSES:-split}"
+
+evaluate_split() {
+  local complex_first
+  # Read from the resolved config rather than assumed. A silent disagreement
+  # between the pass plan and the campaign's folder list is the expensive kind.
+  complex_first=$(python -c '
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+models = (cfg.get("metric") or {}).get("folding_models") or []
+print(models[0] if models else "")
+' "$RESOLVED")
+  if [[ "$complex_first" != "af2" ]]; then
+    {
+      echo "evaluate: metric.folding_models starts with '${complex_first:-<empty>}', not af2."
+      echo "  binder_eval_cache.json is keyed on the FIRST complex folder, so the split passes"
+      echo "  would rewrite it under a new fingerprint and discard every complex already folded."
+      echo "  Put af2 first in metric.folding_models, or run with EVALUATE_PASSES=fused."
+    } >&2
+    exit 3
+  fi
+
+  # 1. AF2 monomer -- colabfold, out of process, sole tenant on the card.
+  #    The parent holds no model at all here: ESM is off (fold_only turns it
+  #    off), ESMFold2 is not in the folder list, and ColabDesign is reached only
+  #    by the complex track. MPNN still shells out between folds, but it exits
+  #    between them -- which is the whole reason release_gpu_for_subprocess
+  #    existed, and stops mattering here.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
+    "++metric.fold_only=true" "++metric.folding_models=[af2]" \
+    "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
+
+  # 2. ESMFold2 monomer -- in process, PyTorch only.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
+    "++metric.fold_only=true" "++metric.folding_models=[esmfold2]" \
+    "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
+
+  # 3. AF2 complex -- ColabDesign, in process, JAX only.
+  #    The apo track lives in this loop and folds nothing new: apo_refold
+  #    delegates 'mpnn' to designability and 'self' to codesignability
+  #    (share_with_designability), so it reads what passes 1 and 2 wrote. A
+  #    campaign that also asks for mpnn_fixed is the exception -- that draw has
+  #    no designability counterpart, so its apo folds happen here and this pass
+  #    is JAX plus a colabfold child rather than JAX alone.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
+    "++metric.fold_only=true" "++metric.folding_models=[af2]" \
+    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
+
+  # 4. ESMFold2 complex -- in process, PyTorch only. The AF2 complexes come from
+  #    the cache pass 3 wrote, which is why af2 is still first in this list.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
+    "++metric.fold_only=true" "++metric.folding_models=[af2,esmfold2]" \
+    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
+
+  # 5. Everything folded. This pass runs ESM once, reads every cache, and is the
+  #    only one that writes a CSV -- see save_results_csv in evaluate.py for why
+  #    the passes above must not.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT"
+}
+
 if [[ "$STAGE" == all || "$STAGE" == evaluate ]]; then
   [[ -d "$INF" ]] || { echo "missing $INF" >&2; exit 2; }
-  all_shards proteinfoundation.evaluate "$XLA_MEM_FRACTION_EVALUATE"
+  if [[ "$EVALUATE_PASSES" == fused ]]; then
+    # The pre-split behaviour, kept for a campaign mid-flight whose caches were
+    # written by it, and for bisecting a folding failure against it.
+    # XLA_MEM_FRACTION_EVALUATE means something only on this path.
+    all_shards proteinfoundation.evaluate "${XLA_MEM_FRACTION_EVALUATE:-0.3}"
+  else
+    evaluate_split
+  fi
 fi
 if [[ "$STAGE" == all || "$STAGE" == analyze ]]; then
   python -m proteinfoundation.analyze --config-path "$CAMPAIGN_DIR" --config-name "$CONFIG_NAME" \

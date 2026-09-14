@@ -252,6 +252,11 @@ def test_the_runner_reads_nothing_the_config_does_not_define():
         "COMMUNITY_MODELS_PATH",
         "CUDA_VISIBLE_DEVICES",
         "XLA_PYTHON_CLIENT_MEM_FRACTION",
+        # Read on the fused path only, and deliberately no longer set by
+        # campaign.env: the split passes are single-tenant, so there is no
+        # partition to configure. It survives as an environment override for a
+        # campaign pinned to EVALUATE_PASSES=fused.
+        "XLA_MEM_FRACTION_EVALUATE",
         "CCD_MIRROR_PATH",
         "PDB_MIRROR_PATH",
         # Assigned by `eval "$PLAN"` from plan_followup.py's output, so the
@@ -308,13 +313,17 @@ def test_the_runner_pins_one_shard_per_gpu():
     """Both shards on card 0 with the other idle, twice, on a real box."""
     text = RUNNER.read_text()
     assert 'CUDA_VISIBLE_DEVICES="$shard"' in text
+    # Still set, for a different reason than it used to be. It was a partition
+    # between torch and JAX inside one process; the split passes are
+    # single-tenant, so it now says "take the card" and JAX's own 75% default
+    # would simply waste a quarter of it.
     assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in text, "JAX preallocates 75% of the card otherwise"
 
 
 def source_config(**env):
     """Source campaign.env.example under a given environment and report the result."""
     probe = "; ".join(
-        f"echo {v}=${v}" for v in ("XLA_MEM_FRACTION_GENERATE", "XLA_MEM_FRACTION_EVALUATE", "MIN_VRAM_GB", "TASK_NAME")
+        f"echo {v}=${v}" for v in ("XLA_MEM_FRACTION_GENERATE", "EVALUATE_PASSES", "MIN_VRAM_GB", "TASK_NAME")
     )
     r = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", f"source {CONFIG_EXAMPLE}; {probe}"],
@@ -327,11 +336,24 @@ def source_config(**env):
 
 
 def test_the_gpu_knobs_take_an_environment_override():
-    """So a fraction can be tried for one run without editing the file -- which is
+    """So a value can be tried for one run without editing the file -- which is
     exactly the experiment these numbers came from."""
-    assert source_config()["XLA_MEM_FRACTION_EVALUATE"] == "0.3"
-    assert source_config(XLA_MEM_FRACTION_EVALUATE="0.25")["XLA_MEM_FRACTION_EVALUATE"] == "0.25"
+    assert source_config()["XLA_MEM_FRACTION_GENERATE"] == "0.7"
+    assert source_config(XLA_MEM_FRACTION_GENERATE="0.6")["XLA_MEM_FRACTION_GENERATE"] == "0.6"
     assert source_config(MIN_VRAM_GB="24")["MIN_VRAM_GB"] == "24"
+
+
+def test_the_evaluate_fraction_is_gone_from_the_config():
+    """Generation still divides a card between torch and JAX -- the AF2 reward
+    scores lookahead samples inside the sampling loop, so the two are co-resident
+    by construction. Evaluation no longer does, and a knob that still appeared to
+    configure it would be read as one that does something."""
+    text = CONFIG_EXAMPLE.read_text()
+    _, assigned = shell_vars(text)
+    assert "XLA_MEM_FRACTION_GENERATE" in assigned
+    assert "XLA_MEM_FRACTION_EVALUATE" not in assigned
+    assert source_config()["EVALUATE_PASSES"] == "split"
+    assert source_config(EVALUATE_PASSES="fused")["EVALUATE_PASSES"] == "fused"
 
 
 def test_identity_values_do_not_take_an_override():
@@ -1841,3 +1863,106 @@ def test_the_script_stamps_both_checkpoints_and_tools(tmp_path):
     src = PREFLIGHT_SH.read_text()
     assert src.count("$(file_stamp ") == 2, "checkpoints and tools should both stamp"
     assert "CKPT_ITEMS+=" in src and "TOOL_ITEMS+=" in src
+
+
+# ----------------------------- one folder per process
+
+
+def evaluate_split_passes():
+    """The evaluate passes the runner runs, in order, each flattened to one line."""
+    body = RUNNER.read_text().split("evaluate_split() {", 1)[1].split("\n}\n", 1)[0]
+    joined = re.sub(r"\\\n\s*", " ", body)
+    return [
+        re.sub(r"\s+", " ", line).strip()
+        for line in joined.splitlines()
+        if line.strip().startswith("all_shards proteinfoundation.evaluate")
+    ]
+
+
+def test_the_evaluate_stage_gives_each_folder_the_card_alone():
+    """The fused pass held torch and JAX at once and everything else on the card
+    had to fit around it. One folder per process removes the partition rather
+    than tuning it."""
+    passes = evaluate_split_passes()
+    assert len(passes) == 5, "expected 4 folding passes and one assembling pass, got:\n" + "\n".join(passes)
+    assert all("metric.fold_only=true" in p for p in passes[:-1]), passes
+
+
+def test_only_the_last_pass_writes():
+    """A fold-only pass runs a subset of the folders, so its rows carry a subset
+    of the columns. Two of those CSVs in a directory and analyze builds verdicts
+    from whichever folder finished last."""
+    passes = evaluate_split_passes()
+    assert "fold_only" not in passes[-1], passes[-1]
+    assert passes[-1].split() == ["all_shards", "proteinfoundation.evaluate", '"$XLA_SOLE_TENANT"'], (
+        "the final pass takes the campaign's own config unmodified, or it is not "
+        f"the run the CSV claims to be: {passes[-1]}"
+    )
+
+
+def test_every_complex_pass_keeps_af2_first():
+    """binder_eval_cache.json is ONE file keyed on folders.complex[0]. A pass
+    configured [esmfold2] alone would make ESMFold2 the primary complex folder,
+    rewrite that file under a new fingerprint, and discard every AF2 complex --
+    ~42 GPU-hours of them on CBLN1."""
+    complex_passes = [p for p in evaluate_split_passes() if "metric.compute_binder_metrics=true" in p]
+    assert complex_passes, "no pass folds complexes"
+    for p in complex_passes:
+        models = re.search(r"metric\.folding_models=\[([^\]]*)\]", p)
+        assert models, f"complex pass with no explicit folder list: {p}"
+        assert models.group(1).split(",")[0].strip() == "af2", p
+
+
+def test_the_monomer_passes_name_one_folder_each():
+    """The point of the split. Two folders in one monomer pass is the fused
+    behaviour wearing the new structure's clothes."""
+    monomer_passes = [p for p in evaluate_split_passes() if "metric.compute_monomer_metrics=true" in p]
+    assert len(monomer_passes) == 2, monomer_passes
+    named = []
+    for p in monomer_passes:
+        models = re.search(r"metric\.folding_models=\[([^\]]*)\]", p)
+        assert models, p
+        entries = [m.strip() for m in models.group(1).split(",")]
+        assert len(entries) == 1, f"monomer pass folds with {entries}: {p}"
+        named += entries
+    assert sorted(named) == ["af2", "esmfold2"], named
+
+
+def test_the_fused_path_survives_for_a_campaign_already_using_it():
+    """Caches written by the fused pass are still valid -- the split changes no
+    fingerprint -- but a run mid-flight should not have its stage plan changed
+    underneath it, and bisecting a folding failure wants the old shape back."""
+    text = RUNNER.read_text()
+    assert 'EVALUATE_PASSES="${EVALUATE_PASSES:-split}"' in text
+    assert '"$EVALUATE_PASSES" == fused' in text
+    assert "${XLA_MEM_FRACTION_EVALUATE:-0.3}" in text, "the fused path keeps the knob it needs"
+
+
+def test_the_runner_reads_the_first_folder_from_the_resolved_config(tmp_path):
+    """The guard is only as good as its reach into the config. This is the half
+    that breaks silently -- a key renamed, a list written inline instead of in
+    block style -- and it would fail open, letting a reordered list through."""
+    snippet = RUNNER.read_text().split("complex_first=$(python -c '", 1)[1].split("'", 1)[0]
+
+    def first_folder(yaml_text):
+        cfg = tmp_path / "resolved.yaml"
+        cfg.write_text(yaml_text)
+        r = subprocess.run(
+            [sys.executable, "-c", snippet, str(cfg)], capture_output=True, text=True
+        )
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    assert first_folder("metric:\n  folding_models:\n  - af2\n  - esmfold2\n") == "af2"
+    assert first_folder("metric:\n  folding_models: [af2, esmfold2]\n") == "af2"
+    assert first_folder("metric:\n  folding_models:\n  - esmfold2\n  - af2\n") == "esmfold2"
+    # A campaign on the legacy keys names no folding_models at all. Empty is the
+    # honest answer, and the runner refuses on it rather than assuming af2.
+    assert first_folder("metric:\n  binder_folding_method: colabdesign\n") == ""
+    assert first_folder("{}\n") == ""
+
+
+def test_the_runner_refuses_a_folder_list_that_does_not_start_with_af2():
+    body = RUNNER.read_text().split("evaluate_split() {", 1)[1].split("\n}\n", 1)[0]
+    assert '"$complex_first" != "af2"' in body
+    assert "exit 3" in body, "a refusal that does not stop the stage is a log line"
