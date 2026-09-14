@@ -25,17 +25,26 @@ from proteinfoundation.result_analysis.analysis_utils import filter_columns_for_
 
 # What a fold-only pass turns off. Exactly one entry, on purpose.
 #
-# The point of the pass is that one folder has the card to itself, so the only
-# things worth turning off are the ones that would sit beside it. ESMC-6B is the
-# only one evaluate has.
+# The pass exists so one folder has the card to itself, so the only thing worth
+# turning off is whatever else would occupy it. ESMC-6B is the only one evaluate
+# has. Everything else it computes -- the pre-refolding and refolded-structure
+# metrics -- is in-memory CPU that writes nothing, so a pass that redoes it
+# wastes time and changes no state.
 #
-# The structure-derived metrics stay ON, even though a fold-only pass throws
-# their columns away. Turning them off would change the consensus DERIVATION
-# fingerprint, and the cached structures would then read as under-derived to the
-# pass that does want them. That costs a re-read rather than a refold, so it is
-# cheap -- but a cache that quietly redoes work because an earlier pass asked
-# for less is the exact class of surprise these modules are full of comments
-# about.
+# Splitting evaluate by folder does not touch any fingerprint. Not the fold
+# fingerprints, which hash a one-element folder list either way, and not the
+# consensus DERIVATION fingerprint, which hashes the list of suffixes read off a
+# structure and a version constant -- neither carries the folder list, the pass
+# structure, or the order folders run in. That is why the split needs no new
+# cache.
+#
+# The one way a pass COULD move the derivation fingerprint is by asking for less
+# than the final pass: adding compute_refolded_structure_metrics here would flip
+# consensus include_tmol for a campaign with refolded.tmol true, and the final
+# pass would then re-read every kept structure (a re-read, never a refold --
+# see _derive_into_scores). That is a reason not to extend this tuple casually,
+# not a consequence of the split. It is also inert in the binder campaigns,
+# where refolded.tmol is false and include_tmol is already False either way.
 FOLD_ONLY_DISABLED_METRICS: tuple[str, ...] = ("compute_esm_metrics",)
 
 

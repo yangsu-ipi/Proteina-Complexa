@@ -35,9 +35,10 @@ def test_it_reports_what_it_changed_not_what_it_asked_for():
 
 
 def test_it_leaves_the_structure_derived_metrics_alone():
-    """Turning these off would change the consensus DERIVATION fingerprint, and
-    the cached structures would read as under-derived to the pass that wants
-    them -- a re-read rather than a refold, but an unexplained one."""
+    """They write nothing, so a pass that redoes them wastes CPU and changes no
+    state. Adding them here would be an optimisation with a cost: it is the one
+    way a pass could ask for less than the final one and move the consensus
+    derivation fingerprint under it. Splitting evaluate by folder does not."""
     cfg = {
         "compute_esm_metrics": True,
         "compute_pre_refolding_metrics": True,
