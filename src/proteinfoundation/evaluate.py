@@ -67,7 +67,7 @@ from proteinfoundation.evaluation.binder_eval import (  # Availability flags for
     compute_interface_metrics_on_refolded_structures,
 )
 from proteinfoundation.evaluation.binder_eval_utils import get_target_info
-from proteinfoundation.evaluation.fold_only import apply_fold_only, save_results_csv
+from proteinfoundation.evaluation.fold_only import apply_fold_only, save_results_csv, writes_run_level_output
 from proteinfoundation.evaluation.monomer_eval import compute_monomer_metrics
 from proteinfoundation.evaluation.motif_binder_eval import compute_motif_binder_metrics
 from proteinfoundation.evaluation.motif_binder_eval_utils import get_motif_binder_target_info
@@ -507,6 +507,7 @@ def run_binder_evaluation(
     output_dir: str,
     job_id: int,
     input_mode: str,
+    fold_only: bool = False,
 ) -> pd.DataFrame:
     """
     Run binder evaluation (refolding, interface metrics, etc.)
@@ -517,6 +518,7 @@ def run_binder_evaluation(
         output_dir: Output directory
         job_id: Job ID
         input_mode: "pdb_dir" or "generated"
+        fold_only: This pass folds one backend and writes no run-level artifact.
 
     Returns:
         DataFrame with binder metrics
@@ -538,14 +540,22 @@ def run_binder_evaluation(
     # verdicts are baked into the rows by the time analysis runs: without this
     # file, a CSV re-analysed under different thresholds carries pass columns that
     # silently contradict the pass rates beside them.
-    save_combined_success_criteria_json(
-        success_thresholds=df.attrs.get("success_thresholds", {}),
-        path_store_results=output_dir,
-        filter_name=f"binder_eval_{job_id}",
-        sequence_types=list(cfg.metric.get("sequence_types", ["self"])),
-        stage="evaluate",
-        redesign_conditioning=df.attrs.get("redesign_conditioning"),
-    )
+    #
+    # Run-level, so a fold-only pass must not write it. Its thresholds name
+    # folder-scoped columns, so a pass folding one backend produces a subset --
+    # and this file's whole job is to say what the CSV beside it was judged
+    # against. A crashed split evaluate would otherwise leave a one-folder
+    # criteria file next to the PREVIOUS run's complete CSV, which is exactly
+    # the silent contradiction the paragraph above describes.
+    if writes_run_level_output(fold_only, "the success-criteria JSON"):
+        save_combined_success_criteria_json(
+            success_thresholds=df.attrs.get("success_thresholds", {}),
+            path_store_results=output_dir,
+            filter_name=f"binder_eval_{job_id}",
+            sequence_types=list(cfg.metric.get("sequence_types", ["self"])),
+            stage="evaluate",
+            redesign_conditioning=df.attrs.get("redesign_conditioning"),
+        )
 
     df = _add_pre_refolding_metrics(cfg, df, sample_paths)
     df = _add_refolded_structure_metrics(cfg, df, job_id)
@@ -918,6 +928,7 @@ def main(cfg: DictConfig) -> None:
             output_dir=output_dir,
             job_id=job_id,
             input_mode=input_mode,
+            fold_only=fold_only,
         )
 
         all_results["binder"] = save_results_csv(
@@ -979,17 +990,16 @@ def main(cfg: DictConfig) -> None:
     # each folding one backend, so any single one's wall clock is a fraction of
     # the evaluation's -- and the last to finish would be the one on record.
     timing_csv_path = os.path.join(sample_storage_path, f"timing_{job_id}.csv")
-    if fold_only:
-        logger.info(f"Fold-only pass: not recording {evaluation_time:.1f}s against the run's evaluation time")
-    elif os.path.exists(timing_csv_path):
-        read_and_update_timing_csv(timing_csv_path, job_id, evaluation_time, nsamples)
-    else:
-        timing_dir = os.path.dirname(timing_csv_path)
-        if timing_dir:
-            os.makedirs(timing_dir, exist_ok=True)
-        with open(timing_csv_path, "w") as f:
-            f.write("job_id,generation_time,evaluation_time,total_time,nsamples\n")
-            f.write(f"{job_id},0,{evaluation_time:.2f},{evaluation_time:.2f},{nsamples}\n")
+    if writes_run_level_output(fold_only, "the legacy timing row"):
+        if os.path.exists(timing_csv_path):
+            read_and_update_timing_csv(timing_csv_path, job_id, evaluation_time, nsamples)
+        else:
+            timing_dir = os.path.dirname(timing_csv_path)
+            if timing_dir:
+                os.makedirs(timing_dir, exist_ok=True)
+            with open(timing_csv_path, "w") as f:
+                f.write("job_id,generation_time,evaluation_time,total_time,nsamples\n")
+                f.write(f"{job_id},0,{evaluation_time:.2f},{evaluation_time:.2f},{nsamples}\n")
 
     evals_run = []
     if run_monomer:
@@ -1001,11 +1011,14 @@ def main(cfg: DictConfig) -> None:
     if run_motif_binder:
         evals_run.append("motif_binder")
 
-    # Save timing CSV in output_dir alongside results
+    # Save timing CSV in output_dir alongside results. Run-level: five passes
+    # write it in turn and the last one wins, which would record the assembling
+    # pass's minutes as the evaluation's hours.
     output_timing_path = os.path.join(output_dir, f"timing_{job_id}.csv")
-    with open(output_timing_path, "w") as f:
-        f.write("job_id,evaluation_time_s,nsamples,evals_run\n")
-        f.write(f"{job_id},{evaluation_time:.2f},{nsamples},{'+'.join(evals_run)}\n")
+    if writes_run_level_output(fold_only, "the timing row"):
+        with open(output_timing_path, "w") as f:
+            f.write("job_id,evaluation_time_s,nsamples,evals_run\n")
+            f.write(f"{job_id},{evaluation_time:.2f},{nsamples},{'+'.join(evals_run)}\n")
 
     # Format elapsed time nicely
     mins, secs = divmod(int(evaluation_time), 60)

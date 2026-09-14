@@ -58,6 +58,29 @@ def apply_fold_only(cfg_metric) -> list[str]:
     return turned_off
 
 
+def writes_run_level_output(fold_only: bool, what: str) -> bool:
+    """Whether this pass may write *what* into the run's output directory.
+
+    A run-level artifact is written once per evaluate PROCESS rather than once
+    per design: the results CSVs, the success-criteria JSON, the timing row.
+    Under one fused evaluate that distinction did not exist, because there was
+    one process and it knew about every folder. Under split passes there are
+    five, four of which know about a subset -- so each of those would overwrite
+    the run's record with a fraction of it, and the last writer would win.
+
+    Design-level artifacts are deliberately NOT gated here. Fold caches, PAE
+    matrices, kept structures and ``sequence_type_stats.json`` are written per
+    design under the folder that produced them, and a pass folding af2 writes
+    exactly what a fused run's af2 half wrote. The same is true of the derived
+    interface and structure metrics, which measure one folder's predictions and
+    return columns without writing anything at all.
+    """
+    if fold_only:
+        logger.info(f"Fold-only pass: not writing {what}; that is the final pass's to write")
+        return False
+    return True
+
+
 def save_results_csv(df, output_dir: str, kind: str, config_name: str, job_id, *, fold_only: bool):
     """Write one evaluation's rows, unless this is a fold-only pass.
 
@@ -78,11 +101,7 @@ def save_results_csv(df, output_dir: str, kind: str, config_name: str, job_id, *
     summary do not have to know which pass this was.
     """
     filtered = filter_columns_for_csv(df)
-    if fold_only:
-        logger.info(
-            f"Fold-only pass: {len(filtered)} {kind} row(s) built from cache and discarded. "
-            f"The folds are on disk; the CSV is the final pass's to write."
-        )
+    if not writes_run_level_output(fold_only, f"the {kind} CSV ({len(filtered)} row(s) built and discarded)"):
         return filtered
     csv_path = os.path.join(output_dir, f"{kind}_results_{config_name}_{job_id}.csv")
     filtered.to_csv(csv_path, index=False)
