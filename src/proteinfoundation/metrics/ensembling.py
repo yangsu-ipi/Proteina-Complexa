@@ -15,11 +15,13 @@ import os
 
 # The rounding the single-model path used, kept so a one-model run's numbers
 # stay byte-identical to what it produced before ensembling existed.
-# No "pLDDT": ColabDesign's binder protocol reports log["plddt"] over the binder
-# alone, so complex_pLDDT was never the whole-complex mean its name implied --
-# it equalled the binder half exactly on every row of a real run, to the last
-# digit the CSV carried. Keeping both would be one number under two names, and
-# the misleading name is the one a threshold could be pointed at by mistake.
+# "pLDDT" here is the whole-complex mean of the PER-RESIDUE array, which is what
+# the advisory backends report under that name -- so both folders now emit it and
+# it means the same thing in both. What was retired is different: ColabDesign's
+# log["plddt"] SCALAR covers the binder alone, so a complex_pLDDT taken from it
+# equalled binder_pLDDT exactly on every row of a real run. That was one number
+# under two names, and the misleading name is the one a threshold could be
+# pointed at by mistake.
 # The top bin of a PAE head, in Angstroms, and so the divisor that puts the PAE
 # family on 0-1. Both folders this repo uses bin to the same 31: AlphaFold's
 # max_error_bin (community_models/colabdesign/af/alphafold/model/config.py) and
@@ -52,6 +54,7 @@ AF2_STAT_PRECISION = {
     # Per-chain means, from the same per-residue array the scalar pLDDT is the
     # mean of. Absent from backends that report no per-residue confidence, so
     # average_af2_stats skips what it is not given rather than requiring these.
+    "pLDDT": 3,
     "target_pLDDT": 3,
     "binder_pLDDT": 3,
 }
@@ -237,6 +240,13 @@ def mean_chain_plddt(plddt, target_len: int | None) -> dict:
     if _mean(values) > _PLDDT_FRACTION_CEILING:
         values = [v / 100.0 for v in values]
     return {
+        # The whole-complex mean, which the advisory side reports and this side
+        # did not, leaving esmfold2 with a pLDDT column af2 had no equivalent of.
+        # Taken over the PER-RESIDUE array rather than from ColabDesign's scalar:
+        # that scalar covers the binder alone, which is why an earlier
+        # complex_pLDDT had to be retired as a second name for binder_pLDDT. This
+        # one is what its name says, for both folders.
+        "pLDDT": _mean(values),
         "target_pLDDT": _mean(values[:target_len]),
         "binder_pLDDT": _mean(values[target_len:]),
     }
@@ -326,12 +336,17 @@ def mean_interface_metrics(rows: list[dict]) -> dict:
     across models by construction, and meaningless as an average. ``pdb_path``
     is left to the caller, which knows which model names the design.
 
-    ``n_interface_models`` records how many rows contributed, so a design that
-    fell back to one structure is distinguishable from one that averaged five.
+    ``n_predictions`` records how many rows contributed, so a design that fell
+    back to one structure is distinguishable from one that averaged five.
+
+    Named for what it counts rather than for this side's mechanism. It was
+    ``n_interface_models`` here and ``n_seeds`` on the advisory side -- the same
+    question, two names, and only one of them ever reaching a column. A folder's
+    column set must not depend on which folder it is.
     """
     if not rows:
         return {}
-    out: dict = {"n_interface_models": float(len(rows))}
+    out: dict = {"n_predictions": float(len(rows))}
     for key in rows[0]:
         if key == "pdb_path":
             continue

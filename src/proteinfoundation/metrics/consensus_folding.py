@@ -143,6 +143,13 @@ CONSENSUS_METRIC_SUFFIXES = consensus_metric_suffixes()
 # One cache file per backend. A single shared file would thrash the moment two
 # backends are enabled together: each writes its own fingerprint, and the other's
 # entries are discarded on every design.
+# Provenance, not measurement: how many predictions were reduced into each value.
+# Emitted as a column like any other, but kept out of CONSENSUS_METRIC_SUFFIXES so
+# it joins neither the fold fingerprint -- a count is not a structure request --
+# nor assert_headline_indices_agree, which asks which sequence a scalar describes
+# and would be answered by a constant for every index.
+CONSENSUS_PROVENANCE_SUFFIXES: tuple[str, ...] = ("n_predictions",)
+
 CONSENSUS_CACHE_TEMPLATE = "consensus_fold_cache_{backend}.json"
 
 
@@ -1349,7 +1356,10 @@ def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, flo
             continue
         numeric = [float(v) for v in values if isinstance(v, (int, float)) and v == v]
         out[key] = sum(numeric) / len(numeric) if numeric else values[0]
-    out["n_seeds"] = float(len(ordered))
+    # Same name the primary side uses (ensembling.average_interface_rows): how
+    # many predictions were reduced into this value. It was n_seeds here and
+    # n_interface_models there, and only the latter ever became a column.
+    out["n_predictions"] = float(len(ordered))
     return out
 
 

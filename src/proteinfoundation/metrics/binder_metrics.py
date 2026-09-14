@@ -670,8 +670,9 @@ def calculate_prot_prot_binder_rmsd(
         Keys include (for each of binder / complex):
             "binder_scRMSD_ca", "binder_scRMSD_bb3", "binder_scRMSD_bb3o",
             "binder_scRMSD_allatom", "complex_scRMSD_ca", etc.
-        Legacy keys ("binder_scRMSD", "complex_scRMSD") are also included
-        and equal the CA values for backward compatibility.
+        Mode-suffixed only: the unsuffixed aliases are gone, because the
+        advisory backends never emitted them and a column set that depends on
+        which folder produced it is the distinction the migration removed.
     """
     # Set the occupancy to 1.0 for all chains
     refolded_complex.set_annotation(
@@ -786,9 +787,14 @@ def calculate_prot_prot_binder_rmsd(
         "complex_scRMSD_ca": complex_scRMSD_ca,
         # Aligned on the target, measured over the binder -- see above.
         "binder_scRMSD_target_aligned_ca": binder_scRMSD_target_aligned_ca,
-        # Legacy keys for backward compatibility
-        "binder_scRMSD": binder_scRMSD_ca,
-        "complex_scRMSD": complex_scRMSD_ca,
+        # No unsuffixed "binder_scRMSD"/"complex_scRMSD" aliases. They equalled
+        # the CA values and existed for frames written before the modes were
+        # named -- and only this side ever emitted them, so a campaign's af2
+        # columns carried two names for one number while its esmfold2 columns
+        # carried one. That is the last of the primary/advisory distinction the
+        # folder migration set out to remove: a folder's column set must not
+        # depend on which folder it is. consensus_folding.CONSENSUS_RMSD_SUFFIXES
+        # already refused them for the same reason.
     }
 
     return rmsd_result

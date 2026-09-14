@@ -7,8 +7,10 @@ unusable, which is where a reduction quietly invents a number if it can.
 """
 
 import contextlib
+import inspect
 import math
 import os
+import re
 
 import pytest
 
@@ -68,10 +70,14 @@ def test_the_mean_is_taken_before_rounding():
 def test_every_stat_keeps_the_precision_it_had():
     stats = average_af2_stats([af2_stats_from_metrics(RAW)])
     assert set(stats) <= set(AF2_STAT_PRECISION)
-    assert set(AF2_STAT_PRECISION) - set(stats) == {"target_pLDDT", "binder_pLDDT"}, (
-        "the per-chain means come from the per-residue array, not the log dict"
+    assert set(AF2_STAT_PRECISION) - set(stats) == {"pLDDT", "target_pLDDT", "binder_pLDDT"}, (
+        "the whole-complex and per-chain means come from the per-residue array, not the log dict"
     )
-    assert "pLDDT" not in AF2_STAT_PRECISION, "collapsed into binder_pLDDT, the number ColabDesign's log always held"
+    assert AF2_STAT_PRECISION["pLDDT"] == 3, (
+        "the whole-complex mean the advisory backends report under this name. It is NOT "
+        "ColabDesign's log scalar, which covers the binder alone -- that is the number "
+        "that had to be retired as complex_pLDDT."
+    )
 
 
 def test_a_backend_reporting_no_per_residue_confidence_still_averages():
@@ -720,7 +726,7 @@ def test_interface_metrics_are_averaged_not_read_off_one_model():
     rows = [{"interface_dSASA": v, "interface_sc": 0.5} for v in (2238.0, 2295.0, 2219.0, 2378.0, 2414.0)]
     got = mean_interface_metrics(rows)
     assert got["interface_dSASA"] == pytest.approx(2308.8)
-    assert got["n_interface_models"] == 5.0
+    assert got["n_predictions"] == 5.0
 
 
 def test_the_number_of_contributing_models_is_recorded():
@@ -728,8 +734,8 @@ def test_the_number_of_contributing_models_is_recorded():
     that averaged five, or a mean of one reads as a mean of five."""
     from proteinfoundation.metrics.ensembling import mean_interface_metrics
 
-    assert mean_interface_metrics([{"interface_dSASA": 1.0}])["n_interface_models"] == 1.0
-    assert mean_interface_metrics([{"interface_dSASA": 1.0}] * 5)["n_interface_models"] == 5.0
+    assert mean_interface_metrics([{"interface_dSASA": 1.0}])["n_predictions"] == 1.0
+    assert mean_interface_metrics([{"interface_dSASA": 1.0}] * 5)["n_predictions"] == 5.0
 
 
 def test_provenance_is_taken_from_the_first_model_not_averaged():
@@ -1438,3 +1444,37 @@ def test_a_refold_into_its_own_directory_does_not_copy_its_own_output(tmp_path, 
     a, b = first["colabfold"][0].pdb_path, second["colabfold"][0].pdb_path
     assert a == b, "the re-fold resolves to the structure already on disk"
     assert "apo_mpnn_apo_mpnn" not in b, "and never copies its own kept copy"
+
+
+def test_both_folders_answer_for_the_same_metrics():
+    """The principle the folder migration was for: no folder's column set may
+    depend on which folder it is.
+
+    Four columns had fallen through it. `scRMSD` and `binder_scRMSD` were
+    unsuffixed aliases of the CA values that only the primary emitted;
+    `n_interface_models` and `n_seeds` were the same count under two names, one
+    of them never reaching a column; and the whole-complex `pLDDT` existed only
+    on the advisory side.
+
+    `pLDDT` is the one that needed care rather than deletion. ColabDesign's log
+    scalar covers the binder alone -- copying it would have republished
+    binder_pLDDT under a name meaning something else, which is the bug
+    complex_pLDDT was retired for. The mean of the per-residue array is a real
+    whole-complex number, and that is what both sides now report.
+    """
+    from proteinfoundation.metrics.binder_metrics import calculate_prot_prot_binder_rmsd
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_CONFIDENCE_SUFFIXES,
+        CONSENSUS_PROVENANCE_SUFFIXES,
+        CONSENSUS_RMSD_SUFFIXES,
+    )
+
+    assert "pLDDT" in CONSENSUS_CONFIDENCE_SUFFIXES and "pLDDT" in AF2_STAT_PRECISION
+    assert CONSENSUS_PROVENANCE_SUFFIXES == ("n_predictions",)
+
+    # The RMSD keys the primary produces must be exactly the advisory's, with no
+    # unsuffixed aliases surviving on either side.
+    source = inspect.getsource(calculate_prot_prot_binder_rmsd)
+    emitted = set(re.findall(r'"((?:binder|complex)_scRMSD[A-Za-z0-9_]*)":', source))
+    assert emitted == set(CONSENSUS_RMSD_SUFFIXES), emitted ^ set(CONSENSUS_RMSD_SUFFIXES)
+    assert "binder_scRMSD" not in emitted and "complex_scRMSD" not in emitted

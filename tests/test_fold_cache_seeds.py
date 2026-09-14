@@ -228,7 +228,7 @@ def test_metrics_are_pooled_over_seeds_and_paths_are_not():
     pooled = mean_over_seeds({1: {"pLDDT": 0.8, "pdb_path": "/a"}, 3: {"pLDDT": 0.9, "pdb_path": "/b"}})
     assert pooled["pLDDT"] == pytest.approx(0.85)
     assert pooled["pdb_path"] == "/a", "lowest seed, deterministically"
-    assert pooled["n_seeds"] == 2.0
+    assert pooled["n_predictions"] == 2.0
     assert mean_over_seeds({}) == {}
 
 
@@ -759,7 +759,7 @@ def test_the_packed_counts_average_elementwise_over_seeds():
     got = mean_over_seeds(by_seed)
     assert got["pLDDT"] == pytest.approx(0.7)
     assert got["binder_ss_counts"] == [5.0, 0, 0, 5.0, 0, 0, 0, 0]
-    assert got["n_seeds"] == 2.0
+    assert got["n_predictions"] == 2.0
 
 
 def test_the_engine_and_radii_are_taken_from_a_seed_not_averaged():

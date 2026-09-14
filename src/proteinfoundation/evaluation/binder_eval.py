@@ -63,6 +63,7 @@ from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, 
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family, rename
 from proteinfoundation.metrics.consensus_folding import (
+    CONSENSUS_PROVENANCE_SUFFIXES,
     CONSENSUS_METRIC_SUFFIXES,
     ComplexFoldContext,
     advisory_column,
@@ -1298,6 +1299,7 @@ def compute_binder_metrics(
                     for suffix in (
                         *CONSENSUS_METRIC_SUFFIXES,
                         *consensus_derived_suffixes(derive_consensus_tmol),
+                        *CONSENSUS_PROVENANCE_SUFFIXES,
                     ):
                         col = advisory_column(seq_type, backend_name, suffix)
                         # Always, now that best-only is gone. These lists are what
