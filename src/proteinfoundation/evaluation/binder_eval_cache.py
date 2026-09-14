@@ -9,6 +9,7 @@ test able to reach any of them while it lived next to an ``atomworks`` import.
 
 import hashlib
 import json
+import math
 import os
 from typing import Any
 
@@ -33,6 +34,39 @@ def binder_eval_fingerprint(**inputs: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def unmeasured_complex_metrics(sequence_type_stats: dict) -> list[str]:
+    """Metrics in *sequence_type_stats* that hold no usable number.
+
+    A NaN or an infinity here is not a measurement, it is the absence of one
+    wearing a measurement's clothes -- the same confusion that let a declined
+    monomer fold be cached as a value and answer for that sequence forever.
+
+    This cache is stricter than the monomer one, which tolerates a partial entry
+    because MAX_FOLD_ATTEMPTS will retry it. There is no attempt counter here and
+    no per-sequence retry: whatever this file records is what every later resume
+    reads. So a single unusable value is enough to refuse the write, and the
+    design refolds next run instead.
+
+    Only complex_stats and rmsd_stats are checked. aa_stats are composition
+    counts, not folder output, and nothing about a fold makes them unusable.
+    """
+    bad: list[str] = []
+    for seq_type, payload in (sequence_type_stats or {}).items():
+        for group in ("complex_stats", "rmsd_stats"):
+            entries = (payload or {}).get(group)
+            if not isinstance(entries, list):
+                continue
+            for i, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                for key, value in entry.items():
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        continue
+                    if not math.isfinite(value):
+                        bad.append(f"{seq_type}.{group}[{i}].{key}={value}")
+    return bad
+
+
 def write_binder_eval_cache(
     sample_root_path: str,
     fingerprint: str,
@@ -45,6 +79,21 @@ def write_binder_eval_cache(
     Written alongside — not instead of — ``sequence_type_stats.json``, whose
     schema stays as it was so existing consumers are unaffected.
     """
+    unusable = unmeasured_complex_metrics(sequence_type_stats)
+    if unusable:
+        # Refuse rather than persist. Today run_af_eval raises on any failure, so
+        # nothing partial reaches here -- but the per-design try in binder_eval.py
+        # exists to keep one bad design from killing a run, and the moment a
+        # complex fold can fail per SEQUENCE rather than per design, this is the
+        # path that would make that failure permanent. The guard is cheap and the
+        # cost of being wrong is a campaign's worth of NaNs nobody can retry.
+        logger.warning(
+            f"Not caching binder eval for {sample_root_path}: "
+            f"{len(unusable)} metric(s) hold no usable number "
+            f"({', '.join(unusable[:4])}{', ...' if len(unusable) > 4 else ''}). "
+            f"This design will refold on the next run rather than serve these forever."
+        )
+        return
     try:
         # Serialise first so a non-encodable payload leaves no half-written file
         # behind for the next run to trip over.

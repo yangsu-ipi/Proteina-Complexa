@@ -675,3 +675,116 @@ def test_the_redesign_apo_fold_is_delegated_not_duplicated():
         "the apo path must not rebuild the designability key; two modules computing "
         "one key split the cache the first time a default drifts"
     )
+
+
+# ---------------------------------------------------------------------------
+# A complex fold that produced no usable number must not be cached. This cache
+# has no attempt counter and no per-sequence retry -- whatever it records is what
+# every later resume reads -- so it is stricter than the monomer one, which can
+# afford a partial entry because MAX_FOLD_ATTEMPTS will retry it.
+# ---------------------------------------------------------------------------
+
+
+def _stats(i_pae=7.0, rmsd=1.2, seq_types=("self",)):
+    return {
+        t: {
+            "complex_stats": [{"i_pAE": i_pae, "binder_pLDDT": 0.9, "complex_pdb_path": "/x.pdb"}],
+            "rmsd_stats": [{"binder_scRMSD_ca": rmsd, "complex_scRMSD_ca": 0.8}],
+            "aa_stats": [{"binder_length": 55}],
+        }
+        for t in seq_types
+    }
+
+
+def test_a_usable_complex_fold_is_cached(tmp_path):
+    from proteinfoundation.evaluation.binder_eval_cache import (
+        read_binder_eval_cache,
+        write_binder_eval_cache,
+    )
+
+    write_binder_eval_cache(str(tmp_path), "fp", _stats(), {"self": [{"seq": "AAAA"}]}, "dfp")
+    got = read_binder_eval_cache(str(tmp_path), "fp", ["self"], derivation_fingerprint="dfp")
+    assert got is not None, "a complete entry must still be cached and served"
+
+
+def test_a_nan_metric_refuses_the_write(tmp_path):
+    """Not cached is recoverable -- the design refolds next run. Cached NaN is
+    permanent, because nothing here ever retries it."""
+    from proteinfoundation.evaluation.binder_eval_cache import (
+        read_binder_eval_cache,
+        write_binder_eval_cache,
+    )
+
+    write_binder_eval_cache(str(tmp_path), "fp", _stats(i_pae=float("nan")), {"self": []}, "dfp")
+    assert read_binder_eval_cache(str(tmp_path), "fp", ["self"], derivation_fingerprint="dfp") is None
+
+
+def test_an_infinite_rmsd_refuses_the_write(tmp_path):
+    from proteinfoundation.evaluation.binder_eval_cache import (
+        read_binder_eval_cache,
+        write_binder_eval_cache,
+    )
+
+    write_binder_eval_cache(str(tmp_path), "fp", _stats(rmsd=float("inf")), {"self": []}, "dfp")
+    assert read_binder_eval_cache(str(tmp_path), "fp", ["self"], derivation_fingerprint="dfp") is None
+
+
+def test_one_bad_sequence_type_refuses_the_whole_write(tmp_path):
+    """A row where one sequence type answers and another does not is the
+    half-populated frame this guard exists to prevent."""
+    from proteinfoundation.evaluation.binder_eval_cache import (
+        read_binder_eval_cache,
+        write_binder_eval_cache,
+    )
+
+    stats = _stats(seq_types=("self", "mpnn"))
+    stats["mpnn"]["complex_stats"][0]["i_pAE"] = float("nan")
+    write_binder_eval_cache(str(tmp_path), "fp", stats, {"self": [], "mpnn": []}, "dfp")
+    assert read_binder_eval_cache(str(tmp_path), "fp", ["self", "mpnn"], derivation_fingerprint="dfp") is None
+
+
+def test_the_guard_names_what_was_unusable():
+    """A refusal nobody can diagnose is a silent cache miss forever."""
+    from proteinfoundation.evaluation.binder_eval_cache import unmeasured_complex_metrics
+
+    assert unmeasured_complex_metrics(_stats()) == []
+    bad = unmeasured_complex_metrics(_stats(i_pae=float("nan")))
+    assert len(bad) == 1 and "self.complex_stats[0].i_pAE" in bad[0]
+
+
+def test_composition_counts_are_not_folder_output():
+    """aa_stats are sequence composition, not a measurement off a structure. A
+    guard that policed them would refuse writes for a reason unrelated to folding."""
+    from proteinfoundation.evaluation.binder_eval_cache import unmeasured_complex_metrics
+
+    stats = _stats()
+    stats["self"]["aa_stats"] = [{"binder_length": float("nan")}]
+    assert unmeasured_complex_metrics(stats) == []
+
+
+def test_booleans_are_not_measurements():
+    """bool is a subclass of int; math.isfinite(True) is True, but a flag read as
+    a metric would be a category error the moment one is ever False."""
+    from proteinfoundation.evaluation.binder_eval_cache import unmeasured_complex_metrics
+
+    stats = _stats()
+    stats["self"]["complex_stats"][0]["structures_kept"] = False
+    assert unmeasured_complex_metrics(stats) == []
+
+
+def test_one_designs_complex_failure_does_not_kill_the_run():
+    """IL1R1's evaluate died on an uncaught exception after 2 of 774 designs.
+    run_af_eval re-raises by design (it evicts its AF2 model first), so the catch
+    has to be at the per-design loop."""
+    import inspect
+
+    from proteinfoundation.evaluation import binder_eval
+
+    src = inspect.getsource(binder_eval.compute_binder_metrics)
+    call = src.index("run_binder_eval(")
+    before = src[:call]
+    assert before.rstrip().endswith("try:") or "try:" in before[-200:], (
+        "the complex refold must be wrapped, or one design takes the campaign down"
+    )
+    assert "failed_designs.append" in src, "a skipped design must be recorded"
+    assert "continue" in src[call:], "a failed design is skipped, not emitted half-filled"

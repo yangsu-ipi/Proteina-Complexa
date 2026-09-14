@@ -766,6 +766,7 @@ def compute_binder_metrics(
     legacy_target_base["target_pdb_path"] = target_pdb_path
 
     n_reused = 0
+    failed_designs: list[tuple[str, str]] = []
 
     # Advisory second-opinion refolding. Off unless metric.consensus_backends is
     # set; emits {seq_type}_{backend}_{metric} columns and gates nothing. These
@@ -927,23 +928,44 @@ def compute_binder_metrics(
             if cached is not None:
                 n_reused += 1
             else:
-                _, _, sequence_type_stats, sequences_dict = run_binder_eval(
-                    pdb_file_path=pdb_path,
-                    target_pdb_path=target_pdb_path,
-                    folding_model_specs=folding_model_specs,
-                    tmp_path=sample_root_path,
-                    target_pdb_chain=target_pdb_chain,
-                    sequence_types=sequence_types,
-                    inverse_folding_model=inverse_folding_model,
-                    gen_target_chain=gen_target_chain,
-                    binder_chain=binder_chain,
-                    interface_cutoff=interface_cutoff,
-                    is_target_ligand=is_target_ligand,
-                    num_redesign_seqs=num_redesign_seqs,
-                    shared_redesign_count=redesign_set_size(cfg_metric),
-                    fixed_residues_override=fixed_residues_override,
-                    n_af2_models=n_af2_models,
-                )
+                try:
+                    _, _, sequence_type_stats, sequences_dict = run_binder_eval(
+                        pdb_file_path=pdb_path,
+                        target_pdb_path=target_pdb_path,
+                        folding_model_specs=folding_model_specs,
+                        tmp_path=sample_root_path,
+                        target_pdb_chain=target_pdb_chain,
+                        sequence_types=sequence_types,
+                        inverse_folding_model=inverse_folding_model,
+                        gen_target_chain=gen_target_chain,
+                        binder_chain=binder_chain,
+                        interface_cutoff=interface_cutoff,
+                        is_target_ligand=is_target_ligand,
+                        num_redesign_seqs=num_redesign_seqs,
+                        shared_redesign_count=redesign_set_size(cfg_metric),
+                        fixed_residues_override=fixed_residues_override,
+                        n_af2_models=n_af2_models,
+                    )
+                except Exception as exc:
+                    # One design, not the campaign. run_af_eval re-raises after
+                    # evicting its cached AF2 model, and nothing above this caught
+                    # it -- so a single design that AF2 declined took the whole
+                    # evaluate job down. IL1R1 died exactly this way, on an
+                    # uncaught ValueError, after 2 of 774 designs.
+                    #
+                    # The design is dropped rather than emitted half-filled: apo
+                    # and ESM both run inside the per-sequence-type loop below and
+                    # read sequence_type_stats, so without the complex fold there
+                    # are no binder metrics to carry. That matches how a missing
+                    # PDB is handled at the top of this loop. Nothing is cached,
+                    # because write_binder_eval_cache is below and unreached, so
+                    # the next run refolds this design from scratch.
+                    logger.error(
+                        f"Binder evaluation failed for {os.path.basename(sample_root_path)}: "
+                        f"{type(exc).__name__}: {exc}. Skipping this design; the run continues."
+                    )
+                    failed_designs.append((os.path.basename(sample_root_path), f"{type(exc).__name__}: {exc}"))
+                    continue
 
                 # Save raw stats
                 with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
@@ -1336,6 +1358,16 @@ def compute_binder_metrics(
 
     if reuse_cached_folding:
         logger.info(f"Binder evaluation reused cached refolding for {n_reused}/{len(results)} designs")
+    if failed_designs:
+        # Loud and enumerated. A design skipped quietly is a row missing from the
+        # frame with nothing saying why, and the counts downstream would simply
+        # be smaller than the campaign expected.
+        logger.warning(
+            f"Binder evaluation skipped {len(failed_designs)} design(s) whose complex refold failed; "
+            f"they carry no binder metrics and will refold on the next run. "
+            + "; ".join(f"{name}: {why}" for name, why in failed_designs[:5])
+            + (f" (and {len(failed_designs) - 5} more)" if len(failed_designs) > 5 else "")
+        )
 
     df = pd.DataFrame(results).reindex(columns=dedupe_columns(all_columns, "Binder results"))
     # Carried out-of-band rather than as columns: both are properties of the run,
