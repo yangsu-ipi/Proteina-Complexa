@@ -668,6 +668,41 @@ def colabfold_model_siblings(pdb_path: str | None) -> list[str]:
     return sorted(found, key=lambda path: (_colabfold_model_number(path), path))
 
 
+def colabfold_declines(structures_dir: str) -> dict[str, str]:
+    """Why ColabFold refused each query it refused, read from its own log.
+
+    ColabFold writes ``Could not predict <query>. <reason>`` and carries on with
+    the next query, so a declined sequence is not an exception anywhere -- the
+    caller only sees that no PDB appeared, and reported it as the constant string
+    "Folding failed". The reason was on disk the whole time.
+
+    The reason matters because it decides whether a retry is worth anything. What
+    we have observed is a transient: "Not Enough GPU memory? INTERNAL: couldn't
+    get temp CUBIN file name" -- ColabFold guessing at memory while the INTERNAL
+    clause names an XLA temp-file failure, measured at 22% of the card. That kind
+    recovers in a fresh process. A sequence the model genuinely cannot handle does
+    not, and no amount of retrying changes it.
+
+    Returns ``{}`` when the log is absent or unreadable: a log we cannot parse is
+    not evidence that nothing was declined, and the caller treats an unexplained
+    absence as retryable anyway.
+    """
+    log_path = os.path.join(structures_dir, "log.txt")
+    declines: dict[str, str] = {}
+    try:
+        with open(log_path, errors="replace") as handle:
+            for line in handle:
+                marker = "Could not predict "
+                if marker not in line:
+                    continue
+                rest = line.split(marker, 1)[1].strip()
+                query, _, reason = rest.partition(".")
+                declines[query.strip()] = reason.strip() or "no reason given"
+    except OSError:
+        return {}
+    return declines
+
+
 def run_colabfold(
     sequences: list[str],
     path_to_colabfold_out: str,
@@ -758,17 +793,20 @@ def run_colabfold(
             f"A ColabFold output directory should belong to one fold of one track."
         )
 
-    try:
-        result = subprocess.run(batch_command, shell=True, check=True)
-        if result.returncode != 0:
-            logger.error(f"ColabFold command failed with error: {result.stderr}")
-            raise RuntimeError(f"ColabFold command failed: {result.stderr}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"ColabFold command failed with error: {e.stderr}")
-        raise RuntimeError(f"ColabFold command failed: {e.stderr}")
-    except Exception as e:
-        logger.error(f"Unexpected error running ColabFold: {e!s}")
-        raise RuntimeError(f"Unexpected error running ColabFold: {e!s}")
+    def invoke_colabfold() -> None:
+        try:
+            result = subprocess.run(batch_command, shell=True, check=True)
+            if result.returncode != 0:
+                logger.error(f"ColabFold command failed with error: {result.stderr}")
+                raise RuntimeError(f"ColabFold command failed: {result.stderr}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ColabFold command failed with error: {e.stderr}")
+            raise RuntimeError(f"ColabFold command failed: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Unexpected error running ColabFold: {e!s}")
+            raise RuntimeError(f"Unexpected error running ColabFold: {e!s}")
+
+    invoke_colabfold()
 
     # Every rank is kept, not only the winner. ColabFold runs five AF2 parameter
     # sets per query by default and this pays for all five either way; keeping one
@@ -838,6 +876,55 @@ def run_colabfold(
             if suffix:
                 winner = winner.replace(".pdb", f"_{suffix}.pdb")
         pdb_file_paths.append(winner)
+
+    # A declined query is retried ONCE, here, rather than waiting for the next
+    # evaluate run to notice a NaN in the cache.
+    #
+    # Cheap and likely to work, for a reason specific to being out of process:
+    # the child exits, so the OS reclaims its VRAM and its whole CUDA context,
+    # and the retry starts clean. An in-process retry after the same failure
+    # would run against the allocator state that just failed. And ColabFold skips
+    # a query whose output already exists, so re-invoking the same command folds
+    # only what is missing -- the cost is one process start, not seven wasted
+    # folds.
+    # Once, and once only: the block is straight-line, so a query declined again
+    # in the second process is reported rather than retried a third time. A query
+    # two fresh processes both refuse is not being refused by chance.
+    missing = [i for i, path in enumerate(pdb_file_paths) if path is None]
+    if missing:
+        declines = colabfold_declines(structures_dir)
+        for i in missing:
+            why = declines.get(seq_names[i], "no entry in ColabFold's log")
+            logger.warning(f"ColabFold declined {seq_names[i]}: {why}")
+        logger.info(
+            f"Retrying {len(missing)} declined quer(ies) in a fresh ColabFold process; "
+            f"its skip-if-present means the {len(seq_names) - len(missing)} that succeeded are not refolded"
+        )
+        invoke_colabfold()
+        # Re-collect only the missing ones. Re-running the whole collector would
+        # recopy structures and rewrite confidence sidecars for queries that
+        # already succeeded -- wasted work, and a second chance to get their
+        # naming wrong.
+        after = sorted(os.listdir(structures_dir)) if os.path.isdir(structures_dir) else []
+        recovered = 0
+        for i in missing:
+            ranked = ranked_in(after, seq_names[i])
+            if not ranked:
+                continue
+            for filename in ranked:
+                rank = filename.split(COLABFOLD_RANK_MARKER, 1)[1].split("_", 1)[0]
+                pdb_path = os.path.join(structures_dir, filename)
+                kept = pdb_path.replace(".pdb", f"_{suffix}.pdb") if suffix else pdb_path
+                if suffix:
+                    shutil.copy(pdb_path, kept)
+                _record_colabfold_confidence(structures_dir, seq_names[i], kept, rank=rank)
+                if rank == "001":
+                    pdb_file_paths[i] = kept
+                    recovered += 1
+        logger.info(
+            f"Retry recovered {recovered}/{len(missing)} declined quer(ies)"
+            + ("" if recovered == len(missing) else "; the rest are reported as unfolded")
+        )
 
     # Clean up individual FASTA files directory
     if not keep_outputs:

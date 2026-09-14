@@ -1054,3 +1054,59 @@ def test_a_complete_fold_is_never_refolded():
     # Complete and under the bound -- still not a refold, because the bound only
     # applies to entries that are incomplete.
     assert fold_attempts_of(good) == 1
+
+
+# ---------------------------------------------------------------------------
+# ColabFold declines a query and carries on, so the caller only ever saw that no
+# PDB appeared and reported the constant string "Folding failed". The reason was
+# in its log the whole time, and the retry it justifies is cheap out of process:
+# the child exits, the OS reclaims its CUDA context, the retry starts clean.
+# ---------------------------------------------------------------------------
+
+
+def test_the_decline_reason_is_read_from_colabfolds_own_log(tmp_path):
+    from proteinfoundation.metrics.folding_models import colabfold_declines
+
+    (tmp_path / "log.txt").write_text(
+        "2026-09-13 20:50:44,677 Query 1/8: seq_1 (length 41)\n"
+        "2026-09-13 20:51:01,295 Could not predict seq_1. Not Enough GPU memory? "
+        "INTERNAL: couldn't get temp CUBIN file name\n"
+        "2026-09-13 20:51:02,000 Query 2/8: seq_2 (length 44)\n"
+    )
+    got = colabfold_declines(str(tmp_path))
+    assert list(got) == ["seq_1"]
+    assert "CUBIN" in got["seq_1"], "the INTERNAL clause is the real reason, not the memory guess"
+
+
+def test_an_absent_log_is_not_evidence_that_nothing_was_declined(tmp_path):
+    """Returning {} must read as "cannot say", and the caller retries an
+    unexplained absence anyway -- silence is not a reason to give up."""
+    from proteinfoundation.metrics.folding_models import colabfold_declines
+
+    assert colabfold_declines(str(tmp_path)) == {}
+    assert colabfold_declines("/nonexistent/directory") == {}
+
+
+def test_a_decline_with_no_reason_still_names_the_query(tmp_path):
+    from proteinfoundation.metrics.folding_models import colabfold_declines
+
+    (tmp_path / "log.txt").write_text("Could not predict seq_3.\n")
+    got = colabfold_declines(str(tmp_path))
+    assert got == {"seq_3": "no reason given"}
+
+
+def test_the_retry_runs_once_and_reuses_colabfolds_skip_if_present():
+    """Re-invoking the same command is what makes this cheap: ColabFold skips a
+    query whose output exists, so only the declined ones are refolded. And the
+    block is straight-line, so a second decline is reported, not retried again."""
+    import inspect
+
+    from proteinfoundation.metrics import folding_models
+
+    src = inspect.getsource(folding_models.run_colabfold)
+    # Count CALL sites, not occurrences: `def invoke_colabfold() -> None:`
+    # contains the same substring, which is how this assertion first read 3.
+    calls = [ln for ln in src.splitlines() if ln.strip() == "invoke_colabfold()"]
+    assert len(calls) == 2, f"exactly one retry, not a loop; found {len(calls)} call(s)"
+    assert "colabfold_declines" in src, "the reason decides whether a retry is worth anything"
+    assert "_is_retry" not in src, "once-only is structural here, not a flag to thread"
