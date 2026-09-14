@@ -7,7 +7,6 @@ This module contains:
 - Threshold check helpers for binder-specific success criteria
 """
 
-import ast
 import math
 import statistics
 from collections.abc import Mapping
@@ -20,7 +19,10 @@ if TYPE_CHECKING:  # annotations only -- this module stays free of pandas at run
     import pandas as pd
 
 from proteinfoundation.metrics.ensembling import PAE_MAX_BIN
-from proteinfoundation.result_analysis.analysis_utils import evaluate_threshold
+from proteinfoundation.result_analysis.analysis_utils import (
+    evaluate_threshold,
+    literal_eval_with_infinities,
+)
 
 # =============================================================================
 # Metric Name Mapping
@@ -579,7 +581,12 @@ def as_redesign_list(value) -> list:
         if not text:
             return []
         try:
-            parsed = ast.literal_eval(text)
+            # Not ast.literal_eval: a fold that failed is `inf` in this list, and
+            # `inf` is a Name rather than a literal, so the repr of any list
+            # holding one raised here and became []. Downstream that reads as
+            # "no redesigns", not as "could not parse" -- see the docstring on
+            # literal_eval_with_infinities for what that cost.
+            parsed = literal_eval_with_infinities(text)
         except (ValueError, SyntaxError):
             return []
         return list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]

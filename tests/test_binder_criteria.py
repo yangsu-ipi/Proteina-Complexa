@@ -19,7 +19,10 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     per_sequence_pass,
     resolve_success_thresholds,
 )
-from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+from proteinfoundation.result_analysis.analysis_utils import (
+    literal_eval_with_infinities,
+    parse_threshold_spec,
+)
 from proteinfoundation.result_analysis.binder_analysis_utils import (
     DEFAULT_LIGAND_BINDER_THRESHOLDS,
     DEFAULT_PROTEIN_BINDER_THRESHOLDS,
@@ -28,6 +31,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     check_sample_has_passing_redesign,
     count_passing_redesigns,
     expand_model_criteria,
+    as_redesign_list,
     normalize_threshold_dict,
     redesign_pass_vector,
 )
@@ -557,15 +561,11 @@ def test_a_stringified_list_is_judged_as_a_list():
     """The bug this pins: indexing "[0.146]" by redesign position walks
     characters, so one redesign looked like seven and every verdict came out 0.
     A gate that fails every design reads as a strict gate, not as a parse bug."""
-    from proteinfoundation.result_analysis.binder_analysis_utils import redesign_pass_vector
-
     text = {name: str(list(values)) for name, values in metric_values([0.10], [0.95], [1.0]).items()}
     assert redesign_pass_vector(text, PARSED) == [1]
 
 
 def test_text_and_lists_reach_the_same_verdict():
-    from proteinfoundation.result_analysis.binder_analysis_utils import redesign_pass_vector
-
     values = metric_values([0.10, 9.9], [0.95, 0.95], [1.0, 1.0])
     text = {name: str(list(v)) for name, v in values.items()}
     assert redesign_pass_vector(text, PARSED) == redesign_pass_vector(values, PARSED) == [1, 0]
@@ -592,8 +592,6 @@ def test_the_analyze_refresh_survives_a_csv_round_trip(tmp_path):
 
 
 def test_the_odd_shapes_a_column_can_hold():
-    from proteinfoundation.result_analysis.binder_analysis_utils import as_redesign_list
-
     assert as_redesign_list("[0.1, 0.2]") == [0.1, 0.2]
     assert as_redesign_list([0.1]) == [0.1]
     assert as_redesign_list(0.5) == [0.5], "a bare scalar is one redesign"
@@ -606,8 +604,6 @@ def test_the_odd_shapes_a_column_can_hold():
 def test_a_scalar_column_is_not_read_as_its_digits():
     """np.float64 has .tolist(), which returns a float rather than a list."""
     import numpy as np
-
-    from proteinfoundation.result_analysis.binder_analysis_utils import as_redesign_list
 
     assert as_redesign_list(np.float64(0.5)) == [0.5]
     assert as_redesign_list(np.array([0.5, 0.6])) == [0.5, 0.6]
@@ -821,3 +817,55 @@ def test_the_apo_criterion_gates_on_every_model_the_run_used():
     assert len(apo) == 2, f"one criterion per folding model, got {sorted(apo)}"
     metrics = {spec["metric"] for spec in apo.values()}
     assert metrics == {"esmfold2_binder_scRMSD_ca", "colabfold_binder_scRMSD_ca"}
+
+
+# ----------------------------- a failed fold survives the CSV round trip
+
+
+def test_a_list_holding_a_failed_fold_parses():
+    """``inf`` is how a fold that failed is recorded, on purpose: the per-sequence
+    lists stay aligned one entry per sequence rather than going short. But
+    ``repr([float("inf")])`` is ``"[inf]"``, and ``ast.literal_eval`` refuses it --
+    ``inf`` is a Name, and Python has no literal for it.
+
+    So every one of the four parsers that read these columns turned that repr into
+    ``[]``, which downstream is not "could not parse" but "this design has no
+    redesigns". EFNB3's analyze died on it: two declined folds in 657 designs
+    zeroed those designs' verdict vectors, and the guard that checks a row's
+    headline is self-consistent failed the whole stage -- pointing at the
+    headline, not at the parse.
+    """
+    assert literal_eval_with_infinities("[inf, 17.7]") == [math.inf, 17.7]
+    assert literal_eval_with_infinities("[-inf, 2.0]") == [-math.inf, 2.0]
+    assert literal_eval_with_infinities("['sasa_engine', 'freesasa']") == ["sasa_engine", "freesasa"]
+    parsed = literal_eval_with_infinities("[nan, 1.5]")
+    assert math.isnan(parsed[0]) and parsed[1] == 1.5
+
+
+def test_it_widens_what_parses_without_starting_to_evaluate_code():
+    """Names outside the table are left in the tree, so literal_eval still
+    refuses them. This must not become an eval()."""
+    for hostile in ("[os.system]", "__import__('os')", "[open('/etc/passwd')]"):
+        with pytest.raises((ValueError, SyntaxError)):
+            literal_eval_with_infinities(hostile)
+
+
+def test_as_redesign_list_keeps_the_length_when_one_fold_failed():
+    """The regression itself. Two redesigns, one unfoldable: two entries, not
+    zero -- a length of 0 makes min() over the criteria zero and the verdict
+    vector empty."""
+    assert len(as_redesign_list("[inf, 17.7008487701416]")) == 2
+    assert as_redesign_list("[1.0, 2.0]") == [1.0, 2.0]
+    # Genuinely unparseable input still degrades to empty rather than raising.
+    assert as_redesign_list("[1.0, ") == []
+
+
+def test_a_design_with_one_unfoldable_redesign_still_gets_a_verdict_each():
+    """End to end over the function that failed: every criterion is present, one
+    of them holds an inf for the first redesign, and the vector must be as long
+    as the redesign set -- that redesign failing, not the design vanishing."""
+    parsed = {name: parse_threshold_spec(spec) for name, spec in {"i_pAE": 0.35, "scRMSD": 2.0}.items()}
+    values = {"i_pAE": "[0.17, 0.15]", "scRMSD": "[inf, 1.2]"}
+    vector = redesign_pass_vector(values, parsed)
+    assert len(vector) == 2, vector
+    assert vector[0] == 0, "the redesign whose fold failed cannot pass"

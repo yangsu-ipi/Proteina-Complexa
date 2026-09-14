@@ -17,7 +17,6 @@ without its pool manifest and the pooled count is an overcount.
 """
 
 import argparse
-import ast
 import json
 import os
 import sys
@@ -27,6 +26,7 @@ from loguru import logger
 
 from proteinfoundation.metrics.column_names import migrate_frame
 from proteinfoundation.metrics.structure_ss import derive_ss_fractions
+from proteinfoundation.result_analysis.analysis_utils import literal_eval_with_infinities
 from proteinfoundation.result_analysis.binder_analysis import refresh_per_sequence_verdicts
 from proteinfoundation.result_analysis.binder_analysis_utils import (
     get_thresholds_for_result_type,
@@ -41,7 +41,10 @@ def _as_list(value) -> list:
         return value
     if isinstance(value, str) and value.strip().startswith("["):
         try:
-            return list(ast.literal_eval(value))
+            # A failed fold is `inf` in these lists, which ast.literal_eval
+            # refuses -- and returning [] for it makes a design look like it has
+            # no redesigns rather than one that could not be folded.
+            return list(literal_eval_with_infinities(value))
         except (ValueError, SyntaxError):
             return []
     return []

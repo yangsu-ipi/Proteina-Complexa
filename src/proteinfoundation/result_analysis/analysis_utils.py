@@ -8,6 +8,7 @@ aggregate statistics).  Domain-specific utilities live in their own
 """
 
 import ast
+import math
 import os
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -99,6 +100,48 @@ def filter_columns_for_csv(
 # =============================================================================
 # Threshold Parsing and Evaluation
 # =============================================================================
+
+
+class _BareFloatNames(ast.NodeTransformer):
+    """Turn the bare ``inf`` / ``nan`` a Python repr writes into constants.
+
+    ``repr([float("inf")])`` is ``"[inf]"``, and :func:`ast.literal_eval` refuses
+    it: ``inf`` is a Name, not a literal, and Python has no literal that denotes
+    it. Names not in the table below are left alone, so ``literal_eval`` still
+    refuses them -- this widens what parses, it does not start evaluating code.
+    """
+
+    NAMES: dict[str, float] = {
+        "inf": math.inf,
+        "nan": math.nan,
+        "Infinity": math.inf,
+        "NaN": math.nan,
+    }
+
+    def visit_Name(self, node):  # noqa: N802 - the visitor protocol names it
+        if node.id in self.NAMES:
+            return ast.copy_location(ast.Constant(self.NAMES[node.id]), node)
+        return node
+
+
+def literal_eval_with_infinities(text: str):
+    """``ast.literal_eval`` that also accepts ``inf`` and ``nan``.
+
+    Every per-sequence ``*_all`` column reaches analyze as the repr of a Python
+    list, and a fold that failed is ``inf`` in that list -- deliberately, so the
+    lists stay aligned one entry per sequence rather than going short. Plain
+    ``literal_eval`` raises on that repr, and all four callers turned the raise
+    into an empty list.
+
+    An empty list is not a parse failure downstream, it is "this design has no
+    redesigns". So a single declined fold silently zeroed a design's verdict
+    vector, and the guard that checks a row's headline is self-consistent then
+    failed the whole analyze stage -- one design in 657 costing a campaign its
+    analysis, with the log pointing at the headline rather than at the parse.
+
+    Raises what ``literal_eval`` raises, so callers keep their existing handling.
+    """
+    return ast.literal_eval(_BareFloatNames().visit(ast.parse(text, mode="eval")))
 
 
 def parse_threshold_spec(spec: int | float | dict | list | tuple) -> dict:
@@ -363,7 +406,7 @@ def keep_lists_separate(
             continue
 
         try:
-            v = ast.literal_eval(v) if isinstance(v, str) else v
+            v = literal_eval_with_infinities(v) if isinstance(v, str) else v
             if isinstance(v, list):
                 if expected_len is not None and len(v) != expected_len:
                     logger.warning(f"Invalid list length: {len(v)}, expected {expected_len}")
@@ -485,7 +528,7 @@ def coerce_to_list(value: Any, col_name: str = "") -> list:
         return []
     if isinstance(value, str):
         try:
-            value = ast.literal_eval(value)
+            value = literal_eval_with_infinities(value)
         except (ValueError, SyntaxError) as e:
             logger.warning(f"Failed to parse list value for column '{col_name}': {value!r} {e}")
             return []
