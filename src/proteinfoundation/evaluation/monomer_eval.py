@@ -32,13 +32,16 @@ from proteinfoundation.evaluation.binder_eval_utils import (
     get_binder_chain_from_complex,
 )
 from proteinfoundation.evaluation.monomer_eval_utils import (
+    MAX_FOLD_ATTEMPTS,
     MONOMER_CONFIDENCE_SUFFIXES,
     DesignabilityResult,
     FoldingResult,
     _derive_into,
     _fold_seeds,
     average_folds,
+    fold_attempts_of,
     folded_paths_by_model,
+    incomplete_fold_models,
     legacy_fold_fingerprints,
     merge_model_folds,
     monomer_fold_fingerprint,
@@ -641,7 +644,34 @@ def fold_and_measure_seeds(
     Returns ``{seed: entry}``. *stored* is what a cache read already produced;
     seeds found there are passed through untouched.
     """
-    per_seed: dict[int, dict] = {seed: stored[seed] for seed in seeds if stored and seed in stored}
+    # A stored seed is adopted only if it actually MEASURED every sequence. An
+    # entry holding infinities recorded a fold that failed, and the reuse test
+    # downstream asks only whether every RMSD mode is present -- so without this
+    # the failure answers for that sequence on every future run. Bounded by
+    # MAX_FOLD_ATTEMPTS so a sequence the folder genuinely cannot fold stops
+    # costing a fold per resume; see the constant for why the bound is small.
+    per_seed: dict[int, dict] = {}
+    for seed in seeds:
+        if not stored or seed not in stored:
+            continue
+        entry = stored[seed]
+        incomplete = incomplete_fold_models(entry)
+        attempts = fold_attempts_of(entry)
+        if incomplete and attempts < MAX_FOLD_ATTEMPTS:
+            logger.info(
+                f"Cached fold for {name} ({model}, seed {seed}) has no usable measurement for "
+                f"{ {m: len(ix) for m, ix in incomplete.items()} } sequence(s) after {attempts} "
+                f"attempt(s); refolding this seed"
+            )
+            continue
+        if incomplete:
+            logger.warning(
+                f"Cached fold for {name} ({model}, seed {seed}) still has no usable measurement "
+                f"for { {m: len(ix) for m, ix in incomplete.items()} } sequence(s) after "
+                f"{attempts} attempt(s) -- accepting it as final and reporting those as NaN. "
+                f"The folder declined these sequences rather than the run losing them."
+            )
+        per_seed[seed] = entry
     if per_seed and len(per_seed) < len(seeds):
         logger.info(f"{len(per_seed)}/{len(seeds)} {what} cached for {name} ({model}); folding the rest")
 

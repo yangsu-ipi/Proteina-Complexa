@@ -973,3 +973,84 @@ def test_one_builder_decides_what_a_fold_entry_records(tmp_path):
         "sequences", "rmsd_values", "folded_paths",
         "plddt", "confidence", "structures_kept",
     }, "best_rmsd is gone: nothing read it, and _result_from_cache could KeyError on it"
+
+
+# ---------------------------------------------------------------------------
+# A fold that failed is not a measurement. Recording it as inf/NaN and then
+# reusing it made one declined sequence permanent for every later resume -- the
+# same bug write_monomer_fold_cache already guards against for a WHOLLY failed
+# refold, at the scale it did not catch.
+# ---------------------------------------------------------------------------
+
+
+def _entry(rmsds, attempts=None):
+    """One seed's fold with the given per-sequence RMSDs for model 'af2'."""
+    entry = {
+        "sequences": ["AAAA"] * len(rmsds),
+        "rmsd_values": {"ca": {"af2": list(rmsds)}},
+        "folded_paths": {"af2": [None if r == float("inf") else "/x.pdb" for r in rmsds]},
+        "plddt": {"af2": [float("nan") if r == float("inf") else 0.8 for r in rmsds]},
+        "confidence": {},
+        "structures_kept": True,
+    }
+    if attempts is not None:
+        entry["fold_attempts"] = attempts
+    return entry
+
+
+def test_an_infinite_rmsd_marks_the_sequence_unmeasured():
+    from proteinfoundation.evaluation.monomer_eval_utils import incomplete_fold_models
+
+    assert incomplete_fold_models(_entry([1.0, 2.0, 3.0])) == {}
+    assert incomplete_fold_models(_entry([float("inf"), 2.0, 3.0])) == {"af2": [0]}
+    assert incomplete_fold_models(_entry([1.0, float("inf"), float("inf")])) == {"af2": [1, 2]}
+
+
+def test_incompleteness_is_read_from_rmsd_not_paths():
+    """Paths are stored only when keep_folding_outputs holds. Keying on them
+    would make every disk-reclaiming campaign look complete no matter what
+    failed."""
+    from proteinfoundation.evaluation.monomer_eval_utils import incomplete_fold_models
+
+    entry = _entry([float("inf"), 2.0])
+    entry["folded_paths"] = {}
+    entry["structures_kept"] = False
+    assert incomplete_fold_models(entry) == {"af2": [0]}
+
+
+def test_an_entry_without_the_field_counts_as_one_attempt():
+    """Every cache written before this existed was folded exactly once, so it is
+    owed exactly one retry -- not zero, and not an unbounded number."""
+    from proteinfoundation.evaluation.monomer_eval_utils import MAX_FOLD_ATTEMPTS, fold_attempts_of
+
+    assert fold_attempts_of(_entry([1.0])) == 1
+    assert fold_attempts_of(_entry([1.0], attempts=3)) == 3
+    assert fold_attempts_of({"fold_attempts": None}) == 1
+    assert fold_attempts_of({"fold_attempts": "nonsense"}) == 1
+    assert MAX_FOLD_ATTEMPTS >= 2, "a transient deserves at least one more attempt"
+
+
+def test_the_retry_is_bounded():
+    """A sequence the folder genuinely cannot fold must stop costing a fold on
+    every resume, or the campaign never finishes converging."""
+    from proteinfoundation.evaluation.monomer_eval_utils import (
+        MAX_FOLD_ATTEMPTS,
+        fold_attempts_of,
+        incomplete_fold_models,
+    )
+
+    exhausted = _entry([float("inf"), 2.0], attempts=MAX_FOLD_ATTEMPTS)
+    assert incomplete_fold_models(exhausted)
+    assert fold_attempts_of(exhausted) >= MAX_FOLD_ATTEMPTS
+
+
+def test_a_complete_fold_is_never_refolded():
+    """The whole point of the cache. A guard that retried complete entries would
+    refold every design of every resumed campaign."""
+    from proteinfoundation.evaluation.monomer_eval_utils import fold_attempts_of, incomplete_fold_models
+
+    good = _entry([1.0, 2.0], attempts=1)
+    assert incomplete_fold_models(good) == {}
+    # Complete and under the bound -- still not a refold, because the bound only
+    # applies to entries that are incomplete.
+    assert fold_attempts_of(good) == 1

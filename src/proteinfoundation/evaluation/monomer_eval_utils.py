@@ -218,6 +218,57 @@ def monomer_fold_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# How many times a design's sequences may be folded across runs before a fold
+# that keeps failing is accepted as final.
+#
+# The all-or-nothing guard below already refuses to cache a WHOLLY failed refold,
+# for the stated reason that it "would make one bad run permanent for every later
+# resume". A partly failed one is the same bug at a smaller scale and was not
+# caught: eight sequences, one of which ColabFold declined, cached the failure as
+# inf/NaN beside seven real measurements. The reuse test asks only whether every
+# RMSD MODE is present, so the entry answers for all eight forever.
+#
+# 2, not unbounded: a transient -- a temp-file collision, a momentary OOM --
+# deserves one more attempt, while a sequence the folder genuinely cannot fold
+# should stop costing a fold on every resume. Entries written before this field
+# existed read as 1, which is true of them, so each gets exactly one retry.
+MAX_FOLD_ATTEMPTS = 2
+
+
+def incomplete_fold_models(entry: dict) -> dict[str, list[int]]:
+    """Sequence indices whose fold produced no usable measurement, by model.
+
+    Read from ``rmsd_values`` rather than ``folded_paths``: paths are stored only
+    when keep_folding_outputs holds, so a campaign reclaiming disk would look
+    complete no matter what failed. An RMSD of infinity is written exactly where a
+    fold failed or its measurement did, and it is stored either way.
+    """
+    out: dict[str, list[int]] = {}
+    for by_model in (entry.get("rmsd_values") or {}).values():
+        if not isinstance(by_model, dict):
+            continue
+        for model, values in by_model.items():
+            if not isinstance(values, list):
+                continue
+            bad = [
+                i
+                for i, v in enumerate(values)
+                if not isinstance(v, (int, float)) or not math.isfinite(v)
+            ]
+            if bad:
+                out.setdefault(model, [])
+                out[model] = sorted(set(out[model]) | set(bad))
+    return out
+
+
+def fold_attempts_of(entry: dict) -> int:
+    """How many times this fold has been attempted. Absent means once."""
+    try:
+        return max(1, int(entry.get("fold_attempts") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 MONOMER_CACHE_SCHEMA = 3  # 1 held a single fold; 2 one per seed; 3 keys folded_paths by model
 
 
@@ -1004,6 +1055,13 @@ def write_monomer_fold_cache(
             seed = deterministic_seed(name or os.path.basename(output_dir), suffix, *result.sequences)
         entry["seed_index"] = seed_index
         entry["seed_derivation"] = SEED_DERIVATION_VERSION
+        # Carried forward, not reset: the count says how many times this seed has
+        # been folded across every run, which is what bounds the retry. Resetting
+        # it per run would make MAX_FOLD_ATTEMPTS mean "per run" and retry a
+        # permanently unfoldable sequence forever.
+        entry["fold_attempts"] = fold_attempts_of(folds.get(str(seed)) or {}) + (
+            1 if str(seed) in folds else 0
+        )
         folds[str(seed)] = entry
         blob = json.dumps(
             {
