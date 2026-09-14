@@ -1,0 +1,169 @@
+"""Which work each evaluate pass does, and what it is allowed to write.
+
+Separated from ``evaluate`` for the reason ``binder_eval_cache`` is: the rules
+here decide whether a campaign's results CSV is the run's output or a fraction
+of it, and a rule that can only be checked by reading it is a rule that drifts.
+``evaluate`` imports torch, JAX and the folding stack at module scope, so a test
+that exercised these functions there would need a GPU box to answer a question
+about a dict and a DataFrame.
+
+The campaign runner (``evaluate_split`` in ``run_campaign.sh``) runs evaluate six
+times per shard so that no pass has two models on its card at once:
+
+    1-4   fold     one folder each -- af2 monomer, esmfold2 monomer,
+                   af2 complex, esmfold2 complex
+    5     esm      ESMC-6B, whose per-design results are cached like a fold's
+    6     final    reads every cache, derives the structure metrics, writes
+
+Splitting by folder needs no new cache and no new fingerprint. Folds were
+already stored per backend, and no fold fingerprint carries the folder LIST.
+
+WHY THE DERIVED METRICS ARE NOT IN A FOLD PASS, and why ESM is on its own:
+
+* The pre-refolding metrics measure the GENERATED structure -- ``{sample}.pdb``,
+  straight out of generation. No folder influences them and the answer is
+  identical in every pass, so they belong in exactly one.
+
+* The refolded-structure metrics are folder-scoped, but their results go into
+  the DataFrame and nowhere else: ``compute_interface_metrics_on_refolded_structures``
+  has no cache. A fold pass computing them would throw the answer away and the
+  final pass would compute it again from every structure. So they belong in the
+  final pass too.
+
+* Both of those can run TMOL, and ``TmolRewardModel`` defaults to
+  ``torch.device("cuda")`` -- it is a force field on the GPU, not a CPU metric.
+  Since it cannot be given its own pass (no cache to put its answer in), the
+  next best thing is to make sure it is ALONE in the pass it does run in. That
+  is what pass 5 is for: ESM is cached per design, so lifting it out leaves the
+  final pass with TMOL as its only tenant.
+
+The consequence for a campaign with tmol enabled: the fold passes write the
+consensus cache with ``include_tmol=False``, and the final pass reads it under a
+different derivation fingerprint and re-derives from the kept structures. That
+is a re-read, never a refold, and it happens in the pass that wants the numbers.
+Campaigns with tmol off -- which is all the binder campaigns -- see no
+fingerprint movement at all, and the final pass skips the derivation entirely.
+"""
+
+from __future__ import annotations
+
+import os
+
+from loguru import logger
+
+from proteinfoundation.result_analysis.analysis_utils import filter_columns_for_csv
+
+PASS_FOLD = "fold"
+PASS_ESM = "esm"
+PASS_FINAL = "final"
+PASS_KINDS: tuple[str, ...] = (PASS_FOLD, PASS_ESM, PASS_FINAL)
+
+EVALUATE_PASS_KEY = "evaluate_pass"
+
+# Metric flags each pass forces off. Only these three are ever touched: every
+# other flag decides what gets FOLDED, which is the pass plan's business and not
+# this table's.
+#
+# The tmol sub-flags need no entry of their own. derive_consensus_tmol is
+# `compute_refolded_structure_metrics and refolded.tmol`, and the other TMOL site
+# is inside the pre-refolding metrics -- so suppressing those two keys suppresses
+# every route to the force field.
+SUPPRESSED_BY_PASS: dict[str, tuple[str, ...]] = {
+    PASS_FOLD: (
+        "compute_esm_metrics",
+        "compute_pre_refolding_metrics",
+        "compute_refolded_structure_metrics",
+    ),
+    PASS_ESM: (
+        "compute_pre_refolding_metrics",
+        "compute_refolded_structure_metrics",
+    ),
+    PASS_FINAL: (),
+}
+
+
+class UnknownEvaluatePass(ValueError):
+    """A pass name nothing knows how to run."""
+
+
+def resolve_pass(cfg_metric) -> str:
+    """Which pass this process is, from ``metric.evaluate_pass``.
+
+    Refuses an unknown name rather than falling back to ``final``. A typo that
+    silently became the writing pass would put a one-folder CSV in the output
+    directory under the name the finished run uses.
+    """
+    kind = str((cfg_metric or {}).get(EVALUATE_PASS_KEY, PASS_FINAL) or PASS_FINAL)
+    if kind not in PASS_KINDS:
+        raise UnknownEvaluatePass(
+            f"metric.{EVALUATE_PASS_KEY}={kind!r} is not one of {list(PASS_KINDS)}. "
+            f"'{PASS_FOLD}' folds one backend, '{PASS_ESM}' runs ESM alone, "
+            f"'{PASS_FINAL}' derives and writes."
+        )
+    return kind
+
+
+def apply_pass(cfg_metric, kind: str) -> list[str]:
+    """Turn off what this pass has no use for, and report what changed.
+
+    Mutates *cfg_metric* rather than returning a copy: everything downstream
+    reads ``cfg.metric`` through its own reference, and a second config object
+    would mean two answers to "is ESM on?" inside one process.
+
+    Only keys already present and truthy are touched, which keeps this safe
+    under OmegaConf's struct mode and makes the returned list a record of what
+    actually changed rather than of what was asked for.
+    """
+    turned_off = []
+    for key in SUPPRESSED_BY_PASS[kind]:
+        if cfg_metric.get(key, False):
+            cfg_metric[key] = False
+            turned_off.append(key)
+    return turned_off
+
+
+def writes_run_level_output(kind: str, what: str) -> bool:
+    """Whether this pass may write *what* into the run's output directory.
+
+    A run-level artifact is written once per evaluate PROCESS rather than once
+    per design: the results CSVs, the success-criteria JSON, the timing row.
+    With one fused evaluate that distinction did not exist, because there was one
+    process and it knew about every folder. With six, five of them know about a
+    subset -- so each of those would overwrite the run's record with a fraction
+    of it, and the last writer would win.
+
+    Design-level artifacts are deliberately NOT gated here. Fold caches, PAE
+    matrices, kept structures, the ESM cache and ``sequence_type_stats.json`` are
+    written per design under the folder that produced them, and a pass folding
+    af2 writes exactly what a fused run's af2 half wrote.
+    """
+    if kind != PASS_FINAL:
+        logger.info(f"{kind} pass: not writing {what}; that is the final pass's to write")
+        return False
+    return True
+
+
+def save_results_csv(df, output_dir: str, track: str, config_name: str, job_id, *, evaluate_pass: str):
+    """Write one evaluation's rows, unless this pass is not the one that writes.
+
+    A non-final pass leaves no CSV at all rather than a partial one. It runs with
+    a subset of ``metric.folding_models`` and with the derived metrics off, so
+    its rows carry a subset of the columns -- and nothing that reads this
+    directory afterwards (``analyze``, ``verify_run_outputs``, ``analyze_pooled``)
+    can tell a one-folder CSV from a finished one.
+
+    The rows are still built, because building them is what proves the caches are
+    readable -- a pass that folded and never read its own cache back would defer
+    every fingerprint mismatch to the final pass, which is the expensive place to
+    find one.
+
+    Returns the filtered frame either way, so the caller's sample count and
+    summary do not have to know which pass this was.
+    """
+    filtered = filter_columns_for_csv(df)
+    if not writes_run_level_output(evaluate_pass, f"the {track} CSV ({len(filtered)} row(s) built and discarded)"):
+        return filtered
+    csv_path = os.path.join(output_dir, f"{track}_results_{config_name}_{job_id}.csv")
+    filtered.to_csv(csv_path, index=False)
+    logger.info(f"{track.replace('_', ' ').capitalize()} results saved to {csv_path}")
+    return filtered

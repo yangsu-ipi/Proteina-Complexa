@@ -290,18 +290,16 @@ print(models[0] if models else "")
   fi
 
   # 1. AF2 monomer -- colabfold, out of process, sole tenant on the card.
-  #    The parent holds no model at all here: ESM is off (fold_only turns it
-  #    off), ESMFold2 is not in the folder list, and ColabDesign is reached only
-  #    by the complex track. MPNN still shells out between folds, but it exits
-  #    between them -- which is the whole reason release_gpu_for_subprocess
-  #    existed, and stops mattering here.
+  #    The parent holds no model at all: ESM is off, ESMFold2 is not in the
+  #    folder list, and ColabDesign is reached only by the complex track. MPNN
+  #    still shells out between folds, but it exits between them.
   all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.fold_only=true" "++metric.folding_models=[af2]" \
+    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2]" \
     "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
 
   # 2. ESMFold2 monomer -- in process, PyTorch only.
   all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.fold_only=true" "++metric.folding_models=[esmfold2]" \
+    "++metric.evaluate_pass=fold" "++metric.folding_models=[esmfold2]" \
     "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
 
   # 3. AF2 complex -- ColabDesign, in process, JAX only.
@@ -312,18 +310,30 @@ print(models[0] if models else "")
   #    no designability counterpart, so its apo folds happen here and this pass
   #    is JAX plus a colabfold child rather than JAX alone.
   all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.fold_only=true" "++metric.folding_models=[af2]" \
+    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2]" \
     "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
 
   # 4. ESMFold2 complex -- in process, PyTorch only. The AF2 complexes come from
   #    the cache pass 3 wrote, which is why af2 is still first in this list.
   all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.fold_only=true" "++metric.folding_models=[af2,esmfold2]" \
+    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2,esmfold2]" \
     "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
 
-  # 5. Everything folded. This pass runs ESM once, reads every cache, and is the
-  #    only one that writes a CSV -- see save_results_csv in evaluate.py for why
-  #    the passes above must not.
+  # 5. ESM -- ESMC-6B alone. Lifted out of the final pass because its per-design
+  #    results are cached like a fold's, and because the final pass may run TMOL,
+  #    which is a force field on the GPU (TmolRewardModel defaults to cuda) and
+  #    cannot be given a pass of its own: its answers go into the DataFrame and
+  #    there is no cache to put them in. Splitting ESM out is what leaves TMOL
+  #    alone on the card in pass 6.
+  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
+    "++metric.evaluate_pass=esm" \
+    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
+
+  # 6. Everything cached. Derives the structure metrics -- the pre-refolding ones
+  #    on the GENERATED structures, which no folder influences and which
+  #    therefore belong in exactly one pass, and the refolded ones over every
+  #    backend at once -- and writes the CSVs. See evaluate_passes.py for why
+  #    neither belongs in a fold pass.
   all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT"
 }
 

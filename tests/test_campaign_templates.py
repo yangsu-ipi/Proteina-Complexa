@@ -1879,13 +1879,25 @@ def evaluate_split_passes():
     ]
 
 
-def test_the_evaluate_stage_gives_each_folder_the_card_alone():
+def test_the_evaluate_stage_gives_each_model_the_card_alone():
     """The fused pass held torch and JAX at once and everything else on the card
-    had to fit around it. One folder per process removes the partition rather
-    than tuning it."""
+    had to fit around it. One model per process removes the partition rather
+    than tuning it: four folders, then ESMC-6B, then the pass that derives and
+    writes -- where TMOL, if the campaign wants it, is the only tenant."""
     passes = evaluate_split_passes()
-    assert len(passes) == 5, "expected 4 folding passes and one assembling pass, got:\n" + "\n".join(passes)
-    assert all("metric.fold_only=true" in p for p in passes[:-1]), passes
+    assert len(passes) == 6, "expected 4 fold passes, an ESM pass and a final pass, got:\n" + "\n".join(passes)
+    assert sum("metric.evaluate_pass=fold" in p for p in passes) == 4, passes
+    assert sum("metric.evaluate_pass=esm" in p for p in passes) == 1, passes
+
+
+def test_the_esm_pass_runs_before_the_one_that_derives():
+    """ESM is lifted out so the final pass has TMOL to itself --
+    TmolRewardModel defaults to torch.device("cuda"), and it cannot have a pass
+    of its own because its answers go into the DataFrame with no cache behind
+    them. Lifting it out only helps if it runs first."""
+    passes = evaluate_split_passes()
+    esm = next(i for i, p in enumerate(passes) if "metric.evaluate_pass=esm" in p)
+    assert esm == len(passes) - 2, f"the ESM pass is at {esm} of {len(passes)}; it must be second to last"
 
 
 def test_only_the_last_pass_writes():
@@ -1893,7 +1905,7 @@ def test_only_the_last_pass_writes():
     of the columns. Two of those CSVs in a directory and analyze builds verdicts
     from whichever folder finished last."""
     passes = evaluate_split_passes()
-    assert "fold_only" not in passes[-1], passes[-1]
+    assert "evaluate_pass" not in passes[-1], passes[-1]
     assert passes[-1].split() == ["all_shards", "proteinfoundation.evaluate", '"$XLA_SOLE_TENANT"'], (
         "the final pass takes the campaign's own config unmodified, or it is not "
         f"the run the CSV claims to be: {passes[-1]}"
@@ -1907,10 +1919,17 @@ def test_every_complex_pass_keeps_af2_first():
     ~42 GPU-hours of them on CBLN1."""
     complex_passes = [p for p in evaluate_split_passes() if "metric.compute_binder_metrics=true" in p]
     assert complex_passes, "no pass folds complexes"
+    pinned = 0
     for p in complex_passes:
         models = re.search(r"metric\.folding_models=\[([^\]]*)\]", p)
-        assert models, f"complex pass with no explicit folder list: {p}"
+        if models is None:
+            # The ESM pass takes the campaign's own list, which the af2-first
+            # guard at the top of evaluate_split has already checked.
+            assert "metric.evaluate_pass=esm" in p, f"complex pass with no explicit folder list: {p}"
+            continue
         assert models.group(1).split(",")[0].strip() == "af2", p
+        pinned += 1
+    assert pinned == 2, f"expected both explicit complex passes to pin af2 first, saw {pinned}"
 
 
 def test_the_monomer_passes_name_one_folder_each():

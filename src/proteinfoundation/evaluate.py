@@ -67,7 +67,13 @@ from proteinfoundation.evaluation.binder_eval import (  # Availability flags for
     compute_interface_metrics_on_refolded_structures,
 )
 from proteinfoundation.evaluation.binder_eval_utils import get_target_info
-from proteinfoundation.evaluation.fold_only import apply_fold_only, save_results_csv, writes_run_level_output
+from proteinfoundation.evaluation.evaluate_passes import (
+    PASS_FINAL,
+    apply_pass,
+    resolve_pass,
+    save_results_csv,
+    writes_run_level_output,
+)
 from proteinfoundation.evaluation.monomer_eval import compute_monomer_metrics
 from proteinfoundation.evaluation.motif_binder_eval import compute_motif_binder_metrics
 from proteinfoundation.evaluation.motif_binder_eval_utils import get_motif_binder_target_info
@@ -507,7 +513,7 @@ def run_binder_evaluation(
     output_dir: str,
     job_id: int,
     input_mode: str,
-    fold_only: bool = False,
+    evaluate_pass: str = PASS_FINAL,
 ) -> pd.DataFrame:
     """
     Run binder evaluation (refolding, interface metrics, etc.)
@@ -518,7 +524,7 @@ def run_binder_evaluation(
         output_dir: Output directory
         job_id: Job ID
         input_mode: "pdb_dir" or "generated"
-        fold_only: This pass folds one backend and writes no run-level artifact.
+        evaluate_pass: Which pass this is; only "final" writes run-level artifacts.
 
     Returns:
         DataFrame with binder metrics
@@ -547,7 +553,7 @@ def run_binder_evaluation(
     # against. A crashed split evaluate would otherwise leave a one-folder
     # criteria file next to the PREVIOUS run's complete CSV, which is exactly
     # the silent contradiction the paragraph above describes.
-    if writes_run_level_output(fold_only, "the success-criteria JSON"):
+    if writes_run_level_output(evaluate_pass, "the success-criteria JSON"):
         save_combined_success_criteria_json(
             success_thresholds=df.attrs.get("success_thresholds", {}),
             path_store_results=output_dir,
@@ -736,15 +742,14 @@ def main(cfg: DictConfig) -> None:
 
     # Determine which evaluations to run based on metric flags
     cfg_metric = cfg.get("metric", {})
-    # A fold-only pass warms the caches and writes nothing. The campaign runner
-    # uses it to give each folder the whole card in turn -- see the evaluate
-    # stage in run_campaign.sh -- so this is read before anything else decides
-    # what to load.
-    fold_only = bool(cfg_metric.get("fold_only", False))
-    if fold_only:
-        disabled = apply_fold_only(cfg_metric)
+    # Which pass this process is. The campaign runner runs evaluate six times per
+    # shard so no pass has two models on its card at once -- see evaluate_split in
+    # run_campaign.sh -- so this is read before anything else decides what to load.
+    evaluate_pass = resolve_pass(cfg_metric)
+    if evaluate_pass != PASS_FINAL:
+        disabled = apply_pass(cfg_metric, evaluate_pass)
         logger.info(
-            "Fold-only pass: refolding and caching only, no CSV will be written"
+            f"Evaluate pass '{evaluate_pass}': caching only, no CSV will be written"
             + (f" (turned off: {', '.join(disabled)})" if disabled else "")
         )
     run_monomer, run_binder, run_motif, run_motif_binder = get_enabled_evaluations(cfg_metric)
@@ -766,8 +771,8 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"  Binder eval:   {run_binder}")
     logger.info(f"  Motif eval:    {run_motif}")
     logger.info(f"  Motif binder:  {run_motif_binder}")
-    if fold_only:
-        logger.info(f"  Fold only:     True  (folders={list(cfg_metric.get('folding_models', [])) or 'legacy keys'})")
+    if evaluate_pass != PASS_FINAL:
+        logger.info(f"  Pass:          {evaluate_pass}  (folders={list(cfg_metric.get('folding_models', [])) or 'legacy keys'})")
     logger.info("=" * 70)
     logger.info("")
 
@@ -907,7 +912,7 @@ def main(cfg: DictConfig) -> None:
         )
 
         all_results["monomer"] = save_results_csv(
-            monomer_df, output_dir, "monomer", config_name, job_id, fold_only=fold_only
+            monomer_df, output_dir, "monomer", config_name, job_id, evaluate_pass=evaluate_pass
         )
 
     # Binder evaluation
@@ -928,11 +933,11 @@ def main(cfg: DictConfig) -> None:
             output_dir=output_dir,
             job_id=job_id,
             input_mode=input_mode,
-            fold_only=fold_only,
+            evaluate_pass=evaluate_pass,
         )
 
         all_results["binder"] = save_results_csv(
-            binder_df, output_dir, "binder", config_name, job_id, fold_only=fold_only
+            binder_df, output_dir, "binder", config_name, job_id, evaluate_pass=evaluate_pass
         )
 
     # Motif evaluation
@@ -951,7 +956,7 @@ def main(cfg: DictConfig) -> None:
         )
 
         all_results["motif"] = save_results_csv(
-            motif_df, output_dir, "motif", config_name, job_id, fold_only=fold_only
+            motif_df, output_dir, "motif", config_name, job_id, evaluate_pass=evaluate_pass
         )
 
     # Motif binder evaluation
@@ -970,7 +975,7 @@ def main(cfg: DictConfig) -> None:
         )
 
         all_results["motif_binder"] = save_results_csv(
-            motif_binder_df, output_dir, "motif_binder", config_name, job_id, fold_only=fold_only
+            motif_binder_df, output_dir, "motif_binder", config_name, job_id, evaluate_pass=evaluate_pass
         )
 
     # ==========================================================================
@@ -990,7 +995,7 @@ def main(cfg: DictConfig) -> None:
     # each folding one backend, so any single one's wall clock is a fraction of
     # the evaluation's -- and the last to finish would be the one on record.
     timing_csv_path = os.path.join(sample_storage_path, f"timing_{job_id}.csv")
-    if writes_run_level_output(fold_only, "the legacy timing row"):
+    if writes_run_level_output(evaluate_pass, "the legacy timing row"):
         if os.path.exists(timing_csv_path):
             read_and_update_timing_csv(timing_csv_path, job_id, evaluation_time, nsamples)
         else:
@@ -1015,7 +1020,7 @@ def main(cfg: DictConfig) -> None:
     # write it in turn and the last one wins, which would record the assembling
     # pass's minutes as the evaluation's hours.
     output_timing_path = os.path.join(output_dir, f"timing_{job_id}.csv")
-    if writes_run_level_output(fold_only, "the timing row"):
+    if writes_run_level_output(evaluate_pass, "the timing row"):
         with open(output_timing_path, "w") as f:
             f.write("job_id,evaluation_time_s,nsamples,evals_run\n")
             f.write(f"{job_id},{evaluation_time:.2f},{nsamples},{'+'.join(evals_run)}\n")

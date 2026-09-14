@@ -101,26 +101,47 @@ Generation and evaluation run one process per shard, each pinned to its own GPU.
 analyze are single-process and operate on the whole campaign. `run_campaign.sh` runs the one
 stage it is given; `submit_campaign.sh` is what chains them.
 
-### Evaluate runs one folder per process
+### Evaluate runs one model per process
 
-`evaluate` is five passes per shard, not one. Four fold -- AF2 monomer, ESMFold2
-monomer, AF2 complex, ESMFold2 complex -- and the fifth reads every cache they
-wrote, runs ESM once, and writes the CSVs. The folding passes carry
-`metric.fold_only=true` and deliberately write no CSV: each runs a subset of the
-folders, so each would produce a subset of the columns, and nothing downstream
-could tell that from a finished run.
+`evaluate` is six passes per shard, not one:
 
-This needs no extra cache. Folds were already stored per backend, and no fold
-fingerprint carries the folder *list*, so a pass configured `[af2]` writes
+| # | pass | GPU tenant |
+|---|---|---|
+| 1 | AF2 monomer | colabfold child |
+| 2 | ESMFold2 monomer | ESMFold2 (torch) |
+| 3 | AF2 complex | ColabDesign (JAX) |
+| 4 | ESMFold2 complex | ESMFold2 (torch) |
+| 5 | ESM | ESMC-6B |
+| 6 | derive + write | TMOL, if the campaign enables it |
+
+Passes 1-5 carry `metric.evaluate_pass` and write **no** CSV: each runs a subset
+of the work, so each would produce a subset of the columns, and nothing
+downstream could tell that from a finished run.
+
+Splitting needs no extra cache. Folds were already stored per backend, and no
+fold fingerprint carries the folder *list*, so a pass configured `[af2]` writes
 exactly what a pass configured `[af2, esmfold2]` reads.
 
-The point is that each pass has one GPU tenant. The single fused pass it replaced
-held PyTorch and JAX at once -- 71.7 GB of an 81.9 GB card, measured on EFNB3 --
-and everything else had to fit in the remainder, which is what
+**Why the derived metrics are only in pass 6.** The pre-refolding metrics measure
+the *generated* structure — no folder influences them, so the answer is identical
+in every pass. The refolded-structure metrics are folder-scoped but have no cache
+at all: their results go into the DataFrame and nowhere else, so a fold pass
+computing them throws the answer away and pass 6 computes it again over every
+backend. Neither belongs anywhere but the pass that writes.
+
+**Why ESM is on its own.** Both derived families can run TMOL, and
+`TmolRewardModel` defaults to `torch.device("cuda")` — it is a force field on the
+GPU, not a CPU metric. It cannot have a pass of its own, because there is no
+cache to put its answers in. Lifting ESM out is what leaves TMOL alone on the
+card in pass 6.
+
+The point is one GPU tenant per pass. The single fused pass this replaced held
+PyTorch and JAX at once — 71.7 GB of an 81.9 GB card, measured on EFNB3 — and
+everything else had to fit in the remainder, which is what
 `XLA_MEM_FRACTION_EVALUATE` used to partition. There is nothing left to
 partition, so that knob is gone from `campaign.env`. `XLA_MEM_FRACTION_GENERATE`
-stays, because generation genuinely is co-resident: its AF2 reward scores
-lookahead samples inside the sampling loop, beside the diffusion model.
+stays: generation genuinely is co-resident, since its AF2 reward scores lookahead
+samples inside the sampling loop, beside the diffusion model.
 
 `EVALUATE_PASSES=fused` restores the old single-process shape, for a campaign
 whose caches were written by it and for bisecting a folding failure against it.
