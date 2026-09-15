@@ -1188,6 +1188,47 @@ def compute_monomer_metrics(
 
         n = len(seq)
 
+        # The redesign pass: run the inverse folder, cache the set, fold nothing.
+        #
+        # It exists so the redesign sets are owned by a pass of their own rather
+        # than by whichever folder happens to run first. They used to be
+        # generated inside the af2-monomer pass, which meant a campaign that did
+        # not configure af2 had no defined owner for them, and adding a folder
+        # moved it.
+        #
+        # One draw is not covered here: the mpnn_fixed variant is generated
+        # from interface positions where a design's sequences are assembled,
+        # so a campaign using that sequence type still makes it in a complex
+        # pass. Stated rather than silently half-done -- the binder campaigns
+        # use [self, mpnn].
+        if str(cfg_metric.get("evaluate_pass", "final")) == "redesign":
+            # Above the row, not below it. Returning here after appending to
+            # `results` left the frame with one row per design and every
+            # metric list empty, so the assignment below it raised
+            # "Length of values (0) does not match length of index" -- on the
+            # first real campaign the pass ever ran on, because a redesign
+            # pass emits no rows and nothing until then had built one.
+            #
+            # Emitting nothing is correct, not a workaround: this pass writes
+            # no run-level output, and the rows a fold pass builds exist to
+            # prove its caches read back. There is no fold here to read.
+            os.makedirs(os.path.splitext(eval_pdb_path)[0], exist_ok=True)
+            try:
+                get_sequences_for_evaluation(
+                    pdb_path=eval_pdb_path,
+                    use_pdb_seq=False,
+                    num_seq_per_target=redesign_set_size(cfg_metric),
+                    tmp_path=os.path.splitext(eval_pdb_path)[0],
+                    binder_chain=binder_chain,
+                    mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
+                    target_chains=target_chains,
+                    inverse_folding_model=inverse_folding_model,
+                    redesign_cache_dir=os.path.dirname(eval_pdb_path),
+                )
+            except Exception as e:
+                logger.error(f"Redesign generation failed for {pdb_path}: {e}")
+            continue
+
         row_dict = {
             **flat_dict,
             "id_gen": i,
@@ -1213,34 +1254,6 @@ def compute_monomer_metrics(
         os.makedirs(tmp_dir, exist_ok=True)
         des_result = None
 
-        # The redesign pass: run the inverse folder, cache the set, fold nothing.
-        #
-        # It exists so the redesign sets are owned by a pass of their own rather
-        # than by whichever folder happens to run first. They used to be
-        # generated inside the af2-monomer pass, which meant a campaign that did
-        # not configure af2 had no defined owner for them, and adding a folder
-        # moved it.
-        #
-        # One draw is not covered here: the mpnn_fixed variant is generated
-        # inside run_binder_eval from interface positions, so a campaign using
-        # that sequence type still makes it in a complex pass. Stated rather
-        # than silently half-done -- the binder campaigns use [self, mpnn].
-        if str(cfg_metric.get("evaluate_pass", "final")) == "redesign":
-            try:
-                get_sequences_for_evaluation(
-                    pdb_path=eval_pdb_path,
-                    use_pdb_seq=False,
-                    num_seq_per_target=redesign_set_size(cfg_metric),
-                    tmp_path=tmp_dir,
-                    binder_chain=binder_chain,
-                    mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
-                    target_chains=target_chains,
-                    inverse_folding_model=inverse_folding_model,
-                    redesign_cache_dir=os.path.dirname(eval_pdb_path),
-                )
-            except Exception as e:
-                logger.error(f"Redesign generation failed for {pdb_path}: {e}")
-            continue
 
         try:
             # Designability evaluation (ProteinMPNN + folding)

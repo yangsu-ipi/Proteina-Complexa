@@ -196,3 +196,32 @@ def test_every_run_level_write_in_evaluate_is_gated():
         + ", ".join(unguarded)
         + " -- wrap each in `if writes_run_level_output(evaluate_pass, ...)`"
     )
+
+
+def test_the_redesign_pass_emits_no_rows():
+    """It short-circuits BEFORE the row is built, not after.
+
+    After was the bug, and it survived every test here because no test and no
+    campaign had ever run this pass end to end: EFNB3 finished on the fused path.
+    Appending a row and then skipping the loop left the frame with one row per
+    design and every metric list empty, so `df[metric] = metrics[metric]` raised
+    "Length of values (0) does not match length of index (2)" -- the first time
+    the pass ran on a real campaign, in its first minute.
+
+    Emitting nothing is correct rather than a workaround: this pass writes no
+    run-level output, and the rows a fold pass builds exist to prove its caches
+    read back. There is no fold here to read.
+    """
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src/proteinfoundation/evaluation/monomer_eval.py"
+    ).read_text()
+    loop = source[source.index("def compute_monomer_metrics(") :]
+    short_circuit = loop.index('if str(cfg_metric.get("evaluate_pass", "final")) == "redesign":')
+    row_append = loop.index("results.append(row_dict)")
+    assert short_circuit < row_append, (
+        "the redesign pass must skip the design before a row is appended for it, "
+        "or the frame carries rows whose metric columns were never filled"
+    )
