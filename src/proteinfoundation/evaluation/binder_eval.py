@@ -21,6 +21,7 @@ from omegaconf import DictConfig
 from openfold.np.residue_constants import restypes as OF_RESTYPES
 
 from proteinfoundation.evaluation.binder_eval_cache import (
+    adopt_binder_eval_folds,
     binder_eval_fingerprint,
     digest_file,
     read_binder_eval_cache,
@@ -767,6 +768,8 @@ def compute_binder_metrics(
 
     n_reused = 0
     failed_designs: list[tuple[str, str]] = []
+    # (sequence, draw) entries carried over from a pre-unification campaign.
+    n_adopted = 0
 
     # Every complex folder the resolver named, with nothing removed.
     #
@@ -927,6 +930,37 @@ def compute_binder_metrics(
                     cached = None
             if cached is not None:
                 n_reused += 1
+                # A campaign that ran before the unification has its complex
+                # folds in this file and nowhere else. Adopt them into the cache
+                # score_binders reads, per model, from the structures already on
+                # disk -- otherwise every finished campaign refolds: on EFNB3
+                # that is 657 designs x 3 sequences x 5 models, about 42
+                # GPU-hours, to reproduce predictions that are sitting there.
+                #
+                # Keyed to complex_backend because that is what wrote the file --
+                # provenance, not privilege. read_binder_eval_cache only served
+                # it at all because its fingerprint, which carries the folding
+                # model, matched this run's.
+                #
+                # A no-op once the advisory cache exists, so this costs one
+                # file-exists check per design on every later run.
+                if consensus_target_seqs and any(
+                    (sequence_type_stats.get(t) or {}).get("complex_stats") for t in sequence_types
+                ):
+                    adopted = adopt_binder_eval_folds(
+                        sample_root_path,
+                        complex_backend,
+                        consensus_target_seqs,
+                        consensus_cfg,
+                        sequence_type_stats,
+                        {
+                            t: sequences_for_type(t, sequences_dict, sequence_type_stats)
+                            for t in sequence_types
+                        },
+                        derive_tmol=derive_consensus_tmol,
+                    )
+                    if adopted:
+                        n_adopted += adopted
             else:
                 try:
                     assembled = assemble_binder_sequences(
@@ -1361,6 +1395,11 @@ def compute_binder_metrics(
 
     if reuse_cached_folding:
         logger.info(f"Binder evaluation reused cached refolding for {n_reused}/{len(results)} designs")
+    if n_adopted:
+        logger.info(
+            f"Adopted {n_adopted} (sequence, draw) complex folds from this campaign's pre-unification "
+            f"cache into the per-folder cache, per model, without refolding any of them"
+        )
     if failed_designs:
         # Loud and enumerated. A design skipped quietly is a row missing from the
         # frame with nothing saying why, and the counts downstream would simply

@@ -343,3 +343,18 @@ def test_the_seed_rule_has_exactly_one_definition():
         "score_binders derives its own draw keys again; the bridge would key differently"
     )
     assert "draw_ids_for" in body
+
+
+def test_the_bridge_is_actually_called_by_the_pipeline():
+    """A migration nothing invokes is a migration that did not happen.
+
+    This one was written, tested, and left unwired: every finished campaign would
+    have refolded its AF2 complexes the first time the unified path ran -- 657
+    designs x 3 sequences x 5 models on EFNB3, about 42 GPU-hours, to reproduce
+    predictions already on disk. The tests all passed, because they called it
+    themselves.
+    """
+    source = (SRC / "proteinfoundation/evaluation/binder_eval.py").read_text()
+    assert "adopt_binder_eval_folds(" in source, "the bridge must be reached from the per-design loop"
+    # Before the folds it exists to make unnecessary.
+    assert source.index("adopt_binder_eval_folds(") < source.index("for backend_name in complex_folders:")
