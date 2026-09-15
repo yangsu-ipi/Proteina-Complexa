@@ -747,20 +747,31 @@ def main(cfg: DictConfig) -> None:
     output_dir = cfg.get("output_dir", None)
     run_name = cfg.get("run_name", None)
 
-    # Get target info for path construction if needed (for binder / motif_binder evaluation).
-    # motif_binder is the primary task — its config defines the target.
-    # Standard binder eval can run on motif_binder outputs using the same target.
+    # The target this run designed against, which is part of where its samples
+    # live: ./inference/{config}_{target}_{run}.
+    #
+    # Asked of the CONFIG, not of which metrics this process happens to compute.
+    # It used to be guarded by run_binder, which made the sample path depend on
+    # whether binder metrics were on -- fine while one process computed
+    # everything, and wrong the moment evaluate was split into passes: every pass
+    # that folds monomers sets compute_binder_metrics=false, so it looked for
+    # ./inference/{config}_{run} and found nothing. A directory listing has no
+    # opinion about metrics.
+    #
+    # motif_binder is asked first because it is the primary task where both
+    # apply -- its config defines the target, and standard binder eval can run on
+    # its outputs against the same one.
     target_task_name = None
-    if run_motif_binder:
+    for describes_target, resolve in (
+        (run_motif_binder or cfg_metric.get("compute_motif_binder_metrics", False), get_motif_binder_target_info),
+        (True, get_target_info),
+    ):
+        if target_task_name or not describes_target:
+            continue
         try:
-            target_task_name, _, _, _ = get_motif_binder_target_info(cfg)
+            target_task_name, _, _, _ = resolve(cfg)
         except Exception as e:
-            logger.warning(f"Could not get target info for motif_binder: {e}")
-    elif run_binder:
-        try:
-            target_task_name, _, _, _ = get_target_info(cfg)
-        except Exception as e:
-            logger.warning(f"Could not get target info: {e}")
+            logger.debug(f"{resolve.__name__} did not resolve a target: {e}")
 
     # Construct paths if not explicitly provided
     if sample_storage_path is None or output_dir is None:

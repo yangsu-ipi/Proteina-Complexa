@@ -254,3 +254,26 @@ def test_the_redesign_pass_turns_off_the_folding_tracks():
     assert not any("folding_models" in o for o in overrides), (
         "it names no folder, because it loads none"
     )
+
+
+def test_where_the_samples_live_does_not_depend_on_which_metrics_a_pass_computes():
+    """The inference directory is ./inference/{config}_{target}_{run}, and the
+    target comes from the config.
+
+    It used to come from the config only when run_binder was true -- that is,
+    only when this process computed binder metrics. Harmless while one evaluate
+    did everything. The moment evaluate was split, every pass that folds monomers
+    sets compute_binder_metrics=false, so all of them looked for
+    ./inference/{config}_{run}, found no such directory, and died on the first
+    design. A directory listing has no opinion about metrics.
+    """
+    import pathlib
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1] / "src/proteinfoundation/evaluate.py"
+    ).read_text()
+    block = source[source.index("target_task_name = None") : source.index("# Construct paths if not explicitly provided")]
+    assert "run_binder" not in block, (
+        "the sample path must not be gated on whether this pass computes binder metrics"
+    )
+    assert "get_target_info" in block
