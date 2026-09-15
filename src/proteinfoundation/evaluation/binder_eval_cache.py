@@ -15,11 +15,56 @@ from typing import Any
 
 from loguru import logger
 
-BINDER_EVAL_CACHE_FILENAME = "binder_eval_cache.json"
+# One cache file per complex backend, for the reason
+# metrics/consensus_folding.py gives for doing the same, and that
+# evaluation/monomer_eval_utils.py gives again: a single shared file carries a
+# single fingerprint, so the moment a second backend is named as primary it
+# writes its own and the first one's entries are discarded on every design.
+#
+# That was not hypothetical here. The backend was inside the fingerprint rather
+# than in the filename, which is what made the ORDER of metric.folding_models
+# load-bearing: a pass configured [esmfold2] made ESMFold2 primary, recomputed a
+# different fingerprint for the same path, and discarded every AF2 complex --
+# measured at ~42 GPU-hours on CBLN1. The pass plan had to carry a guard
+# refusing any list that did not start with af2, to protect a filename.
+#
+# The advisory side and the monomer side had both already made this migration.
+# This is the third and last place the backend was hidden in a hash.
+BINDER_EVAL_CACHE_TEMPLATE = "binder_eval_cache_{backend}.json"
+LEGACY_BINDER_EVAL_CACHE_FILENAME = "binder_eval_cache.json"
+# Kept as the old name for anything importing it; it is the legacy path.
+BINDER_EVAL_CACHE_FILENAME = LEGACY_BINDER_EVAL_CACHE_FILENAME
 
 
-def _binder_cache_path(sample_root_path: str) -> str:
-    return os.path.join(sample_root_path, BINDER_EVAL_CACHE_FILENAME)
+def binder_eval_cache_path(sample_root_path: str, backend: str | None = None) -> str:
+    """Where one complex backend's refolds for this design live.
+
+    *backend* omitted gives the pre-split path, which is where a campaign that
+    ran before this still has its results. Readers try the per-backend path
+    first and fall back; writers only ever write the per-backend one.
+    """
+    if backend is None:
+        return os.path.join(sample_root_path, LEGACY_BINDER_EVAL_CACHE_FILENAME)
+    return os.path.join(sample_root_path, BINDER_EVAL_CACHE_TEMPLATE.format(backend=backend))
+
+
+def binder_eval_cache_paths(sample_root_path: str, backend: str | None = None) -> list[str]:
+    """The paths a reader should try, in order: this backend's, then the legacy
+    shared one.
+
+    The legacy file is only ever accepted when its fingerprint matches the
+    request being made -- and the fingerprint contains the folding model, so it
+    matches exactly when it was written by this same backend. A campaign that
+    ran af2 before this keeps its results; one that switches primary to another
+    folder reads the legacy file, finds a different fingerprint, and refolds
+    into a file of its own rather than overwriting af2's.
+    """
+    if backend is None:
+        return [binder_eval_cache_path(sample_root_path)]
+    return [
+        binder_eval_cache_path(sample_root_path, backend),
+        binder_eval_cache_path(sample_root_path),
+    ]
 
 
 def binder_eval_fingerprint(**inputs: Any) -> str:
@@ -73,6 +118,7 @@ def write_binder_eval_cache(
     sequence_type_stats: dict,
     sequences_dict: dict,
     derivation_fingerprint: str | None = None,
+    backend: str | None = None,
 ) -> None:
     """Persist everything the row-building code needs from ``run_binder_eval``.
 
@@ -105,7 +151,7 @@ def write_binder_eval_cache(
                 "sequences_dict": sequences_dict,
             }
         )
-        with open(_binder_cache_path(sample_root_path), "w") as handle:
+        with open(binder_eval_cache_path(sample_root_path, backend), "w") as handle:
             handle.write(blob)
     except (OSError, TypeError, ValueError) as exc:
         # A cache is an optimisation; failing to write one must not fail evaluation.
@@ -136,6 +182,7 @@ def read_binder_eval_cache(
     sequence_types: list[str],
     derivation_fingerprint: str | None = None,
     legacy_fingerprints: list[str] | None = None,
+    backend: str | None = None,
 ) -> tuple[dict, dict, bool] | None:
     """Cached refolding results for this design, or None to recompute.
 
@@ -155,8 +202,15 @@ def read_binder_eval_cache(
     always reported stale: whatever made the fingerprint differ is by definition
     something this run has to re-derive.
     """
-    cache_path = _binder_cache_path(sample_root_path)
-    if not os.path.exists(cache_path):
+    # This backend's file first, then the pre-split shared one. The shared file
+    # only survives the fingerprint check when this same backend wrote it, so a
+    # campaign keeps its results and a different primary refolds into its own
+    # file rather than overwriting them.
+    cache_path = next(
+        (p for p in binder_eval_cache_paths(sample_root_path, backend) if os.path.exists(p)),
+        None,
+    )
+    if cache_path is None:
         return None
     try:
         with open(cache_path) as handle:

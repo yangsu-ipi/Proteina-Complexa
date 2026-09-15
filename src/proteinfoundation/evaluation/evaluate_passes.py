@@ -53,10 +53,11 @@ from loguru import logger
 
 from proteinfoundation.result_analysis.analysis_utils import filter_columns_for_csv
 
+PASS_REDESIGN = "redesign"
 PASS_FOLD = "fold"
 PASS_ESM = "esm"
 PASS_FINAL = "final"
-PASS_KINDS: tuple[str, ...] = (PASS_FOLD, PASS_ESM, PASS_FINAL)
+PASS_KINDS: tuple[str, ...] = (PASS_REDESIGN, PASS_FOLD, PASS_ESM, PASS_FINAL)
 
 EVALUATE_PASS_KEY = "evaluate_pass"
 
@@ -69,6 +70,13 @@ EVALUATE_PASS_KEY = "evaluate_pass"
 # is inside the pre-refolding metrics -- so suppressing those two keys suppresses
 # every route to the force field.
 SUPPRESSED_BY_PASS: dict[str, tuple[str, ...]] = {
+    # The redesign pass runs the inverse folder and nothing else, so it suppresses
+    # what a fold pass does and folds nothing on top.
+    PASS_REDESIGN: (
+        "compute_esm_metrics",
+        "compute_pre_refolding_metrics",
+        "compute_refolded_structure_metrics",
+    ),
     PASS_FOLD: (
         "compute_esm_metrics",
         "compute_pre_refolding_metrics",
@@ -167,3 +175,64 @@ def save_results_csv(df, output_dir: str, track: str, config_name: str, job_id, 
     filtered.to_csv(csv_path, index=False)
     logger.info(f"{track.replace('_', ' ').capitalize()} results saved to {csv_path}")
     return filtered
+
+
+# =============================================================================
+# The pass plan
+# =============================================================================
+
+
+def evaluate_pass_plan(folding_models) -> list[dict]:
+    """The passes a campaign's folder list implies, in the order they must run.
+
+    Derived rather than written down. The plan used to name af2 and esmfold2
+    literally, which was wrong for every other list the config accepts: a
+    campaign naming rf3 (complex-only) got no pass for it and folded it in the
+    final pass beside ESMC-6B and TMOL, and one naming esmfold (monomer-only)
+    got a pass for a folder it had not configured. Both silently.
+
+    It is also what decouples the inverse folder from the folders. ProteinMPNN
+    used to ride in "pass 1", defined as af2-monomer -- so the redesign sets were
+    owned by a folder the campaign might not have configured, and adding a folder
+    moved their owner. The redesign pass owns them instead, and depends on no
+    folder at all.
+
+    One asymmetry is real and survives here: ``run_binder_eval`` builds the
+    complex through ColabDesign or RF3 and raises for anything else, while every
+    other complex folder is reached through ``score_binders``. So the first
+    complex folder is the one that must be buildable that way, and the rest ride
+    along beside it. That is a mechanism difference, not a metric one -- both
+    emit the same columns -- and it no longer costs anything to get wrong, now
+    that each backend has its own cache file instead of sharing one keyed by a
+    fingerprint.
+    """
+    from proteinfoundation.metrics.column_names import folders_for_track
+
+    monomer = folders_for_track(folding_models, "monomer")
+    complex_ = folders_for_track(folding_models, "complex")
+
+    passes: list[dict] = [{"kind": PASS_REDESIGN, "models": None, "track": None}]
+    passes += [{"kind": PASS_FOLD, "models": [m], "track": "monomer"} for m in monomer]
+    if complex_:
+        primary = complex_[0]
+        passes.append({"kind": PASS_FOLD, "models": [primary], "track": "complex"})
+        # Each further complex folder in a pass of its own, with the primary
+        # alongside it so run_binder_eval finds its cache rather than refolding.
+        passes += [
+            {"kind": PASS_FOLD, "models": [primary, m], "track": "complex"} for m in complex_[1:]
+        ]
+    passes.append({"kind": PASS_ESM, "models": None, "track": "complex"})
+    passes.append({"kind": PASS_FINAL, "models": None, "track": None})
+    return passes
+
+
+def pass_overrides(step: dict) -> list[str]:
+    """One pass's Hydra overrides, as the campaign runner passes them."""
+    out = [f"++metric.{EVALUATE_PASS_KEY}={step['kind']}"] if step["kind"] != PASS_FINAL else []
+    if step["models"]:
+        out.append("++metric.folding_models=[" + ",".join(step["models"]) + "]")
+    if step["track"] == "monomer":
+        out += ["++metric.compute_monomer_metrics=true", "++metric.compute_binder_metrics=false"]
+    elif step["track"] == "complex":
+        out += ["++metric.compute_monomer_metrics=false", "++metric.compute_binder_metrics=true"]
+    return out

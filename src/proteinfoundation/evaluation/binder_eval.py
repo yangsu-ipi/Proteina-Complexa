@@ -891,6 +891,7 @@ def compute_binder_metrics(
                     sequence_types,
                     derivation_fingerprint,
                     legacy_fingerprints,
+                    backend=complex_backend,
                 )
                 if reuse_cached_folding
                 else None
@@ -919,6 +920,7 @@ def compute_binder_metrics(
                             sequence_type_stats,
                             sequences_dict,
                             derivation_fingerprint,
+                            backend=complex_backend,
                         )
                     else:
                         # Something needed is missing or unrecorded. A row where
@@ -973,7 +975,12 @@ def compute_binder_metrics(
                     json.dump(sequence_type_stats, f, indent=4)
 
                 write_binder_eval_cache(
-                    sample_root_path, fingerprint, sequence_type_stats, sequences_dict, derivation_fingerprint
+                    sample_root_path,
+                    fingerprint,
+                    sequence_type_stats,
+                    sequences_dict,
+                    derivation_fingerprint,
+                    backend=complex_backend,
                 )
 
             # Extract metrics for each sequence type

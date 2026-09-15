@@ -292,3 +292,64 @@ def test_counts_are_applied_only_after_every_sequence_succeeds():
     # nothing has been written to sequence_type_stats by then.
     assert refresh[loop:collect].count("return False") == 2
     assert "interface_counts" not in refresh[loop:collect], "nothing is mutated while collecting"
+
+
+# ------------------------------------------------- one file per complex backend
+
+
+def test_a_write_goes_to_the_backends_own_file(tmp_path):
+    """The backend used to be inside the fingerprint and not in the filename,
+    which is what made the ORDER of metric.folding_models load-bearing."""
+    write_binder_eval_cache(str(tmp_path), "fp", STATS, SEQS, "deriv", backend="af2")
+    assert (tmp_path / "binder_eval_cache_af2.json").exists()
+    assert not (tmp_path / "binder_eval_cache.json").exists()
+
+
+def test_two_backends_keep_their_own_results(tmp_path):
+    """The regression this split exists for.
+
+    With one shared file, naming a second folder as primary wrote its own
+    fingerprint over the same path and discarded the first one's complexes on
+    every design -- ~42 GPU-hours of them on CBLN1. That is why the pass plan
+    had to carry a guard refusing any folder list not starting with af2: a
+    guard protecting a filename.
+    """
+    write_binder_eval_cache(str(tmp_path), "fp-af2", STATS, SEQS, "deriv", backend="af2")
+    write_binder_eval_cache(str(tmp_path), "fp-esm", STATS, SEQS, "deriv", backend="esmfold2")
+
+    assert read_binder_eval_cache(str(tmp_path), "fp-af2", ["self"], "deriv", backend="af2") is not None
+    assert read_binder_eval_cache(str(tmp_path), "fp-esm", ["self"], "deriv", backend="esmfold2") is not None
+
+
+def test_a_campaign_that_ran_before_the_split_keeps_its_results(tmp_path):
+    """The pre-split file has no backend in its name, and the fingerprint it
+    carries contains the folding model -- so it matches exactly when this same
+    backend wrote it."""
+    write_binder_eval_cache(str(tmp_path), "fp-af2", STATS, SEQS, "deriv")  # legacy path
+    assert (tmp_path / "binder_eval_cache.json").exists()
+
+    served = read_binder_eval_cache(str(tmp_path), "fp-af2", ["self"], "deriv", backend="af2")
+    assert served is not None, "an af2 run must still read what an af2 run wrote"
+    assert served[0] == STATS
+
+
+def test_a_different_primary_does_not_read_or_overwrite_the_legacy_file(tmp_path):
+    """Reading it is refused by the fingerprint, and writing goes to its own
+    file -- so switching primary costs a refold of the new backend and not the
+    loss of the old one's."""
+    write_binder_eval_cache(str(tmp_path), "fp-af2", STATS, SEQS, "deriv")  # legacy, written by af2
+    assert read_binder_eval_cache(str(tmp_path), "fp-esm", ["self"], "deriv", backend="esmfold2") is None
+
+    write_binder_eval_cache(str(tmp_path), "fp-esm", STATS, SEQS, "deriv", backend="esmfold2")
+    legacy = json.loads((tmp_path / "binder_eval_cache.json").read_text())
+    assert legacy["fingerprint"] == "fp-af2", "the legacy file must survive a different backend's write"
+    assert read_binder_eval_cache(str(tmp_path), "fp-af2", ["self"], "deriv", backend="af2") is not None
+
+
+def test_the_backends_own_file_wins_over_the_legacy_one(tmp_path):
+    """Both can exist on a resumed campaign. The per-backend file is what this
+    backend wrote most recently, so it is the one that answers."""
+    write_binder_eval_cache(str(tmp_path), "fp", STATS, SEQS, "old-deriv")  # legacy
+    write_binder_eval_cache(str(tmp_path), "fp", STATS, SEQS, "deriv", backend="af2")
+    stats, _, stale = read_binder_eval_cache(str(tmp_path), "fp", ["self"], "deriv", backend="af2")
+    assert (stats, stale) == (STATS, False), "the legacy file's older derivation must not be what is read"

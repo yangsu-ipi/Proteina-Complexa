@@ -1865,123 +1865,84 @@ def test_the_script_stamps_both_checkpoints_and_tools(tmp_path):
     assert "CKPT_ITEMS+=" in src and "TOOL_ITEMS+=" in src
 
 
-# ----------------------------- one folder per process
+# ----------------------------- one model per process, from a derived plan
 
 
-def evaluate_split_passes():
-    """The evaluate passes the runner runs, in order, each flattened to one line."""
+def test_the_evaluate_stage_derives_its_plan_instead_of_naming_folders():
+    """The plan named af2 and esmfold2 literally, which was wrong for every other
+    list the config accepts: rf3 is complex-only and got no pass of its own,
+    esmfold is monomer-only and got a pass for a folder the campaign had not
+    configured. Both silently, and both landing the missed folder in the final
+    pass beside ESMC-6B and TMOL."""
     body = RUNNER.read_text().split("evaluate_split() {", 1)[1].split("\n}\n", 1)[0]
-    joined = re.sub(r"\\\n\s*", " ", body)
-    return [
-        re.sub(r"\s+", " ", line).strip()
-        for line in joined.splitlines()
-        if line.strip().startswith("all_shards proteinfoundation.evaluate")
-    ]
+    assert "evaluate_pass_plan" in body and "pass_overrides" in body
+    assert "folding_models=[af2" not in body, "the plan must not name folders"
+    assert "folding_models=[esmfold2" not in body
 
 
-def test_the_evaluate_stage_gives_each_model_the_card_alone():
-    """The fused pass held torch and JAX at once and everything else on the card
-    had to fit around it. One model per process removes the partition rather
-    than tuning it: four folders, then ESMC-6B, then the pass that derives and
-    writes -- where TMOL, if the campaign wants it, is the only tenant."""
-    passes = evaluate_split_passes()
-    assert len(passes) == 6, "expected 4 fold passes, an ESM pass and a final pass, got:\n" + "\n".join(passes)
-    assert sum("metric.evaluate_pass=fold" in p for p in passes) == 4, passes
-    assert sum("metric.evaluate_pass=esm" in p for p in passes) == 1, passes
+def test_the_af2_first_guard_is_gone_with_the_shared_cache_file():
+    """It protected a filename: one binder_eval_cache.json keyed by a fingerprint
+    that contained the backend, so a different primary discarded the previous
+    one's complexes. One file per backend removes the damage, and the guard with
+    it."""
+    text = RUNNER.read_text()
+    assert "complex_first" not in text
+    assert "EVALUATE_PASSES" in text, "the fused fallback stays"
 
 
-def test_the_esm_pass_runs_before_the_one_that_derives():
-    """ESM is lifted out so the final pass has TMOL to itself --
-    TmolRewardModel defaults to torch.device("cuda"), and it cannot have a pass
-    of its own because its answers go into the DataFrame with no cache behind
-    them. Lifting it out only helps if it runs first."""
-    passes = evaluate_split_passes()
-    esm = next(i for i, p in enumerate(passes) if "metric.evaluate_pass=esm" in p)
-    assert esm == len(passes) - 2, f"the ESM pass is at {esm} of {len(passes)}; it must be second to last"
+def test_the_plan_covers_every_configured_folder():
+    """Derived from the folder list crossed with what each folder can serve."""
+    import pathlib
+    import sys
 
-
-def test_only_the_last_pass_writes():
-    """A fold-only pass runs a subset of the folders, so its rows carry a subset
-    of the columns. Two of those CSVs in a directory and analyze builds verdicts
-    from whichever folder finished last."""
-    passes = evaluate_split_passes()
-    assert "evaluate_pass" not in passes[-1], passes[-1]
-    assert passes[-1].split() == ["all_shards", "proteinfoundation.evaluate", '"$XLA_SOLE_TENANT"'], (
-        "the final pass takes the campaign's own config unmodified, or it is not "
-        f"the run the CSV claims to be: {passes[-1]}"
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+    from proteinfoundation.evaluation.evaluate_passes import (
+        PASS_ESM,
+        PASS_FINAL,
+        PASS_FOLD,
+        PASS_REDESIGN,
+        evaluate_pass_plan,
     )
 
+    def folds(plan, track):
+        # The ESM pass also runs the binder loop, so filter on kind too: it
+        # folds nothing and names no folder.
+        return [p["models"] for p in plan if p["kind"] == PASS_FOLD and p["track"] == track]
 
-def test_every_complex_pass_keeps_af2_first():
-    """binder_eval_cache.json is ONE file keyed on folders.complex[0]. A pass
-    configured [esmfold2] alone would make ESMFold2 the primary complex folder,
-    rewrite that file under a new fingerprint, and discard every AF2 complex --
-    ~42 GPU-hours of them on CBLN1."""
-    complex_passes = [p for p in evaluate_split_passes() if "metric.compute_binder_metrics=true" in p]
-    assert complex_passes, "no pass folds complexes"
-    pinned = 0
-    for p in complex_passes:
-        models = re.search(r"metric\.folding_models=\[([^\]]*)\]", p)
-        if models is None:
-            # The ESM pass takes the campaign's own list, which the af2-first
-            # guard at the top of evaluate_split has already checked.
-            assert "metric.evaluate_pass=esm" in p, f"complex pass with no explicit folder list: {p}"
-            continue
-        assert models.group(1).split(",")[0].strip() == "af2", p
-        pinned += 1
-    assert pinned == 2, f"expected both explicit complex passes to pin af2 first, saw {pinned}"
+    plan = evaluate_pass_plan(["af2", "esmfold2"])
+    assert plan[0]["kind"] == PASS_REDESIGN, "the redesign sets are owned by a pass, not by a folder"
+    assert plan[-1]["kind"] == PASS_FINAL
+    assert plan[-2]["kind"] == PASS_ESM, "ESM runs alone so the final pass has TMOL to itself"
 
+    assert folds(plan, "monomer") == [["af2"], ["esmfold2"]]
 
-def test_the_monomer_passes_name_one_folder_each():
-    """The point of the split. Two folders in one monomer pass is the fused
-    behaviour wearing the new structure's clothes."""
-    monomer_passes = [p for p in evaluate_split_passes() if "metric.compute_monomer_metrics=true" in p]
-    assert len(monomer_passes) == 2, monomer_passes
-    named = []
-    for p in monomer_passes:
-        models = re.search(r"metric\.folding_models=\[([^\]]*)\]", p)
-        assert models, p
-        entries = [m.strip() for m in models.group(1).split(",")]
-        assert len(entries) == 1, f"monomer pass folds with {entries}: {p}"
-        named += entries
-    assert sorted(named) == ["af2", "esmfold2"], named
+    # rf3 folds complexes only; esmfold folds monomers only. Each must get a pass
+    # for what it can serve and none for what it cannot.
+    rf3 = evaluate_pass_plan(["af2", "esmfold2", "rf3"])
+    assert folds(rf3, "complex") == [["af2"], ["af2", "esmfold2"], ["af2", "rf3"]]
+    assert folds(rf3, "monomer") == [["af2"], ["esmfold2"]]
+
+    esmf = evaluate_pass_plan(["af2", "esmfold"])
+    assert folds(esmf, "monomer") == [["af2"], ["esmfold"]]
+    assert folds(esmf, "complex") == [["af2"]], "esmfold folds no complexes"
 
 
-def test_the_fused_path_survives_for_a_campaign_already_using_it():
-    """Caches written by the fused pass are still valid -- the split changes no
-    fingerprint -- but a run mid-flight should not have its stage plan changed
-    underneath it, and bisecting a folding failure wants the old shape back."""
-    text = RUNNER.read_text()
-    assert 'EVALUATE_PASSES="${EVALUATE_PASSES:-split}"' in text
-    assert '"$EVALUATE_PASSES" == fused' in text
-    assert "${XLA_MEM_FRACTION_EVALUATE:-0.3}" in text, "the fused path keeps the knob it needs"
+def test_only_the_final_pass_writes():
+    """A pass runs a subset of the work, so its rows carry a subset of the
+    columns, and nothing downstream could tell that from a finished run."""
+    import pathlib
+    import sys
 
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+    from proteinfoundation.evaluation.evaluate_passes import (
+        PASS_FINAL,
+        evaluate_pass_plan,
+        pass_overrides,
+    )
 
-def test_the_runner_reads_the_first_folder_from_the_resolved_config(tmp_path):
-    """The guard is only as good as its reach into the config. This is the half
-    that breaks silently -- a key renamed, a list written inline instead of in
-    block style -- and it would fail open, letting a reordered list through."""
-    snippet = RUNNER.read_text().split("complex_first=$(python -c '", 1)[1].split("'", 1)[0]
-
-    def first_folder(yaml_text):
-        cfg = tmp_path / "resolved.yaml"
-        cfg.write_text(yaml_text)
-        r = subprocess.run(
-            [sys.executable, "-c", snippet, str(cfg)], capture_output=True, text=True
-        )
-        assert r.returncode == 0, r.stderr
-        return r.stdout.strip()
-
-    assert first_folder("metric:\n  folding_models:\n  - af2\n  - esmfold2\n") == "af2"
-    assert first_folder("metric:\n  folding_models: [af2, esmfold2]\n") == "af2"
-    assert first_folder("metric:\n  folding_models:\n  - esmfold2\n  - af2\n") == "esmfold2"
-    # A campaign on the legacy keys names no folding_models at all. Empty is the
-    # honest answer, and the runner refuses on it rather than assuming af2.
-    assert first_folder("metric:\n  binder_folding_method: colabdesign\n") == ""
-    assert first_folder("{}\n") == ""
-
-
-def test_the_runner_refuses_a_folder_list_that_does_not_start_with_af2():
-    body = RUNNER.read_text().split("evaluate_split() {", 1)[1].split("\n}\n", 1)[0]
-    assert '"$complex_first" != "af2"' in body
-    assert "exit 3" in body, "a refusal that does not stop the stage is a log line"
+    for step in evaluate_pass_plan(["af2", "esmfold2"]):
+        overrides = " ".join(pass_overrides(step))
+        if step["kind"] == PASS_FINAL:
+            assert overrides == "", "the final pass takes the campaign's own config unmodified"
+        else:
+            assert "metric.evaluate_pass=" in overrides, step

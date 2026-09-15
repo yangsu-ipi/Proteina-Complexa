@@ -260,81 +260,44 @@ fi
 # backends resolved ninety lines later and never reaching the hash. So a pass
 # configured [af2] writes exactly what a pass configured [af2,esmfold2] reads.
 #
-# ORDER IS LOAD-BEARING on the complex passes. binder_eval_cache.json is ONE
-# file keyed on folders.complex[0]. A pass configured [esmfold2] alone would
-# make ESMFold2 the primary complex folder, rewrite that file under a different
-# fingerprint, and discard every AF2 complex already folded -- measured at ~42
-# GPU-hours on CBLN1. af2 stays first in every complex pass, and the guard below
-# refuses to start if the campaign's own list disagrees.
+# Order no longer destroys anything. binder_eval_cache is one file per backend
+# now (binder_eval_cache_{backend}.json, with the pre-split path still read when
+# its fingerprint matches), so naming a different folder first costs a refold of
+# that folder and never discards another's -- which is what the af2-first guard
+# that used to live here existed to prevent. What order still decides is which
+# folder run_binder_eval builds the complex through, since that path is
+# ColabDesign or RF3 and score_binders serves the rest. A mechanism difference,
+# not a metric one: both emit the same columns.
 XLA_SOLE_TENANT="${XLA_SOLE_TENANT:-0.9}"
 EVALUATE_PASSES="${EVALUATE_PASSES:-split}"
 
 evaluate_split() {
-  local complex_first
-  # Read from the resolved config rather than assumed. A silent disagreement
-  # between the pass plan and the campaign's folder list is the expensive kind.
-  complex_first=$(python -c '
+  # The plan is DERIVED from metric.folding_models, not written down here. It
+  # used to name af2 and esmfold2 literally, which was wrong for every other
+  # list the config accepts: rf3 is complex-only and got no pass, esmfold is
+  # monomer-only and got one for a folder the campaign had not configured. Both
+  # silently, and both landing the missed folder in the final pass beside
+  # ESMC-6B and TMOL -- the co-residency this split exists to remove.
+  local plan
+  plan=$(python -c '
 import sys, yaml
+sys.path.insert(0, sys.argv[2])
+from proteinfoundation.evaluation.evaluate_passes import evaluate_pass_plan, pass_overrides
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
-models = (cfg.get("metric") or {}).get("folding_models") or []
-print(models[0] if models else "")
-' "$RESOLVED")
-  if [[ "$complex_first" != "af2" ]]; then
-    {
-      echo "evaluate: metric.folding_models starts with '${complex_first:-<empty>}', not af2."
-      echo "  binder_eval_cache.json is keyed on the FIRST complex folder, so the split passes"
-      echo "  would rewrite it under a new fingerprint and discard every complex already folded."
-      echo "  Put af2 first in metric.folding_models, or run with EVALUATE_PASSES=fused."
-    } >&2
-    exit 3
-  fi
+models = ((cfg.get("metric") or {}).get("folding_models")) or []
+for step in evaluate_pass_plan(models):
+    label = step["kind"] + (":" + ",".join(step["models"]) if step["models"] else "")
+    print(label + "\t" + " ".join(pass_overrides(step)))
+' "$RESOLVED" "$COMPLEXA_REPO/src") || { echo "evaluate: could not derive the pass plan" >&2; exit 3; }
 
-  # 1. AF2 monomer -- colabfold, out of process, sole tenant on the card.
-  #    The parent holds no model at all: ESM is off, ESMFold2 is not in the
-  #    folder list, and ColabDesign is reached only by the complex track. MPNN
-  #    still shells out between folds, but it exits between them.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2]" \
-    "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
+  [[ -n "$plan" ]] || { echo "evaluate: the derived pass plan is empty" >&2; exit 3; }
 
-  # 2. ESMFold2 monomer -- in process, PyTorch only.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.evaluate_pass=fold" "++metric.folding_models=[esmfold2]" \
-    "++metric.compute_monomer_metrics=true" "++metric.compute_binder_metrics=false"
-
-  # 3. AF2 complex -- ColabDesign, in process, JAX only.
-  #    The apo track lives in this loop and folds nothing new: apo_refold
-  #    delegates 'mpnn' to designability and 'self' to codesignability
-  #    (share_with_designability), so it reads what passes 1 and 2 wrote. A
-  #    campaign that also asks for mpnn_fixed is the exception -- that draw has
-  #    no designability counterpart, so its apo folds happen here and this pass
-  #    is JAX plus a colabfold child rather than JAX alone.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2]" \
-    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
-
-  # 4. ESMFold2 complex -- in process, PyTorch only. The AF2 complexes come from
-  #    the cache pass 3 wrote, which is why af2 is still first in this list.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.evaluate_pass=fold" "++metric.folding_models=[af2,esmfold2]" \
-    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
-
-  # 5. ESM -- ESMC-6B alone. Lifted out of the final pass because its per-design
-  #    results are cached like a fold's, and because the final pass may run TMOL,
-  #    which is a force field on the GPU (TmolRewardModel defaults to cuda) and
-  #    cannot be given a pass of its own: its answers go into the DataFrame and
-  #    there is no cache to put them in. Splitting ESM out is what leaves TMOL
-  #    alone on the card in pass 6.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" \
-    "++metric.evaluate_pass=esm" \
-    "++metric.compute_monomer_metrics=false" "++metric.compute_binder_metrics=true"
-
-  # 6. Everything cached. Derives the structure metrics -- the pre-refolding ones
-  #    on the GENERATED structures, which no folder influences and which
-  #    therefore belong in exactly one pass, and the refolded ones over every
-  #    backend at once -- and writes the CSVs. See evaluate_passes.py for why
-  #    neither belongs in a fold pass.
-  all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT"
+  while IFS=$'\t' read -r label overrides; do
+    [[ -n "$label" ]] || continue
+    echo "=== evaluate pass: $label"
+    # shellcheck disable=SC2086 -- overrides is a deliberate word-split list
+    all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" $overrides
+  done <<< "$plan"
 }
 
 if [[ "$STAGE" == all || "$STAGE" == evaluate ]]; then

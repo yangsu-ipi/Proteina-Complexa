@@ -1213,6 +1213,35 @@ def compute_monomer_metrics(
         os.makedirs(tmp_dir, exist_ok=True)
         des_result = None
 
+        # The redesign pass: run the inverse folder, cache the set, fold nothing.
+        #
+        # It exists so the redesign sets are owned by a pass of their own rather
+        # than by whichever folder happens to run first. They used to be
+        # generated inside the af2-monomer pass, which meant a campaign that did
+        # not configure af2 had no defined owner for them, and adding a folder
+        # moved it.
+        #
+        # One draw is not covered here: the mpnn_fixed variant is generated
+        # inside run_binder_eval from interface positions, so a campaign using
+        # that sequence type still makes it in a complex pass. Stated rather
+        # than silently half-done -- the binder campaigns use [self, mpnn].
+        if str(cfg_metric.get("evaluate_pass", "final")) == "redesign":
+            try:
+                get_sequences_for_evaluation(
+                    pdb_path=eval_pdb_path,
+                    use_pdb_seq=False,
+                    num_seq_per_target=redesign_set_size(cfg_metric),
+                    tmp_path=tmp_dir,
+                    binder_chain=binder_chain,
+                    mpnn_pdb_path=complex_pdb_path if _is_complex(protein_type) else None,
+                    target_chains=target_chains,
+                    inverse_folding_model=inverse_folding_model,
+                    redesign_cache_dir=os.path.dirname(eval_pdb_path),
+                )
+            except Exception as e:
+                logger.error(f"Redesign generation failed for {pdb_path}: {e}")
+            continue
+
         try:
             # Designability evaluation (ProteinMPNN + folding)
             if do_des:
