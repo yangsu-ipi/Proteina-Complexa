@@ -1087,6 +1087,31 @@ def cfg_for_fingerprint(cfg: dict) -> dict:
     return resolved
 
 
+# Config keys that say how MANY predictions to make, not what any one of them is.
+#
+# A count does not belong in a fold fingerprint. The cache is keyed per draw and
+# merges, so asking for more folds only what is new -- which is the whole reason
+# deterministic_seeds is prefix-stable, and is only true if the count stays out
+# of the identity.
+#
+# n_af2_models is here because putting it in cost real folds. It is AF2's draw
+# count, and it was added to the SHARED consensus_cfg so AF2 would fold with the
+# campaign's five parameter sets rather than one. Since the whole cfg was hashed,
+# that changed ESMFOLD2's fingerprint too -- a knob it cannot see -- and every
+# cached ESMFold2 complex on the campaign was discarded. The refold then failed
+# on an SVD that does not always converge, so the columns came back NaN. One
+# backend's knob must not be able to invalidate another's cache.
+#
+# n_seeds is the same kind of key and is deliberately NOT here. It has been
+# hashed since the cache existed, so removing it now would change every
+# fingerprint and discard every campaign's ESMFold2 folds to fix a staleness
+# nobody is currently hitting -- the exact cost this reasoning exists to avoid.
+# Raising n_seeds therefore still refolds what it should have reused; the repair
+# is to accept the old fingerprint as legacy, the way read_binder_eval_cache
+# does, on the day someone wants to change it.
+_COUNT_ONLY_CFG_KEYS = ("n_af2_models",)
+
+
 def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> str:
     """Identity of an advisory scorer: backend, its settings, and the target.
 
@@ -1100,7 +1125,7 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     canonical = json.dumps(
         {
             "backend": backend,
-            "cfg": cfg_for_fingerprint(cfg),
+            "cfg": cfg_for_fingerprint({k: v for k, v in cfg.items() if k not in _COUNT_ONLY_CFG_KEYS}),
             "target_seqs": list(target_seqs),
             # Every input to the seed is already covered -- target_seqs here, the
             # binder sequence as the entry key, an explicit cfg.seed in cfg --

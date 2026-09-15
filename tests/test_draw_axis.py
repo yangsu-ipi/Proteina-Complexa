@@ -305,3 +305,24 @@ def test_constructing_a_folder_refuses_nothing_the_backends_can_fold():
         assert isinstance(specs, dict) and specs.get("runner") is None, (
             f"{backend} folds from sequences and a context; nothing to construct"
         )
+
+
+def test_one_backends_knob_cannot_invalidate_anothers_cache():
+    """n_af2_models is AF2's draw count. It lives in the shared consensus_cfg so
+    AF2 folds with the campaign's parameter sets, and the whole cfg is hashed
+    into every backend's fold fingerprint -- so adding it changed ESMFOLD2's
+    fingerprint, discarded every cached ESMFold2 complex on EFNB3, and the refold
+    came back NaN on an SVD that does not always converge.
+
+    A count says how MANY predictions to make, not what any one of them is, and
+    the cache is keyed per draw and merges: asking for more must fold only what
+    is new.
+    """
+    target = ["MKVTARGET"]
+    base = cf.consensus_fingerprint("esmfold2", {"n_seeds": 3}, target)
+    with_af2 = cf.consensus_fingerprint("esmfold2", {"n_seeds": 3, "n_af2_models": 5}, target)
+    assert base == with_af2, "an AF2 knob must be invisible to ESMFold2's cache"
+
+    one = cf.consensus_fingerprint("af2", {"n_af2_models": 1}, target)
+    five = cf.consensus_fingerprint("af2", {"n_af2_models": 5}, target)
+    assert one == five, "raising the draw count folds what is new, it does not discard what is held"
