@@ -321,18 +321,24 @@ def consensus_entries_from_complex_stats(
     The ipSAE cutoffs are the exception, and they are recorded -- for a cutoff
     the entry actually evidences, meaning all three of its min_/max_/avg_ keys
     are present. The suffix IS the distance by construction (``ipsae_suffixes``
-    builds the names from the cutoff list), so this is not a guess about history.
+    builds the names from the cutoff list), so this records a fact rather than
+    guessing at history. A cutoff the entry cannot evidence stays missing, which
+    is what lets a later round add a distance for the cost of a re-read.
 
-    Leaving them absent instead was measurably wrong. The recorded structure is
-    the FIRST of a folder's models while the numbers beside it are the mean over
-    all of them, so an entry that looks un-scored has its whole PAE family
-    recomputed from one model's matrix: over 120 EFNB3 complexes that moved
-    avg_ipSAE by 5% on average and by 0.55 at worst, on a metric that runs 0 to 1
-    and gets thresholded. It would also have made an adopted campaign's ipSAE
-    mean one thing and a freshly folded one's another -- exactly the asymmetry
-    between folders this migration exists to remove. Cutoffs the entry does NOT
-    evidence stay missing and are computed from the stored matrix, which is what
-    lets a later round add a distance for the cost of a re-read.
+    That is the entire reason, and it is worth saying what is NOT a reason,
+    because the first version of this said it was. Leaving the cutoffs absent
+    makes ``_derive_into_scores`` recompute the PAE family -- from the ONE
+    structure the entry names, while the numbers beside it are the folder's mean
+    over five models. Over 120 EFNB3 complexes that moved avg_ipSAE by 5% on
+    average and 0.55 at worst, on a metric that runs 0 to 1 and gets thresholded.
+
+    The measurement is real; the inference from it was not. A question about
+    DISTANCE was deciding ENSEMBLE SIZE, which is a defect in the derivation and
+    has nothing to do with whether a cutoff is recorded. Recording the truth here
+    happens to mask it, and masking is not fixing: the same collapse still meets
+    any entry whose cutoffs genuinely cannot be evidenced. It is fixed where it
+    lives, by giving each model its own entry and its own structure, so that what
+    is read off a structure is read off the model it belongs to.
 
     ``pLDDT`` -- the whole-complex mean -- is absent from files written before it
     was emitted, and no structure re-read produces it, so those entries carry

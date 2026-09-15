@@ -156,13 +156,14 @@ def test_nothing_read_off_a_structure_is_adopted(tmp_path):
     assert held <= set(CONSENSUS_METRIC_SUFFIXES) | {"pdb_path", PAE_CUTOFF_KEY}
 
 
-def test_an_evidenced_ipsae_cutoff_is_recorded_so_the_value_is_not_recomputed(tmp_path):
-    """The measured reason this matters. The recorded structure is the FIRST of a
-    folder's models while the numbers beside it are the mean over all of them, so
-    an entry that looks un-scored has its PAE family recomputed from one model's
-    matrix. Over 120 EFNB3 complexes that moved avg_ipSAE by 5% on average and
-    0.55 at worst -- on a 0-to-1 metric that gets thresholded -- and it would have
-    made an adopted campaign's ipSAE mean one thing and a fresh fold's another.
+def test_an_evidenced_ipsae_cutoff_is_recorded_as_the_fact_it_is(tmp_path):
+    """The entry holds values produced at these distances, so it says so.
+
+    Not, as an earlier version of this test claimed, because leaving them absent
+    triggers a single-model recomputation of a five-model mean. That does happen
+    and it does move avg_ipSAE by up to 0.55 -- but it is a defect in the
+    derivation, where a question about distance decides ensemble size, and the
+    cutoff record only masks it. It is fixed by per-model entries instead.
     """
     entries = consensus_entries_from_complex_stats(
         [_stats(0)], [SEQ_A], _seeds, str(tmp_path), CONSENSUS_METRIC_SUFFIXES
