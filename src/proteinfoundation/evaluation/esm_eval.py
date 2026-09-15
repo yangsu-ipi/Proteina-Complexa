@@ -579,6 +579,38 @@ def _resolve_cache_dir() -> str | None:
 # =============================================================================
 
 
+def pinned_esmc_location(model_name: str) -> str:
+    """The ESMC repo id, resolved to the one snapshot this project is pinned to.
+
+    A repo id means "whatever main points at", and that is not a fixed model. It
+    is re-resolved on every load -- even with ``local_files_only=True``, which
+    reads the LOCAL ``refs/main`` and so follows the ref the moment anything
+    updates it. biohub re-published ESMC-6B on 2026-09-15 and ESMFold2's trunk
+    silently changed underneath a running campaign; this path would have followed
+    it just as quietly, and the only reason it kept working is that its loader
+    happens to read the new parameter names.
+
+    So it is given a PATH instead, which no ref can redirect -- the same snapshot
+    ESMFold2's trunk is pinned to, from the same constant, so one campaign means
+    one ESMC. A name that is not the ESMC repo, or a pin that cannot be resolved,
+    is returned untouched: this narrows what "current" means, it does not add a
+    way for scoring to fail.
+    """
+    try:
+        from esm.models.esmfold2 import ESMC_REPO_ID, esmc_snapshot_path
+    except ImportError:
+        return model_name
+    if model_name.strip("/") != ESMC_REPO_ID:
+        return model_name
+    try:
+        path = str(esmc_snapshot_path())
+    except Exception as exc:
+        logger.warning(f"Could not resolve the pinned ESMC snapshot ({exc}); loading {model_name} by name")
+        return model_name
+    logger.info(f"Loading {model_name} from its pinned snapshot {path}")
+    return path
+
+
 def _load_hf_masked_lm(
     model_name: str, device: str, force_offline: bool, kind: str = BACKEND_ESM2, dtype="auto"
 ) -> EsmBackend:
@@ -590,6 +622,10 @@ def _load_hf_masked_lm(
     """
     if not ESM_AVAILABLE:
         raise RuntimeError("ESM/transformers not available. Install with: pip install transformers")
+
+    # Before anything resolves a ref: a pinned ESMC becomes a path here, so the
+    # lookups below cannot follow a moved refs/main.
+    model_name = pinned_esmc_location(model_name)
 
     esm_dir = _resolve_esm_dir()
     cache_dir = _resolve_cache_dir()
