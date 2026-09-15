@@ -56,6 +56,15 @@ def complex_model_id() -> str:
 def load_esmfold2(model_id: str, cuda: bool = True):
     """Load an ESMFold2 checkpoint, once per (id, device) per process.
 
+    Loading goes through the fork's ``load_esmfold2_model``, which pins the
+    ESMC-6B revision the checkpoint's language-model trunk is taken from.
+    ``from_pretrained`` on its own resolves that repo's ``main`` at load time and
+    matches the trunk in by parameter name; when ESMC-6B was re-published under
+    different parameter names on 2026-09-15, every name missed, the trunk kept
+    uninitialised memory, and folding failed ~40 layers later in an SVD that said
+    nothing about weights. The revision is part of the model's identity, so it is
+    pinned rather than followed.
+
     ``ESMFold2Model.from_pretrained`` dispatches to ESMFold2ExperimentalModel by
     itself when the config says so, so the Experimental checkpoints load through
     this same call.
@@ -64,12 +73,10 @@ def load_esmfold2(model_id: str, cuda: bool = True):
     if key in _MODELS:
         return _MODELS[key]
 
-    from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
+    from esm.models.esmfold2 import load_esmfold2_model
 
     logger.info(f"Loading ESMFold2 checkpoint {model_id} (cuda={cuda})")
-    model = ESMFold2Model.from_pretrained(model_id)
-    if cuda:
-        model = model.cuda()
+    model = load_esmfold2_model(model_id, device="cuda" if cuda else None)
     _MODELS[key] = model.eval()
     return _MODELS[key]
 
