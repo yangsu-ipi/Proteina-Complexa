@@ -596,9 +596,18 @@ def pinned_esmc_location(model_name: str) -> str:
     is returned untouched: this narrows what "current" means, it does not add a
     way for scoring to fail.
     """
+    # Broad on purpose. Reaching these two constants imports the fork's esmfold2
+    # package, whose __init__ pulls in the triton CUDA kernels -- on a box with no
+    # GPU driver that raises RuntimeError, not ImportError, and ESM scoring does
+    # not need a GPU to run. This is a narrowing of what "current" means, so
+    # failing to apply it must cost the pin and never the scoring.
     try:
         from esm.models.esmfold2 import ESMC_REPO_ID, esmc_snapshot_path
-    except ImportError:
+    except Exception as exc:
+        logger.warning(
+            f"Could not reach the ESMC pin ({type(exc).__name__}: {exc}); loading {model_name} by name, "
+            f"which follows whatever refs/main points at."
+        )
         return model_name
     if model_name.strip("/") != ESMC_REPO_ID:
         return model_name

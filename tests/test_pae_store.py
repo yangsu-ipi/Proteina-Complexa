@@ -423,3 +423,29 @@ def test_every_complex_folder_honours_the_retention_flag():
         source = inspect.getsource(module)
         assert "drop_structures_keeping_sidecars(" in source, f"{where} ignore keep_folding_outputs"
         assert "shutil.rmtree(model_dir)" not in source, f"{where} still delete sidecars wholesale"
+
+
+def test_the_esmc_pin_narrows_the_name_and_never_breaks_scoring(monkeypatch):
+    """pinned_esmc_location turns the ESMC repo id into a fixed snapshot path, so
+    a moved refs/main cannot redirect it. Reaching the pin imports the fork's
+    esmfold2 package, whose init pulls in triton's CUDA kernels -- on a box with
+    no GPU driver that raises RuntimeError, and ESM scoring needs no GPU. So an
+    unreachable pin costs the pin, never the scoring."""
+    import builtins
+
+    from proteinfoundation.evaluation.esm_eval import pinned_esmc_location
+
+    # A name that is not the ESMC repo is never touched.
+    assert pinned_esmc_location("facebook/esm2_t33_650M_UR50D") == "facebook/esm2_t33_650M_UR50D"
+
+    real_import = builtins.__import__
+
+    def no_driver(name, *args, **kwargs):
+        if name.startswith("esm.models.esmfold2"):
+            raise RuntimeError("0 active drivers ([]). There should only be one.")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_driver)
+    assert pinned_esmc_location("biohub/ESMC-6B") == "biohub/ESMC-6B", (
+        "an unreachable pin must fall back to the name, not raise"
+    )
