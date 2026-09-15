@@ -222,20 +222,24 @@ def _binder_metrics():
     return (SRC / "src/proteinfoundation/metrics/binder_metrics.py").read_text()
 
 
-def test_the_refresh_measures_the_interface_on_the_file_the_fold_did():
-    """A refreshed count taken from one file while the original was taken from
-    another would differ for reasons that have nothing to do with the cutoff,
-    and nothing downstream would say so."""
+def test_the_interface_is_measured_where_the_design_is_assembled():
+    """One place measures the interface, and it is not a folder's.
+
+    There used to be two: run_binder_eval measured it while folding, and
+    recompute_derived measured it again when refreshing that folder's cache. A
+    refreshed count taken from one file while the original came from another
+    would differ for reasons that have nothing to do with the cutoff, and nothing
+    downstream would say so. Both are gone -- the interface is a property of the
+    design, measured once where the sequences are assembled, and every folder
+    reads that one answer.
+    """
     source = _binder_metrics()
-    refresh = source[source.index("def recompute_derived(") : source.index("class BinderSequenceSet")]
-    # The original count is taken where the sequences are assembled, which is
-    # where the interface query lives now that folding is a per-folder pass and
-    # the interface is not: it is a property of the DESIGN, measured once and
-    # answering for every folder.
-    assembly = source[source.index("def assemble_binder_sequences(") : source.index("def run_binder_eval(")]
-    assert "interface_structure_path(pdb_file_path)" in refresh
+    assembly = source[source.index("def assemble_binder_sequences(") :]
     assert "interface_structure_path(pdb_file_path)" in assembly
-    assert "interface_positions(" in refresh
+    assert "interface_positions(" in assembly
+    assert "def recompute_derived(" not in source, (
+        "a second measurement of the interface has come back"
+    )
 
 
 def test_the_interface_is_measured_on_the_all_atom_design_not_the_ca_view():
@@ -244,7 +248,7 @@ def test_the_interface_is_measured_on_the_all_atom_design_not_the_ca_view():
     half off C-alpha spheres -- while the bioinformatics track read the all-atom
     design and got a different answer to the same question."""
     source = _binder_metrics()
-    definition = source[source.index("def interface_structure_path(") : source.index("def geometry_over_models(")]
+    definition = source[source.index("def interface_structure_path(") : source.index("def interface_positions(")]
     assert '"_updated.pdb"' not in definition
     assert 'name + ".pdb"' in definition
 
@@ -263,42 +267,6 @@ def test_changing_the_measured_structure_is_visible_as_staleness():
     # it moves the positions ProteinMPNN holds fixed, so it moves the folds.
     guard = source[source.index('if "mpnn_fixed" in sequence_types:') :][:320]
     assert 'cache_fingerprint_base["interface_derivation"] = INTERFACE_DERIVATION_VERSION' in guard
-
-
-def test_a_sequence_the_cache_never_recorded_forces_a_refold():
-    """Recovering it by indexing sequences_dict in parallel is the silent
-    mispairing that recording the sequence exists to remove."""
-    refresh = _binder_metrics()
-    refresh = refresh[refresh.index("def recompute_derived(") : refresh.index("def run_binder_eval(")]
-    guard = refresh[refresh.index('sequence = aa_stat.get("sequence")') :][:900]
-    assert "if sequence is None:" in guard
-    assert "return False" in guard
-
-
-def test_out_of_range_interface_positions_force_a_refold():
-    """Dropping them would emit a composition that looks measured."""
-    refresh = _binder_metrics()
-    refresh = refresh[refresh.index("def recompute_derived(") : refresh.index("def run_binder_eval(")]
-    assert "if any(j >= len(sequence) for j in interface_seq_indices):" in refresh
-
-
-def test_counts_are_applied_only_after_every_sequence_succeeds():
-    """A refusal halfway through must leave the cache as it was found, not half
-    at the new cutoff and half at the old."""
-    refresh = _binder_metrics()
-    refresh = refresh[refresh.index("def recompute_derived(") : refresh.index("def run_binder_eval(")]
-    loop = refresh.index("refreshed_counts = {}")
-    collect = refresh.index("refreshed_counts[(seq_type, i)] = (")
-    apply = refresh.index("for (seq_type, i), counts in refreshed_counts.items():")
-    assert loop < collect < apply, "collected into a holding dict first, applied second"
-    # Both refusals live inside the collecting loop, so a later sequence can veto
-    # counts an earlier one already produced -- which is only safe because
-    # nothing has been written to sequence_type_stats by then.
-    assert refresh[loop:collect].count("return False") == 2
-    assert "interface_counts" not in refresh[loop:collect], "nothing is mutated while collecting"
-
-
-# ------------------------------------------------- one file per complex backend
 
 
 def test_a_write_goes_to_the_backends_own_file(tmp_path):
@@ -369,18 +337,26 @@ def test_assembling_sequences_folds_nothing():
     its own -- which is the whole of the primary/advisory split.
     """
     source = _binder_metrics()
-    assembly = source[source.index("def assemble_binder_sequences(") : source.index("def run_binder_eval(")]
+    assembly = source[source.index("def assemble_binder_sequences(") :]
     for folding in ("run_af_eval", "run_rf3_eval", "eval_func", "get_af2_advanced_settings"):
         assert folding not in assembly, f"{folding} is a folder's business, not a design's"
     for design in ("inverse_fold", "shared_redesign_set", "interface_positions", "extract_seq_from_pdb"):
         assert design in assembly, f"{design} is a property of the design and belongs here"
 
 
-def test_run_binder_eval_assembles_through_the_same_function():
-    """Two ways to build a design's sequences is two ways for the folders that
-    take one path and the folders that take the other to disagree about what they
-    folded."""
+def test_nothing_reimplements_the_complex_fold():
+    """The unification is only real while there is ONE implementation.
+
+    run_binder_eval folded complexes through its own dispatch beside
+    score_binders' -- two mechanisms for one job, which is what let the folder a
+    campaign named first decide which code ran. It was left in the tree,
+    unreachable, after the pipeline stopped calling it: a dead reimplementation
+    of the scoring path is exactly what the old split was, one release earlier.
+    """
     source = _binder_metrics()
-    folding = source[source.index("def run_binder_eval(") :]
-    assert "assemble_binder_sequences(" in folding
-    assert "shared_redesign_set(" not in folding, "it must not assemble a second set of its own"
+    assert "def run_binder_eval(" not in source
+    for harness in ("run_af_eval", "run_rf3_eval"):
+        assert harness not in source, (
+            f"{harness} is reached through CONSENSUS_BACKENDS now; a second caller here is a "
+            f"second mechanism for folding a complex"
+        )

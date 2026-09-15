@@ -250,11 +250,19 @@ def test_the_model_count_invalidates_the_binder_eval_cache():
 
 
 def test_the_count_reaches_the_folding_call():
+    """It reaches the folder through the draw axis now: AF2's draws ARE its
+    parameter sets, so n_af2_models is what says how many predictions a complex
+    gets. Without the default into consensus_cfg it would fall to 1 and a
+    five-model campaign would fold one."""
     source = _read("src/proteinfoundation/evaluation/binder_eval.py")
     assert 'cfg_metric.get("n_af2_models"' in source, "read from config"
-    assert "n_af2_models=n_af2_models," in source, "passed to run_binder_eval"
-    assert "get_af2_advanced_settings(num_af2_models=n_af2_models)" in _read(
-        "src/proteinfoundation/metrics/binder_metrics.py"
+    assert 'consensus_cfg.setdefault("n_af2_models", n_af2_models)' in source, "reaches the folder"
+
+    from proteinfoundation.metrics.consensus_folding import draw_ids_for
+
+    assert len(draw_ids_for("af2", {"n_af2_models": 5}, ["MKV"], "AAAA")) == 5
+    assert "get_af2_advanced_settings(num_af2_models=n_models)" in _read(
+        "src/proteinfoundation/metrics/consensus_folding.py"
     )
 
 
@@ -568,43 +576,25 @@ def test_a_redesign_with_no_structure_keeps_its_slot(tmp_path):
     assert slots[0] and slots[2]
 
 
-def test_every_redesign_gets_its_own_interface_metrics(tmp_path, monkeypatch):
-    """One list per metric, one entry per redesign, and no headline scalar --
-    which redesign the row presents is analyze's call, like every other family."""
-    from proteinfoundation.evaluation import binder_eval
-    from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
+def test_every_redesign_gets_its_own_interface_metrics():
+    """Not just the one a ranking chose.
 
-    seen = []
+    This used to be a second pass over the refolded structures, which existed
+    only because the folder that folded through run_binder_eval had no
+    derivation of its own. score_binders derives per (sequence, draw) and the row
+    carries a list over sequences, so the property is now structural: there is no
+    headline for it to collapse to.
+    """
+    from proteinfoundation.metrics.consensus_folding import consensus_derived_suffixes
 
-    def fake_bio(pdb_path, binder_chain, target_chain):
-        seen.append(pdb_path)
-        return {"interface_sc": 0.5 + 0.01 * len(seen), "binder_ss_counts": [1.0] * 8}
-
-    monkeypatch.setattr(binder_eval, "compute_bioinformatics_metrics_single", fake_bio)
-    monkeypatch.setattr(
-        binder_eval, "get_binder_chain_from_complex", lambda path, return_multi_target=False: ("B", ["A"], False)
+    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
+    assert "compute_interface_metrics_on_refolded_structures" not in source, (
+        "the second pass wrote the same columns score_binders writes, and ran later"
     )
-    monkeypatch.setattr(binder_eval, "parse_cfg_for_table", lambda cfg: ([], {}))
-
-    df = _frame_with_refold_paths(tmp_path, {"mpnn": [True, False, True]})
-    paths = extract_refolded_structure_paths_from_df(df, sequence_types=["mpnn"])
-    out = binder_eval.compute_interface_metrics_on_refolded_structures(
-        df=df,
-        paths_dict=paths,
-        cfg_metric={"sequence_types": ["mpnn"], "binder_folding_method": "colabdesign"},
-        cfg={},
-        compute_bioinformatics=True,
-        n_af2_models=1,
-    )
-
-    assert len(seen) == 2, "the missing slot is not folded for"
-    values = out.at[0, "mpnn_complex_af2_interface_sc_all"]
-    assert len(values) == 3, "aligned with the sequence list, missing slot included"
-    assert values[0] == pytest.approx(0.51) and values[2] == pytest.approx(0.52)
-    assert math.isnan(values[1])
-    # The packed counts survive as a list per redesign, not averaged into one.
-    assert out.at[0, "mpnn_complex_af2_binder_ss_counts_all"][0] == [1.0] * 8
-    assert "mpnn_complex_af2_interface_sc" not in out.columns, "the headline is analyze's to choose"
+    emission = source[source.index("for backend_name in complex_folders:") :][:5000]
+    assert "consensus_derived_suffixes(" in emission, "the interface family is emitted per folder"
+    assert 'row_dict[col_all] = [' in emission, "and per sequence, as a list"
+    assert "interface_sc" in consensus_derived_suffixes(False)
 
 
 def test_the_reduction_rule_is_derivation_not_structure():

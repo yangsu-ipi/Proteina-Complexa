@@ -64,7 +64,6 @@ from proteinfoundation.evaluation.binder_eval import (  # Availability flags for
     TMOL_AVAILABLE,
     compute_binder_metrics,
     compute_interface_metrics_df,
-    compute_interface_metrics_on_refolded_structures,
 )
 from proteinfoundation.evaluation.binder_eval_utils import get_target_info
 from proteinfoundation.evaluation.evaluate_passes import (
@@ -91,9 +90,7 @@ from proteinfoundation.evaluation.utils import (
 )
 
 # Import shared column filtering from analysis utilities
-from proteinfoundation.result_analysis.analysis_utils import SEQUENCE_TYPES
 from proteinfoundation.result_analysis.binder_analysis import save_combined_success_criteria_json
-from proteinfoundation.utils.refolded_structure_utils import extract_refolded_structure_paths_from_df
 
 # =============================================================================
 # Configuration Validation
@@ -465,78 +462,6 @@ def _add_pre_refolding_metrics(
     return df
 
 
-def _add_refolded_structure_metrics(
-    cfg: DictConfig,
-    df: pd.DataFrame,
-    job_id: int,
-) -> pd.DataFrame:
-    """Retired for the complex track: score_binders reads these off the structures.
-
-    This was a second pass over every refolded complex, computing the interface
-    family for the folder that used to be primary -- because that folder's path
-    had no derivation of its own, while every other folder's did. The two wrote
-    the SAME columns, and this one ran later, so it won.
-
-    They no longer agree. score_binders derives per draw and reduces by the rule
-    the metric asks for (worst case for placement, mean otherwise); this pass
-    averaged over models unconditionally. Leaving both would mean the folder that
-    happens to be named first gets a mean where every other folder gets a worst
-    case, under one column name -- the exact asymmetry the unification removes,
-    reintroduced by an overwrite.
-
-    Checked before removing: this pass computed 23 metrics and score_binders
-    derives all 23, plus the 6 geometry columns this one never had. Nothing is
-    lost. TMOL still follows compute_refolded_structure_metrics, through
-    derive_consensus_tmol, which is the same flag read in the same place.
-
-    Kept as a function rather than deleted because the monomer and apo tracks may
-    want the same treatment, and because a caller that still asks for it should
-    find an explanation rather than a missing name.
-    """
-    return df
-
-
-def _unused_add_refolded_structure_metrics(
-    cfg: DictConfig,
-    df: pd.DataFrame,
-    job_id: int,
-) -> pd.DataFrame:
-    cfg_metric = cfg.metric
-    show_progress = cfg.get("show_progress", False)
-
-    if not cfg_metric.get("compute_refolded_structure_metrics", False):
-        return df
-
-    logger.info("Computing metrics on refolded structures...")
-
-    paths_dict = extract_refolded_structure_paths_from_df(
-        df,
-        sequence_types=cfg_metric.get("sequence_types", SEQUENCE_TYPES),
-    )
-
-    refolded_cfg = cfg_metric.get("refolded", {})
-    compute_bioinformatics = refolded_cfg.get("bioinformatics", True)
-    compute_tmol = refolded_cfg.get("tmol", True)
-
-    df = compute_interface_metrics_on_refolded_structures(
-        df=df,
-        paths_dict=paths_dict,
-        cfg_metric=cfg_metric,
-        cfg=cfg,
-        compute_bioinformatics=compute_bioinformatics,
-        compute_tmol=compute_tmol,
-        show_progress=show_progress,
-        n_af2_models=max(1, int(cfg_metric.get("n_af2_models", 1))),
-    )
-
-    bad_columns = [c for c in df.columns if "dataset_target_dict" in c]
-    if bad_columns:
-        logger.warning(f"Dropping columns: {bad_columns}")
-        df.drop(columns=bad_columns, inplace=True)
-
-    return df
-
-
 def run_binder_evaluation(
     cfg: DictConfig,
     sample_paths: list[str],
@@ -594,7 +519,6 @@ def run_binder_evaluation(
         )
 
     df = _add_pre_refolding_metrics(cfg, df, sample_paths)
-    df = _add_refolded_structure_metrics(cfg, df, job_id)
 
     # Note: ESM metrics are computed inside compute_binder_metrics when
     # cfg.metric.compute_esm_metrics=True. They are computed per sequence type
@@ -692,7 +616,6 @@ def run_motif_binder_evaluation(
     )
 
     df = _add_pre_refolding_metrics(cfg, df, sample_paths)
-    df = _add_refolded_structure_metrics(cfg, df, job_id)
 
     return df
 
