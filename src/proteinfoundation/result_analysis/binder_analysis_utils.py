@@ -693,9 +693,16 @@ def expand_model_criteria(
 
     It used to stand for "every apo folder this run used", conjunctively, which
     meant the gate tightened itself whenever a folder was added: see the comment
-    at the expansion below for what that cost on EFNB3. A folder's opinion is
+    at the resolution below for what that cost on EFNB3. A folder's opinion is
     worth recording either way, and every advisory column still is; what changed
     is that it no longer silently becomes a pass/fail criterion.
+
+    Exactly one folder answers. The gating one when it folded *prefix* at all;
+    otherwise the sole folder that did, loudly -- that is a real configuration
+    (CBLN1 gates on AF2 and folds apo with ESMFold2 deliberately), and refusing
+    it would leave that campaign with no verdicts. Several candidates and none of
+    them the gating folder is ambiguous, and ambiguity is reported rather than
+    resolved by sort order.
 
     Criteria without the placeholder pass through untouched.
 
@@ -754,15 +761,30 @@ def expand_model_criteria(
         # Nobody chose that, and it made two campaigns with different folder sets
         # incomparable. Every other criterion resolves to the one backend named in
         # complex_folding_backend; this one now does too.
-        models = [complex_backend] if complex_backend in present else []
-        if present and not models:
-            logger.error(
-                f"Criterion '{name}' is judged by the gating folder '{complex_backend}', which produced "
-                f"no {prefix} column for '{seq_type}'; {present} did. No verdict will be produced. Set "
-                f"the run's complex folding backend, or override aggregation.success_thresholds."
+        if complex_backend in present:
+            models = [complex_backend]
+        elif len(present) == 1:
+            # The gating folder did not fold apo, and exactly one folder did, so
+            # there is no choice to make and no ambiguity to hide. This is the
+            # CBLN1 shape: gated on AF2, apo folded by ESMFold2 on purpose.
+            # Said out loud, because which folder answered a criterion is not
+            # something a reader should have to infer from the column list.
+            models = list(present)
+            logger.warning(
+                f"Criterion '{name}' is answered by '{present[0]}' for '{seq_type}': the gating folder "
+                f"'{complex_backend}' produced no {prefix} fold, and '{present[0]}' is the only one that did."
             )
-            out[name] = spec
-            continue
+        else:
+            models = []
+            if present:
+                logger.error(
+                    f"Criterion '{name}' cannot be answered for '{seq_type}': the gating folder "
+                    f"'{complex_backend}' produced no {prefix} fold and {present} disagree about who "
+                    f"should stand in. No verdict will be produced. Name the folder in "
+                    f"aggregation.success_thresholds, or fold {prefix} with '{complex_backend}'."
+                )
+                out[name] = spec
+                continue
         if not models:
             # Kept, not dropped. Dropping it would leave the remaining criteria to
             # be evaluated on their own, and a design passing a three-criterion

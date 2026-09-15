@@ -178,24 +178,38 @@ def test_another_folders_apo_fold_does_not_decide_the_verdict():
     )
 
 
-def test_the_gating_folder_having_no_apo_fold_is_not_a_pass():
-    """The honest outcome is 'cannot judge', the same as any other criterion whose
-    column is absent -- never a silently shorter gate."""
+def test_the_only_folder_that_folded_apo_answers_when_the_gating_one_did_not():
+    """CBLN1's shape: gated on AF2, apo folded by ESMFold2 on purpose. There is
+    one candidate and no choice to make, so the criterion is answered rather than
+    abandoned -- refusing it would leave that campaign with no verdicts at all."""
     values = row(i_pae=[0.1], plddt=[0.95], scrmsd=[1.0], apo={"esmfold2": [1.0]})
+    assert per_sequence_pass(values, "mpnn", PROTEIN) == [1]
+    values = row(i_pae=[0.1], plddt=[0.95], scrmsd=[1.0], apo={"esmfold2": [9.0]})
+    assert per_sequence_pass(values, "mpnn", PROTEIN) == [0], "and it really is gating"
+
+
+def test_several_stand_ins_and_no_gating_fold_is_ambiguous_not_guessed():
+    """Picking one by sort order would decide a scientific question in a tiebreak."""
+    values = row(i_pae=[0.1], plddt=[0.95], scrmsd=[1.0], apo={"esmfold": [1.0], "esmfold2": [1.0]})
+    assert per_sequence_pass(values, "mpnn", PROTEIN) is None
+
+
+def test_no_apo_fold_at_all_yields_no_verdict_rather_than_a_pass():
+    values = row(i_pae=[0.1], plddt=[0.95], scrmsd=[1.0])
     assert per_sequence_pass(values, "mpnn", PROTEIN) is None
 
 
 def test_expansion_does_not_leak_across_sequence_types():
     """self and mpnn can be folded by different model sets in one run."""
-    columns = list(row("self", apo={"af2": [1.0]})) + list(row("mpnn", apo={"esmfold2": [1.0]}))
+    columns = list(row("self", apo={"af2": [1.0], "esmfold2": [1.0]})) + list(row("mpnn", apo={"esmfold2": [1.0]}))
     assert sorted(
         k for k in expand_model_criteria(PROTEIN, "self", columns, complex_backend="af2")
         if k.startswith("apo_scRMSD_ca_")
-    ) == ["apo_scRMSD_ca_af2"]
-    assert not [
+    ) == ["apo_scRMSD_ca_af2"], "self has the gating folder's apo fold, so it answers"
+    assert sorted(
         k for k in expand_model_criteria(PROTEIN, "mpnn", columns, complex_backend="af2")
         if k.startswith("apo_scRMSD_ca_")
-    ], "mpnn has no af2 apo fold here, so the criterion stays unresolved"
+    ) == ["apo_scRMSD_ca_esmfold2"], "mpnn has only one, which therefore answers"
 
 
 def test_holo_scrmsd_is_never_mistaken_for_an_apo_model():
