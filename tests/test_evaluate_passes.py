@@ -225,3 +225,32 @@ def test_the_redesign_pass_emits_no_rows():
         "the redesign pass must skip the design before a row is appended for it, "
         "or the frame carries rows whose metric columns were never filled"
     )
+
+
+def test_the_redesign_pass_turns_off_the_folding_tracks():
+    """It runs the inverse folder and nothing else, and has to SAY so.
+
+    With no track it inherited the campaign's own metric flags, so the binder
+    loop ran in full beside it: EFNB3's first split run put 73.5 GB of AF2
+    weights on each card during the one pass whose point is that no folder is
+    resident. The folds were not wrong -- a later pass would have found them
+    cached -- they were just paid for in the pass built to avoid paying.
+    """
+    from proteinfoundation.evaluation.evaluate_passes import (
+        PASS_REDESIGN,
+        evaluate_pass_plan,
+        pass_overrides,
+    )
+
+    plan = evaluate_pass_plan(["af2", "esmfold2"])
+    redesign = next(p for p in plan if p["kind"] == PASS_REDESIGN)
+    overrides = pass_overrides(redesign)
+    assert "++metric.compute_binder_metrics=false" in overrides, (
+        "the binder loop folds complexes; the redesign pass must not run it"
+    )
+    assert "++metric.compute_monomer_metrics=true" in overrides, (
+        "the redesign short-circuit lives in the monomer loop, so that loop has to run"
+    )
+    assert not any("folding_models" in o for o in overrides), (
+        "it names no folder, because it loads none"
+    )

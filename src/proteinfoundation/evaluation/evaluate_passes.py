@@ -212,7 +212,18 @@ def evaluate_pass_plan(folding_models) -> list[dict]:
     monomer = folders_for_track(folding_models, "monomer")
     complex_ = folders_for_track(folding_models, "complex")
 
-    passes: list[dict] = [{"kind": PASS_REDESIGN, "models": None, "track": None}]
+    # The redesign pass runs the inverse folder and NOTHING else, which means it
+    # has to say so on both tracks. With no track it inherited the campaign's own
+    # flags, so the binder loop ran in full beside it -- measured on EFNB3's
+    # first split run at 73.5 GB per card of AF2 weights, in the pass whose whole
+    # point is that no folder is resident. The folds were not wrong, just paid
+    # for in the pass built to avoid paying for them.
+    #
+    # "monomer" rather than a track of its own because that is where this pass
+    # does its work: the short-circuit lives in the monomer loop, and the set it
+    # writes is shared with the binder track (shared_redesign_set), so generating
+    # it once on either side serves both.
+    passes: list[dict] = [{"kind": PASS_REDESIGN, "models": None, "track": "monomer"}]
     passes += [{"kind": PASS_FOLD, "models": [m], "track": "monomer"} for m in monomer]
     passes += [{"kind": PASS_FOLD, "models": [m], "track": "complex"} for m in complex_]
     passes.append({"kind": PASS_ESM, "models": None, "track": "complex"})
