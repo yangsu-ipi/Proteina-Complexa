@@ -358,3 +358,67 @@ def test_the_bridge_is_actually_called_by_the_pipeline():
     assert "adopt_binder_eval_folds(" in source, "the bridge must be reached from the per-design loop"
     # Before the folds it exists to make unnecessary.
     assert source.index("adopt_binder_eval_folds(") < source.index("for backend_name in complex_folders:")
+
+
+def _legacy_file(tmp_path, stats, name="binder_eval_cache.json"):
+    (tmp_path / name).write_text(
+        json.dumps({"fingerprint": "written-under-some-other-request",
+                    "sequence_type_stats": stats, "sequences_dict": SEQS_BY_TYPE_DICT})
+    )
+
+
+SEQS_BY_TYPE_DICT = {"mpnn": [{"seq": SEQ_A}, {"seq": SEQ_B}]}
+
+
+def test_adoption_does_not_ask_whether_the_sequences_still_match(tmp_path):
+    """The folds are not the sequences.
+
+    read_binder_eval_cache answers "are this file's SEQUENCES the ones this run
+    wants", and its fingerprint carries the interface cutoff, the redesign count
+    and the folding method -- so a campaign that has moved any of them is told
+    no. It told EFNB3 no on every design: adoption never fired and the run
+    refolded 15 AF2 complexes per design that were sitting on disk.
+
+    A prediction of a named binder against a named target stays that prediction
+    whatever the assembly request has since become. Whether it is REUSABLE is the
+    consensus fingerprint's question, asked when the adopted cache is read back.
+    """
+    from proteinfoundation.evaluation.binder_eval_cache import legacy_complex_folds
+
+    af2 = tmp_path / "AF2"
+    af2.mkdir()
+    (af2 / "x_model1.pdb").write_text("ATOM")
+    stats = {"mpnn": {
+        "complex_stats": [_stats(0, pdb="./d/AF2/x_model1.pdb"), _stats(1, pdb="./d/AF2/x_model1.pdb")],
+        "aa_stats": [{"sequence": SEQ_A}, {"sequence": SEQ_B}],
+    }}
+    _legacy_file(tmp_path, stats)
+
+    got = legacy_complex_folds(str(tmp_path), "af2")
+    assert got is not None, "a fingerprint about sequences must not veto the folds"
+    assert sorted(got[0]) == ["mpnn"]
+
+
+def test_folds_are_adopted_only_by_the_folder_that_made_them(tmp_path):
+    """The shared file records the folding model only inside a hash, so who wrote
+    it is read off where the structures went. Adopting AF2's predictions into
+    RF3's cache would put one folder's numbers in another's columns."""
+    from proteinfoundation.evaluation.binder_eval_cache import legacy_complex_folds
+
+    af2 = tmp_path / "AF2"
+    af2.mkdir()
+    (af2 / "x_model1.pdb").write_text("ATOM")
+    stats = {"mpnn": {"complex_stats": [_stats(0, pdb="./d/AF2/x_model1.pdb")],
+                      "aa_stats": [{"sequence": SEQ_A}]}}
+    _legacy_file(tmp_path, stats)
+    assert legacy_complex_folds(str(tmp_path), "rf3") is None
+    assert legacy_complex_folds(str(tmp_path), "af2") is not None
+
+
+def test_a_file_with_no_folds_in_it_is_not_adopted(tmp_path):
+    """Post-unification caches hold a design's sequences and nothing a folder
+    produced. There is nothing there to adopt."""
+    from proteinfoundation.evaluation.binder_eval_cache import legacy_complex_folds
+
+    _legacy_file(tmp_path, {"mpnn": {"aa_stats": [{"sequence": SEQ_A}]}})
+    assert legacy_complex_folds(str(tmp_path), "af2") is None

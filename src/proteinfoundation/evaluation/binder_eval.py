@@ -24,6 +24,7 @@ from proteinfoundation.evaluation.binder_eval_cache import (
     adopt_binder_eval_folds,
     binder_eval_fingerprint,
     digest_file,
+    legacy_complex_folds,
     read_binder_eval_cache,
     write_binder_eval_cache,
 )
@@ -938,39 +939,41 @@ def compute_binder_metrics(
                 # would be the gated path surviving inside the unified one.
                 if not all((sequence_type_stats.get(t) or {}).get("aa_stats") for t in sequence_types):
                     cached = None
-            if cached is not None:
-                n_reused += 1
-                # A campaign that ran before the unification has its complex
-                # folds in this file and nowhere else. Adopt them into the cache
-                # score_binders reads, per model, from the structures already on
-                # disk -- otherwise every finished campaign refolds: on EFNB3
-                # that is 657 designs x 3 sequences x 5 models, about 42
-                # GPU-hours, to reproduce predictions that are sitting there.
-                #
-                # Keyed to complex_backend because that is what wrote the file --
-                # provenance, not privilege. read_binder_eval_cache only served
-                # it at all because its fingerprint, which carries the folding
-                # model, matched this run's.
-                #
-                # A no-op once the advisory cache exists, so this costs one
-                # file-exists check per design on every later run.
-                if consensus_target_seqs and any(
-                    (sequence_type_stats.get(t) or {}).get("complex_stats") for t in sequence_types
-                ):
-                    adopted = adopt_binder_eval_folds(
+            # A campaign that ran before the unification has its complex folds in
+            # the pre-unification cache and nowhere else. Adopt them into the
+            # cache score_binders reads, per model, from the structures already
+            # on disk -- otherwise every finished campaign refolds: on EFNB3 that
+            # is 657 designs x 3 sequences x 5 models, about 42 GPU-hours, to
+            # reproduce predictions that are sitting there.
+            #
+            # Deliberately NOT conditioned on `cached`. That asks whether the
+            # file's SEQUENCES are the ones this run wants, and its fingerprint
+            # carries the interface cutoff, the redesign count and the folding
+            # method -- so a campaign that has moved any of them is told no. It
+            # told EFNB3 no on every design, and the run refolded everything.
+            # The folds are not the sequences; see legacy_complex_folds.
+            #
+            # A no-op once the advisory cache exists, so later runs pay one
+            # file-exists check per design.
+            if consensus_target_seqs:
+                legacy = legacy_complex_folds(sample_root_path, complex_backend)
+                if legacy is not None:
+                    legacy_stats, legacy_sequences = legacy
+                    n_adopted += adopt_binder_eval_folds(
                         sample_root_path,
                         complex_backend,
                         consensus_target_seqs,
                         consensus_cfg,
-                        sequence_type_stats,
+                        legacy_stats,
                         {
-                            t: sequences_for_type(t, sequences_dict, sequence_type_stats)
-                            for t in sequence_types
+                            t: sequences_for_type(t, legacy_sequences, legacy_stats)
+                            for t in legacy_stats
                         },
                         derive_tmol=derive_consensus_tmol,
                     )
-                    if adopted:
-                        n_adopted += adopted
+
+            if cached is not None:
+                n_reused += 1
             else:
                 try:
                     assembled = assemble_binder_sequences(

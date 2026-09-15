@@ -455,6 +455,68 @@ def consensus_entries_from_complex_stats(
     return entries
 
 
+# Where each folder's harness puts its structures, which is how a pre-unification
+# cache says who wrote it. The shared file records no folder name -- the folding
+# model lives inside its fingerprint, as a hash -- but every entry records a
+# structure path, and the harness that produced it chose the directory.
+_STRUCTURE_DIR_BACKENDS = {"AF2": "af2", "rf3_outputs": "rf3"}
+
+
+def legacy_complex_folds(sample_root_path: str, backend: str) -> tuple[dict, dict] | None:
+    """This design's pre-unification complex folds, if *backend* is what made them.
+
+    Read directly rather than through :func:`read_binder_eval_cache`, and this is
+    the whole point of the function. That reader answers "are this file's
+    SEQUENCES the ones this run wants", and its fingerprint carries the interface
+    cutoff, the redesign count, the folding method -- so a campaign that has moved
+    any of them since is told no. On EFNB3 it said no to every design, the
+    adoption never fired, and the run refolded 15 AF2 complexes per design that
+    were sitting on disk.
+
+    The folds are not the sequences. A prediction of a named binder against a
+    named target stays that prediction whatever the assembly request has since
+    become, and whether it is reusable is the CONSENSUS fingerprint's question,
+    asked when the adopted cache is read back. So this checks only the two things
+    that would make an adoption wrong: that the file holds complex folds at all,
+    and that this backend is the folder that made them.
+
+    Who made them is read off where the structures went, because the shared file
+    records the folding model only inside a hash. A design whose structures sit
+    somewhere unrecognised is skipped rather than guessed at.
+    """
+    for path in binder_eval_cache_paths(sample_root_path, backend):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as handle:
+                cached = json.load(handle)
+            stats = cached["sequence_type_stats"]
+            sequences = cached["sequences_dict"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning(f"Ignoring unusable binder eval cache {path}: {exc}")
+            continue
+        entries = [
+            entry
+            for payload in (stats or {}).values()
+            for entry in ((payload or {}).get("complex_stats") or [])
+            if isinstance(entry, dict)
+        ]
+        if not entries:
+            continue
+        wrote_it = {
+            _STRUCTURE_DIR_BACKENDS.get(os.path.basename(os.path.dirname(str(e.get("complex_pdb_path") or ""))))
+            for e in entries
+        }
+        if wrote_it != {backend}:
+            logger.info(
+                f"Not adopting {path} for '{backend}': its structures were written by "
+                f"{sorted(w for w in wrote_it if w) or 'an unrecognised folder'}"
+            )
+            continue
+        return stats, sequences
+    return None
+
+
 def adopt_binder_eval_folds(
     sample_root_path: str,
     backend: str,
