@@ -190,3 +190,86 @@ def test_a_nested_metric_name_does_not_inherit_the_outer_ones_rule():
     assert is_placement_column("mpnn_complex_af2_binder_scRMSD_target_aligned_ca_all"), (
         "a longer placement name is still a placement name"
     )
+
+
+# ---------------------------------------------------------------------------
+# The frame analyze actually gets
+# ---------------------------------------------------------------------------
+#
+# Every test above hands reduce_draws_in_frame a frame built in memory. Analyze
+# never sees one. It sees pd.concat(pd.read_csv(f) for f in per_shard_files), so
+# each list-valued cell is the REPR of a list, and `isinstance(cell, list)` --
+# which is what both readers below branch on -- is False for all of them.
+#
+# Nothing raised. The nesting survived reduction untouched and every selected
+# scalar came out NaN, across two EFNB3 production runs, while a suite of 965
+# tests stayed green and a campaign gate that checks column PRESENCE passed
+# twice. These tests go through a file.
+
+
+def _round_trip(df, tmp_path):
+    """The frame as analyze receives it: through a CSV, one shard per file."""
+    path = tmp_path / "binder_results_pipeline_0.csv"
+    df.to_csv(path, index=False)
+    return pd.read_csv(path)
+
+
+def test_nested_draws_are_reduced_after_a_csv_round_trip(tmp_path):
+    """The defect, at its smallest. Two redesigns, three ESMFold2 seeds each."""
+    df = pd.DataFrame({
+        "mpnn_complex_esmfold2_i_pAE_all": [[[0.10, 0.20, 0.30], [0.40, 0.50, 0.60]]],
+    })
+    out = reduce_draws_in_frame(_round_trip(df, tmp_path))
+    got = out["mpnn_complex_esmfold2_i_pAE_all"][0]
+    assert not any(isinstance(v, (list, tuple)) for v in got), (
+        "the draws stayed nested, which is what shipped [[0.13, 0.14, 0.13]] to analyze"
+    )
+    assert list(got) == pytest.approx([0.20, 0.50])
+
+
+def test_the_selected_scalar_is_a_number_after_a_csv_round_trip(tmp_path):
+    """`_best` was NaN in every column of every row of two production runs. Not
+    because the selection was wrong -- because it indexed a string."""
+    from proteinfoundation.result_analysis.binder_analysis import pick_headline_sequence
+
+    df = pd.DataFrame({
+        "complex_folding_backend": ["af2"],
+        "mpnn_complex_af2_i_pAE_all": [[[9.0, 9.0], [1.0, 1.0]]],
+    })
+    out = pick_headline_sequence(
+        reduce_draws_in_frame(_round_trip(df, tmp_path)),
+        ["mpnn"],
+        {"i_pAE": {"scale": 1.0, "direction": "minimize"}},
+    )
+    assert list(out["mpnn_best_idx"]) == [1]
+    best = out["mpnn_complex_af2_i_pAE_best"][0]
+    assert not math.isnan(best), "a selected scalar that is NaN is the whole defect"
+    assert best == pytest.approx(1.0)
+
+
+def test_a_failed_fold_survives_the_round_trip_as_nan_not_as_a_parse_failure(tmp_path):
+    """`nan` and `inf` are bare names that ast.literal_eval refuses, and an
+    all-NaN column is exactly what an adopted-but-underived metric looks like.
+    It must read back as NaN rather than being left as an unparsed string."""
+    df = pd.DataFrame({
+        "mpnn_complex_af2_i_pAE_all": [[float("nan")]],
+        "self_complex_af2_i_pAE_all": [[[0.5, float("inf")]]],
+    })
+    out = reduce_draws_in_frame(_round_trip(df, tmp_path))
+    assert math.isnan(out["mpnn_complex_af2_i_pAE_all"][0][0])
+    assert out["self_complex_af2_i_pAE_all"][0] == pytest.approx([0.5]), (
+        "inf is the absence of a measurement, not a large one"
+    )
+
+
+def test_a_column_of_equal_length_lists_is_not_flattened_into_the_frame(tmp_path):
+    """Assigning a list of equal-length lists to a DataFrame column reads as a
+    2-D array. Equal redesign counts across designs are the normal case, so this
+    is the shape production always has."""
+    df = pd.DataFrame({
+        "mpnn_complex_af2_i_pAE_all": [[[1.0, 3.0], [5.0, 7.0]], [[2.0, 4.0], [6.0, 8.0]]],
+    })
+    out = reduce_draws_in_frame(_round_trip(df, tmp_path))
+    assert len(out) == 2
+    assert list(out["mpnn_complex_af2_i_pAE_all"][0]) == pytest.approx([2.0, 6.0])
+    assert list(out["mpnn_complex_af2_i_pAE_all"][1]) == pytest.approx([3.0, 7.0])

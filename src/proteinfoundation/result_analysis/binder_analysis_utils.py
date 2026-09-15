@@ -302,6 +302,67 @@ def reduce_draws(values: list, placement: bool) -> Any:
     return max(numeric) if placement else sum(numeric) / len(numeric)
 
 
+def _object_column(values: list) -> "np.ndarray":
+    """A 1-D object array holding *values*, whatever shape they are.
+
+    Assigning a plain list of lists to a DataFrame column is a trap: when the
+    inner lists happen to be the same length, both pandas and numpy read them as
+    a 2-D array and refuse -- or worse, succeed and spread one row's draws across
+    the frame. Every row here holds a list, and equal redesign counts are the
+    normal case, so the column is built element by element where no shape can be
+    inferred.
+    """
+    out = np.empty(len(values), dtype=object)
+    for i, value in enumerate(values):
+        out[i] = value
+    return out
+
+
+def parse_all_columns(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Turn every ``_all`` cell back into the list it was before the CSV.
+
+    Analyze does not receive evaluate's frame. It receives
+    ``pd.concat(pd.read_csv(f) for f in per_shard_files)``, so every list-valued
+    cell arrives as the *repr* of a list -- ``"[[0.13, 0.14], [0.15, 0.16]]"`` --
+    and a ``str`` satisfies none of the ``isinstance(cell, list)`` tests the
+    readers below are written against.
+
+    Nothing raised. :func:`reduce_draws_in_frame` passed the strings through as
+    already-reduced, so the per-draw lists stayed nested; ``pick_headline_sequence``
+    then indexed a string and produced NaN for every selected scalar in the frame.
+    Both symptoms are this one missing step, and neither was visible to the tests,
+    which build frames in memory and never go through a file.
+
+    ``literal_eval_with_infinities`` rather than ``ast.literal_eval`` because a
+    failed fold is ``inf`` and an absent metric is ``nan``, and the plain parser
+    refuses both -- which is the whole reason that helper exists.
+
+    A cell that is already a list (a frame passed in memory, as the tests do) and
+    one that does not look like a list at all are left exactly as they are, so
+    this is safe to run on any frame and is not a second contract.
+    """
+    for column in [c for c in df.columns if c.endswith("_all")]:
+        if not any(isinstance(cell, str) for cell in df[column]):
+            continue
+        parsed: list = []
+        failures = 0
+        for cell in df[column]:
+            if not isinstance(cell, str) or not cell.strip().startswith("["):
+                parsed.append(cell)
+                continue
+            try:
+                parsed.append(literal_eval_with_infinities(cell))
+            except (ValueError, SyntaxError, TypeError, RecursionError):
+                # Left as the string it was: a cell this cannot read is a cell
+                # nothing downstream should pretend to have understood.
+                failures += 1
+                parsed.append(cell)
+        df[column] = _object_column(parsed)
+        if failures:
+            logger.warning(f"Could not parse {failures} cell(s) of {column}; they stay unread")
+    return df
+
+
 def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
     """Collapse every per-draw ``_all`` cell into the per-sequence list analyze reads.
 
@@ -317,6 +378,10 @@ def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
     is reached the same way. Mixed frames are therefore fine, and a pooled frame
     holding both is fine.
     """
+    # The frame reaches analyze through CSV, so the lists are reprs until this
+    # runs. Done here rather than at the call site because every reader below
+    # depends on it, and a caller that forgot would see no error -- only NaN.
+    df = parse_all_columns(df)
     for column in [c for c in df.columns if c.endswith("_all")]:
         placement = is_placement_column(column)
         reduced = []
@@ -330,7 +395,7 @@ def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
             touched = True
             reduced.append([reduce_draws(v, placement) for v in cell])
         if touched:
-            df[column] = reduced
+            df[column] = _object_column(reduced)
             logger.debug(f"Reduced per-draw values in {column} ({'worst case' if placement else 'mean'})")
     return df
 
