@@ -380,3 +380,37 @@ def test_changing_the_seed_count_no_longer_discards_the_folds_already_made():
     assert cf.consensus_fingerprint("esmfold2", {"n_seeds": 3}, target) == cf.consensus_fingerprint(
         "esmfold2", {"n_seeds": 5}, target
     )
+
+
+def test_the_other_axis_count_does_not_leak_into_a_reconstructed_identity():
+    """binder_eval sets n_af2_models on the shared consensus_cfg for EVERY
+    backend. The live fingerprint drops all counts so it does not care; the
+    legacy reconstruction hashes counts on purpose, so AF2's model count was
+    landing in ESMFold2's reconstructed identity. The stored hash then missed and
+    EFNB3 refolded all 5913 ESMFold2 complexes it already had on disk.
+
+    What a run stored is what a run WITH ONLY ITS OWN COUNT would have computed.
+    """
+    from proteinfoundation.metrics.consensus_folding import legacy_count_fingerprint
+
+    target = ["MTARGET"]
+    base = {"num_loops": 20, "num_sampling_steps": 200}
+
+    # What the old run hashed: its own axis count and nothing else.
+    stored = legacy_count_fingerprint("esmfold2", {**base, "n_seeds": 3}, target, 3)
+
+    for polluted in (
+        {**base, "n_af2_models": 5},
+        {**base, "n_af2_models": 5, "n_seeds": 3},
+        {**base, "n_af2_models": 5, "n_esmfold2_seeds": 3},
+    ):
+        assert legacy_count_fingerprint("esmfold2", polluted, target, 3) == stored, (
+            f"a count belonging to another axis changed the reconstruction: {sorted(polluted)}"
+        )
+
+    # Symmetric: ESMFold2's seed count must not reach AF2's reconstruction.
+    af2 = legacy_count_fingerprint("af2", {**base, "n_af2_models": 5}, target, 5)
+    assert legacy_count_fingerprint("af2", {**base, "n_af2_models": 5, "n_seeds": 3}, target, 5) == af2
+
+    # And the two backends still key differently from one another.
+    assert stored != af2

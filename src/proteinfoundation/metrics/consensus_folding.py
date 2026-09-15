@@ -1126,7 +1126,16 @@ def legacy_count_fingerprint(backend: str, cfg: dict, target_seqs: list[str], n_
     the count leave the hash without discarding every cache keyed under it.
     """
     axis = CONSENSUS_DRAW_AXIS.get(backend, "seed")
-    restored = dict(cfg)
+    # Every count is cleared before this backend's own is put back. Restoring
+    # into cfg as it stands leaves the OTHER axis's count in the hash, and the
+    # caller puts one there: binder_eval sets n_af2_models on the shared
+    # consensus_cfg for every backend, ESMFold2 included. The live fingerprint
+    # does not care -- _COUNT_ONLY_CFG_KEYS drops all of them -- but this one
+    # hashes counts on purpose, so AF2's model count leaked into ESMFold2's
+    # reconstructed identity, the stored hash missed, and EFNB3 refolded all
+    # 5913 ESMFold2 complexes it already had. The same defect f17898c fixed for
+    # the live fingerprint, still open in the reconstruction of the old one.
+    restored = {k: v for k, v in cfg.items() if k not in _COUNT_ONLY_CFG_KEYS}
     restored["n_af2_models" if axis == "model" else "n_seeds"] = n_draws
     return consensus_fingerprint(backend, restored, target_seqs, _hash_counts=True)
 
