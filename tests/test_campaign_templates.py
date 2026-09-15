@@ -1919,8 +1919,15 @@ def test_the_plan_covers_every_configured_folder():
     # rf3 folds complexes only; esmfold folds monomers only. Each must get a pass
     # for what it can serve and none for what it cannot.
     rf3 = evaluate_pass_plan(["af2", "esmfold2", "rf3"])
-    assert folds(rf3, "complex") == [["af2"], ["af2", "esmfold2"], ["af2", "rf3"]]
+    # One folder per pass, naming only itself. It used to name the first folder
+    # alongside each of the others, because a second complex folder could only be
+    # asked for with the first one present -- so a pass meant to fold ESMFold2
+    # loaded AF2 too, and paid for two folders' VRAM to use one.
+    assert folds(rf3, "complex") == [["af2"], ["esmfold2"], ["rf3"]]
     assert folds(rf3, "monomer") == [["af2"], ["esmfold2"]]
+    assert all(len(m) == 1 for m in folds(rf3, "complex")), (
+        "no folder may be a precondition for another"
+    )
 
     esmf = evaluate_pass_plan(["af2", "esmfold"])
     assert folds(esmf, "monomer") == [["af2"], ["esmfold"]]

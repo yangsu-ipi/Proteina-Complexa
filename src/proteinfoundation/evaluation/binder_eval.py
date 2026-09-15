@@ -60,8 +60,8 @@ from proteinfoundation.evaluation.monomer_eval_utils import (
     refresh_monomer_derivation,
 )
 from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, redesign_conditioning
-from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
-from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family, rename
+from proteinfoundation.metrics.binder_metrics import assemble_binder_sequences, complex_mpnn_chains
+from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     CONSENSUS_PROVENANCE_SUFFIXES,
@@ -769,17 +769,20 @@ def compute_binder_metrics(
     n_reused = 0
     failed_designs: list[tuple[str, str]] = []
 
-    # Advisory second-opinion refolding. Off unless metric.consensus_backends is
-    # set; emits {seq_type}_{backend}_{metric} columns and gates nothing. These
-    # backends fold protein-protein complexes, so a ligand target has no target
-    # sequence to fold against and the whole feature is skipped.
-    # Every complex folder the resolver named, except the one already folding as
-    # the primary. Two mechanisms still implement complex folding -- ColabDesign
-    # for af2, CONSENSUS_BACKENDS for esmfold2 -- so the list is split by which
-    # mechanism runs a member, not by whether its columns are allowed to matter.
-    # Unifying the two mechanisms is the next step; which folders run is decided
-    # here either way.
-    consensus_backends = [m for m in folders.complex if m != complex_backend]
+    # Every complex folder the resolver named, with nothing removed.
+    #
+    # This used to exclude folders.complex[0], because that one folded through
+    # run_binder_eval and the rest through CONSENSUS_BACKENDS -- two mechanisms
+    # for one job, so the list was split by which mechanism ran a member. It is
+    # one mechanism now, so there is nothing to split and no first folder. The
+    # columns are identical either way: advisory_column produces exactly the
+    # names the old primary emission built through `rename`, checked metric by
+    # metric with zero mismatches, so unifying the mechanism leaves the artifact
+    # alone.
+    #
+    # These folders predict protein-protein complexes, so a ligand target has no
+    # target sequence to fold against and complex refolding is skipped entirely.
+    complex_folders = list(folders.complex)
     consensus_cfg = dict(cfg_metric.get("consensus_cfg", {}) or {})
     # The advisory folds are ESMFold2 too, so they answer to the same knob --
     # otherwise metric.n_esmfold2_seeds means "three seeds, except for the
@@ -805,21 +808,21 @@ def compute_binder_metrics(
         _refolded_cfg.get("tmol", True)
     )
     consensus_target_seqs: list[str] = []
-    if consensus_backends:
-        unknown = [b for b in consensus_backends if b not in available_backends()]
+    if complex_folders:
+        unknown = [b for b in complex_folders if b not in available_backends()]
         if unknown:
-            logger.error(f"Unknown consensus_backends {unknown}; known: {available_backends()}. Skipping those.")
-            consensus_backends = [b for b in consensus_backends if b not in unknown]
-    if consensus_backends and is_target_ligand:
-        logger.info("Advisory refolding skipped: these backends fold protein complexes, target is a ligand")
-        consensus_backends = []
-    if consensus_backends:
+            logger.error(f"Unknown complex folders {unknown}; known: {available_backends()}. Skipping those.")
+            complex_folders = [b for b in complex_folders if b not in unknown]
+    if complex_folders and is_target_ligand:
+        logger.info("Complex refolding skipped: these folders fold protein complexes, target is a ligand")
+        complex_folders = []
+    if complex_folders:
         consensus_target_seqs = _target_chain_sequences(target_pdb_path, target_pdb_chain)
         if not consensus_target_seqs:
-            consensus_backends = []
+            complex_folders = []
         else:
             logger.info(
-                f"Advisory refolding enabled: {consensus_backends}, target "
+                f"Complex refolding: {complex_folders}, target "
                 f"{len(consensus_target_seqs)} chain(s)/{sum(len(s) for s in consensus_target_seqs)} residues, "
                 "all sequences"
             )
@@ -890,6 +893,17 @@ def compute_binder_metrics(
                 for base in (cache_fingerprint_base, legacy_target_base)
                 for cutoff in reusable_interface_cutoffs
             ]
+            # What this design IS, not what any folder says about it: the
+            # sequences to evaluate, where the interface sits, and what each
+            # sequence is made of. Assembled once per design and answering for
+            # every folder below -- which is the point. While this work lived
+            # inside the folding dispatch, a second complex folder could only be
+            # reached by a mechanism that assembled its own.
+            #
+            # The cache is still keyed on the old fingerprint, which carries the
+            # folding model. That now over-invalidates rather than under: a
+            # changed folder re-runs the inverse folder, which has a cache of its
+            # own (redesign_set_{variant}.json), so the cost is a re-read.
             cached = (
                 read_binder_eval_cache(
                     sample_root_path,
@@ -902,73 +916,44 @@ def compute_binder_metrics(
                 if reuse_cached_folding
                 else None
             )
+            assembled = None
             if cached is not None:
-                sequence_type_stats, sequences_dict, derivation_stale = cached
-                if derivation_stale:
-                    from proteinfoundation.metrics.binder_metrics import recompute_derived
-
-                    # The structures this run wants are already on disk; only the
-                    # rules for reading numbers off them changed. Refolding to
-                    # learn that a max is not a mean, or that a cutoff moved,
-                    # would spend hours recomputing arithmetic.
-                    if recompute_derived(
-                        sequence_type_stats,
-                        pdb_path,
-                        binder_chain,
-                        gen_target_chain,
-                        is_target_ligand,
-                        n_af2_models,
-                        interface_cutoff,
-                    ):
-                        write_binder_eval_cache(
-                            sample_root_path,
-                            fingerprint,
-                            sequence_type_stats,
-                            sequences_dict,
-                            derivation_fingerprint,
-                            backend=complex_backend,
-                        )
-                    else:
-                        # Something needed is missing or unrecorded. A row where
-                        # some sequences answer to the new rules and some to the
-                        # old is worse than a refold, so drop the cache rather
-                        # than patch part of it.
-                        cached = None
+                sequence_type_stats, sequences_dict, _ = cached
+                # A cache written before the split carries complex_stats and
+                # rmsd_stats too. They are ignored rather than migrated: every
+                # number they hold is now produced by score_binders from the same
+                # structures, under the same column names, and reading them here
+                # would be the gated path surviving inside the unified one.
+                if not all((sequence_type_stats.get(t) or {}).get("aa_stats") for t in sequence_types):
+                    cached = None
             if cached is not None:
                 n_reused += 1
             else:
                 try:
-                    _, _, sequence_type_stats, sequences_dict = run_binder_eval(
+                    assembled = assemble_binder_sequences(
                         pdb_file_path=pdb_path,
                         target_pdb_path=target_pdb_path,
-                        folding_model_specs=folding_model_specs,
                         tmp_path=sample_root_path,
                         target_pdb_chain=target_pdb_chain,
                         sequence_types=sequence_types,
                         inverse_folding_model=inverse_folding_model,
+                        is_target_ligand=is_target_ligand,
+                        interface_cutoff=interface_cutoff,
                         gen_target_chain=gen_target_chain,
                         binder_chain=binder_chain,
-                        interface_cutoff=interface_cutoff,
-                        is_target_ligand=is_target_ligand,
                         num_redesign_seqs=num_redesign_seqs,
                         shared_redesign_count=redesign_set_size(cfg_metric),
                         fixed_residues_override=fixed_residues_override,
-                        n_af2_models=n_af2_models,
                     )
                 except Exception as exc:
-                    # One design, not the campaign. run_af_eval re-raises after
-                    # evicting its cached AF2 model, and nothing above this caught
-                    # it -- so a single design that AF2 declined took the whole
-                    # evaluate job down. IL1R1 died exactly this way, on an
-                    # uncaught ValueError, after 2 of 774 designs.
+                    # One design, not the campaign. The inverse folder runs in a
+                    # subprocess and can decline a backbone; nothing above this
+                    # caught it, so a single design took the whole evaluate job
+                    # down. IL1R1 died exactly this way after 2 of 774 designs.
                     #
-                    # The design is dropped rather than emitted half-filled: apo
-                    # and ESM both run inside the per-sequence-type loop below and
-                    # read sequence_type_stats, so without the complex fold there
-                    # are no binder metrics to carry. That matches how a missing
-                    # PDB is handled at the top of this loop. Nothing is cached,
-                    # because write_binder_eval_cache is below and unreached, so
-                    # the next run refolds this design from scratch.
+                    # Dropped rather than emitted half-filled: apo and ESM below
+                    # read these sequences, so without them there is nothing to
+                    # carry. Nothing is cached, so the next run rebuilds it.
                     logger.error(
                         f"Binder evaluation failed for {os.path.basename(sample_root_path)}: "
                         f"{type(exc).__name__}: {exc}. Skipping this design; the run continues."
@@ -976,7 +961,11 @@ def compute_binder_metrics(
                     failed_designs.append((os.path.basename(sample_root_path), f"{type(exc).__name__}: {exc}"))
                     continue
 
-                # Save raw stats
+                sequences_dict = assembled.sequences_dict
+                # Shaped as the row builder already expects, holding only what a
+                # design owns. The folding-derived groups are simply absent now.
+                sequence_type_stats = {t: {"aa_stats": rows} for t, rows in assembled.aa_stats.items()}
+
                 with open(os.path.join(sample_root_path, "sequence_type_stats.json"), "w") as f:
                     json.dump(sequence_type_stats, f, indent=4)
 
@@ -991,9 +980,8 @@ def compute_binder_metrics(
 
             # Extract metrics for each sequence type
             for seq_type in sequence_types:
-                seq_stats = sequence_type_stats[seq_type]["complex_stats"]
-                if not seq_stats:
-                    logger.debug(f"No complex stats for {seq_type} at sample {idx}, skipping")
+                if not (sequence_type_stats.get(seq_type) or {}).get("aa_stats"):
+                    logger.debug(f"No sequences for {seq_type} at sample {idx}, skipping")
                     continue
 
                 # Find best sample using composite ranking score
@@ -1021,23 +1009,12 @@ def compute_binder_metrics(
                 if COMPLEX_BACKEND_COLUMN not in all_columns:
                     all_columns.append(COMPLEX_BACKEND_COLUMN)
 
-                # Complex metrics (best and all). Named through the same mapping
-                # the migration uses, so emission and rename cannot drift into
-                # agreeing only by inspection.
-                for metric in seq_stats[0]:
-                    col = rename(f"{seq_type}_complex_{metric.removeprefix('complex_')}", complex_backend)
-                    row_dict[f"{col}_all"] = [s[metric] for s in seq_stats]
-                    if idx == 0:
-                        all_columns.append(f"{col}_all")
-
-                # RMSD metrics (best and all). The keys already carry their scope
-                # -- complex_scRMSD_ca is the whole complex, binder_scRMSD_ca the
-                # binder within it -- so the mapping places them.
-                for metric in sequence_type_stats[seq_type]["rmsd_stats"][0]:
-                    col = rename(f"{seq_type}_{metric}", complex_backend)
-                    row_dict[f"{col}_all"] = [s[metric] for s in sequence_type_stats[seq_type]["rmsd_stats"]]
-                    if idx == 0:
-                        all_columns.append(f"{col}_all")
+                # The complex metrics are emitted below, once per folder, by the
+                # loop over folders.complex. There is no separate emission for a
+                # first folder any more: advisory_column produces exactly the
+                # names this block used to build through `rename` -- verified
+                # metric by metric, zero mismatches -- so the artifact is
+                # unchanged and only the mechanism behind it is.
 
                 # AA composition, per redesign. ProteinMPNN changes the sequence,
                 # so both vectors differ from one redesign to the next; taking
@@ -1273,7 +1250,7 @@ def compute_binder_metrics(
                 # into the artifact, so no later stage can re-rank or re-calibrate
                 # from it. A cheaper run that cannot answer the question it was
                 # written to answer is not cheaper.
-                for backend_name in consensus_backends:
+                for backend_name in complex_folders:
                     to_score = seqs
                     advisory = score_binders(
                         backend_name,
@@ -1308,6 +1285,11 @@ def compute_binder_metrics(
                             binder_chain=binder_chain,
                             design_name=os.path.basename(sample_root_path),
                             output_dir=sample_root_path,
+                            # RF3 is an object holding weights rather than a
+                            # function of its inputs, and it reaches this loop
+                            # like every other folder now.
+                            runner=(folding_model_specs or {}).get("runner"),
+                            is_target_ligand=is_target_ligand,
                         ),
                     )
                     # `advisory` is parallel to `seqs`, so the headline must be the

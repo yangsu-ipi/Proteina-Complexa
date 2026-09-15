@@ -773,6 +773,12 @@ def test_booleans_are_not_measurements():
     assert unmeasured_complex_metrics(stats) == []
 
 
+def _read_source(rel: str) -> str:
+    import pathlib
+
+    return (pathlib.Path(__file__).resolve().parents[1] / rel).read_text()
+
+
 def test_one_designs_complex_failure_does_not_kill_the_run():
     """IL1R1's evaluate died on an uncaught exception after 2 of 774 designs.
     run_af_eval re-raises by design (it evicts its AF2 model first), so the catch
@@ -782,10 +788,23 @@ def test_one_designs_complex_failure_does_not_kill_the_run():
     from proteinfoundation.evaluation import binder_eval
 
     src = inspect.getsource(binder_eval.compute_binder_metrics)
-    call = src.index("run_binder_eval(")
+    # Two things can fail per design, and each is contained where it happens.
+    # Building the sequences can: the inverse folder runs in a subprocess and can
+    # decline a backbone, and that is what IL1R1 died on.
+    call = src.index("assemble_binder_sequences(")
     before = src[:call]
     assert before.rstrip().endswith("try:") or "try:" in before[-200:], (
-        "the complex refold must be wrapped, or one design takes the campaign down"
+        "assembling a design's sequences must be wrapped, or one design takes the campaign down"
     )
     assert "failed_designs.append" in src, "a skipped design must be recorded"
     assert "continue" in src[call:], "a failed design is skipped, not emitted half-filled"
+
+    # And folding can. That is score_binders' contract rather than a catch here:
+    # it never raises for a per-design failure, warns, and caches nothing -- so
+    # the design keeps its row with the complex columns absent and refolds next
+    # run, instead of being dropped entirely as it was when the gated folder
+    # raised through this loop.
+    scorer = _read_source("src/proteinfoundation/metrics/consensus_folding.py")
+    body = scorer[scorer.index("def score_binders(") :]
+    assert "Never raises and never blocks a campaign" in body
+    assert "except Exception as exc:" in body and "logger.warning" in body

@@ -24,11 +24,12 @@ WHY THE DERIVED METRICS ARE NOT IN A FOLD PASS, and why ESM is on its own:
   straight out of generation. No folder influences them and the answer is
   identical in every pass, so they belong in exactly one.
 
-* The refolded-structure metrics are folder-scoped, but their results go into
-  the DataFrame and nowhere else: ``compute_interface_metrics_on_refolded_structures``
-  has no cache. A fold pass computing them would throw the answer away and the
-  final pass would compute it again from every structure. So they belong in the
-  final pass too.
+* The refolded-structure metrics are read off each folder's own structures by
+  ``score_binders`` now, into that folder's own cache, so they are computed in
+  the pass that folded them and re-read rather than recomputed afterwards. The
+  separate pass that used to compute them for one folder is retired: it wrote
+  the same columns and ran later, so it overwrote a per-draw reduction with an
+  unconditional mean.
 
 * Both of those can run TMOL, and ``TmolRewardModel`` defaults to
   ``torch.device("cuda")`` -- it is a force field on the GPU, not a CPU metric.
@@ -197,14 +198,14 @@ def evaluate_pass_plan(folding_models) -> list[dict]:
     moved their owner. The redesign pass owns them instead, and depends on no
     folder at all.
 
-    One asymmetry is real and survives here: ``run_binder_eval`` builds the
-    complex through ColabDesign or RF3 and raises for anything else, while every
-    other complex folder is reached through ``score_binders``. So the first
-    complex folder is the one that must be buildable that way, and the rest ride
-    along beside it. That is a mechanism difference, not a metric one -- both
-    emit the same columns -- and it no longer costs anything to get wrong, now
-    that each backend has its own cache file instead of sharing one keyed by a
-    fingerprint.
+    Every complex folder now gets a pass of its own, naming only itself. It used
+    to name the first folder alongside each of the others, because
+    ``run_binder_eval`` built the complex through ColabDesign or RF3 and raised
+    for anything else, while every other folder was reached through
+    ``score_binders``: a second folder could only be asked for with the first
+    one present, so a pass meant to fold ESMFold2 loaded AF2 too. One mechanism
+    reaches all of them now, so a pass costs one folder's VRAM instead of two,
+    and no folder is a precondition for another.
     """
     from proteinfoundation.metrics.column_names import folders_for_track
 
@@ -213,14 +214,7 @@ def evaluate_pass_plan(folding_models) -> list[dict]:
 
     passes: list[dict] = [{"kind": PASS_REDESIGN, "models": None, "track": None}]
     passes += [{"kind": PASS_FOLD, "models": [m], "track": "monomer"} for m in monomer]
-    if complex_:
-        primary = complex_[0]
-        passes.append({"kind": PASS_FOLD, "models": [primary], "track": "complex"})
-        # Each further complex folder in a pass of its own, with the primary
-        # alongside it so run_binder_eval finds its cache rather than refolding.
-        passes += [
-            {"kind": PASS_FOLD, "models": [primary, m], "track": "complex"} for m in complex_[1:]
-        ]
+    passes += [{"kind": PASS_FOLD, "models": [m], "track": "complex"} for m in complex_]
     passes.append({"kind": PASS_ESM, "models": None, "track": "complex"})
     passes.append({"kind": PASS_FINAL, "models": None, "track": None})
     return passes

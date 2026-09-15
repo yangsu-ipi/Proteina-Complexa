@@ -647,15 +647,26 @@ def test_the_atom_mask_fix_invalidates_the_numbers_it_changed():
 
 def test_a_stale_derivation_recomputes_instead_of_refolding():
     """The whole point of the split. A cache whose structures match but whose
-    numbers came from another rule must be refreshed, not thrown away."""
-    source = _read("src/proteinfoundation/evaluation/binder_eval.py")
-    assert "if derivation_stale:" in source
-    # Anchored on the import, because "if derivation_stale:" also appears in the
-    # reader that computes it -- and matching there would test the wrong branch.
-    stale_block = source[source.index("import recompute_derived") :][:1600]
-    assert "recompute_derived(" in stale_block
-    assert "cached = None" in stale_block, "missing structures fall back to a refold"
-    assert "write_binder_eval_cache(" in stale_block, "the refreshed numbers are persisted"
+    numbers came from another rule must be refreshed, not thrown away.
+
+    Asserted as there being exactly ONE place that does it. There used to be two:
+    binder_eval refreshed the gated folder's cache through recompute_derived, and
+    score_binders refreshed every other folder's through _derive_into_scores --
+    two implementations of one rule, which is how the folders they served came to
+    disagree about what a cached number meant. Now that every complex folder is
+    reached the same way, only the second remains.
+    """
+    source = _read("src/proteinfoundation/metrics/consensus_folding.py")
+    stale_block = source[source.index("def _derive_into_scores") :][:3000]
+    assert "derive_from_structure(" in stale_block
+    assert "write_consensus_cache(" in source[source.index("if scores and cache_dir:") :][:900], (
+        "the refreshed numbers are persisted"
+    )
+    binder_eval = _read("src/proteinfoundation/evaluation/binder_eval.py")
+    assert "recompute_derived(" not in binder_eval, (
+        "a second implementation of the refresh has come back; the folder it serves "
+        "will drift from the folders score_binders serves"
+    )
 
 
 def test_every_gated_placement_criterion_is_in_the_placement_set():

@@ -470,7 +470,37 @@ def _add_refolded_structure_metrics(
     df: pd.DataFrame,
     job_id: int,
 ) -> pd.DataFrame:
-    """Compute interface metrics on every refolded structure and merge into *df*."""
+    """Retired for the complex track: score_binders reads these off the structures.
+
+    This was a second pass over every refolded complex, computing the interface
+    family for the folder that used to be primary -- because that folder's path
+    had no derivation of its own, while every other folder's did. The two wrote
+    the SAME columns, and this one ran later, so it won.
+
+    They no longer agree. score_binders derives per draw and reduces by the rule
+    the metric asks for (worst case for placement, mean otherwise); this pass
+    averaged over models unconditionally. Leaving both would mean the folder that
+    happens to be named first gets a mean where every other folder gets a worst
+    case, under one column name -- the exact asymmetry the unification removes,
+    reintroduced by an overwrite.
+
+    Checked before removing: this pass computed 23 metrics and score_binders
+    derives all 23, plus the 6 geometry columns this one never had. Nothing is
+    lost. TMOL still follows compute_refolded_structure_metrics, through
+    derive_consensus_tmol, which is the same flag read in the same place.
+
+    Kept as a function rather than deleted because the monomer and apo tracks may
+    want the same treatment, and because a caller that still asks for it should
+    find an explanation rather than a missing name.
+    """
+    return df
+
+
+def _unused_add_refolded_structure_metrics(
+    cfg: DictConfig,
+    df: pd.DataFrame,
+    job_id: int,
+) -> pd.DataFrame:
     cfg_metric = cfg.metric
     show_progress = cfg.get("show_progress", False)
 
