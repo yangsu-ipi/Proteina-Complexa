@@ -227,10 +227,14 @@ def test_the_refresh_measures_the_interface_on_the_file_the_fold_did():
     another would differ for reasons that have nothing to do with the cutoff,
     and nothing downstream would say so."""
     source = _binder_metrics()
-    refresh = source[source.index("def recompute_derived(") : source.index("def run_binder_eval(")]
-    folding = source[source.index("def run_binder_eval(") :]
+    refresh = source[source.index("def recompute_derived(") : source.index("class BinderSequenceSet")]
+    # The original count is taken where the sequences are assembled, which is
+    # where the interface query lives now that folding is a per-folder pass and
+    # the interface is not: it is a property of the DESIGN, measured once and
+    # answering for every folder.
+    assembly = source[source.index("def assemble_binder_sequences(") : source.index("def run_binder_eval(")]
     assert "interface_structure_path(pdb_file_path)" in refresh
-    assert "interface_structure_path(pdb_file_path)" in folding
+    assert "interface_structure_path(pdb_file_path)" in assembly
     assert "interface_positions(" in refresh
 
 
@@ -353,3 +357,30 @@ def test_the_backends_own_file_wins_over_the_legacy_one(tmp_path):
     write_binder_eval_cache(str(tmp_path), "fp", STATS, SEQS, "deriv", backend="af2")
     stats, _, stale = read_binder_eval_cache(str(tmp_path), "fp", ["self"], "deriv", backend="af2")
     assert (stats, stale) == (STATS, False), "the legacy file's older derivation must not be what is read"
+
+
+def test_assembling_sequences_folds_nothing():
+    """The seam that lets every complex folder be reached the same way.
+
+    Inverse folding, the interface query and the composition counts are
+    properties of the DESIGN and are the same whichever folder predicts it.
+    While they lived inside run_binder_eval beside the folding dispatch, a second
+    complex folder could only be reached by a separate mechanism that assembled
+    its own -- which is the whole of the primary/advisory split.
+    """
+    source = _binder_metrics()
+    assembly = source[source.index("def assemble_binder_sequences(") : source.index("def run_binder_eval(")]
+    for folding in ("run_af_eval", "run_rf3_eval", "eval_func", "get_af2_advanced_settings"):
+        assert folding not in assembly, f"{folding} is a folder's business, not a design's"
+    for design in ("inverse_fold", "shared_redesign_set", "interface_positions", "extract_seq_from_pdb"):
+        assert design in assembly, f"{design} is a property of the design and belongs here"
+
+
+def test_run_binder_eval_assembles_through_the_same_function():
+    """Two ways to build a design's sequences is two ways for the folders that
+    take one path and the folders that take the other to disagree about what they
+    folded."""
+    source = _binder_metrics()
+    folding = source[source.index("def run_binder_eval(") :]
+    assert "assemble_binder_sequences(" in folding
+    assert "shared_redesign_set(" not in folding, "it must not assemble a second set of its own"

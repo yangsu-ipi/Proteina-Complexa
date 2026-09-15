@@ -1,5 +1,6 @@
 import os
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -257,95 +258,90 @@ def recompute_derived(
     return True
 
 
-def run_binder_eval(
-    pdb_file_path: str | Path,
-    target_pdb_path: str | Path,
-    folding_model_specs: dict[str, dict[str, str]],
-    tmp_path: str | Path = "./tmp/metrics/",
-    target_pdb_chain: list[str] = ["A"],
-    sequence_types: list[Literal["mpnn", "mpnn_fixed", "self"]] = ["self"],
-    interface_cutoff: float = DEFAULT_INTERFACE_CUTOFF_PROTEIN,
-    is_target_ligand: bool = False,
-    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
-    gen_target_chain: list[str] = None,  # If none, use target_pdb_chain as gen_target_chain
-    binder_chain: str = None,  # If none, use the last chain id in the refolded complex
-    num_redesign_seqs: int = None,  # If none, default to 8 for protein targets, 1 for ligand targets
-    # How many redesigns to GENERATE, which is the count both tracks ask for so
-    # the set can be shared. num_redesign_seqs is how many this track USES.
-    shared_redesign_count: int | None = None,
-    fixed_residues_override: list[str] | None = None,
-    n_af2_models: int = 1,
-) -> dict[str, list[dict[str, dict]]]:
-    """Evaluates protein binder designs using inverse folding models and folding models.
+@dataclass
+class BinderSequenceSet:
+    """Everything about a design that does not depend on which folder runs.
 
-    This function performs a comprehensive evaluation of protein binder designs by:
-    1. Generating sequences using ProteinMPNN/LigandMPNN (if "mpnn" in sequence_types)
-    2. Generating sequences using ProteinMPNN/LigandMPNN with interface residues fixed (if "mpnn_fixed" in sequence_types)
-    3. Using self-generated sequences from PDB file (if "self" in sequence_types)
-    4. Evaluating complexes using chosen folding model with target structure as template
-    5. Computing RMSD metrics between different states
+    The sequences to evaluate, where the interface is, and what each sequence is
+    made of. None of it is a prediction, so none of it should be recomputed once
+    per folder -- and while it lived inside ``run_binder_eval`` beside the
+    folding dispatch, a second complex folder could only be reached by a separate
+    mechanism that had to assemble its own.
 
-    Args:
-        pdb_file_path: Path to input PDB file containing the target structure
-        target_pdb_path: Path to input PDB file containing the target structure
-        model_info: Dictionary containing information about the folding models
-            model_info should be in the format:
-            {
-                "model_name": {"colabdesign", "RF3", "PTX"}, # Model name must be provided
-                "runner": {RF3RewardRunner, PTXRewardRunner}, # Runner must be provided for RF3 and PTX
-                "filter_path": PATH/TO/FILTER/FILE, # Filter path must be provided for colabdesign
-                "target_msa_paths": [PATH/TO/MSA/FILE], # Target MSA paths must be provided for PTX
-            }
-        tmp_path: Directory to store temporary files from ProteinMPNN and AlphaFold
-            Default: "./tmp/metrics/"
-        target_pdb_chain: Chain identifier for the target in the original target PDB file
-        binder_chain: Chain identifier for the binder in the PDB file
-        sequence_types: List of sequence types to evaluate. Options:
-            - "mpnn": Use ProteinMPNN redesigned sequences
-            - "mpnn_fixed": Use ProteinMPNN redesigned sequences with interface residues fixed
-            - "self": Use self-generated sequences from the PDB file
-        interface_cutoff: Contact distance in Angstroms for the interface definition. Feeds
-            protein-interface's strict mode for protein targets, and the all-atom CA-free
-            path for ligand ones. All-atom, so it is not the 8.0 the CA-based predecessor
-            used -- see metrics/interface.py.
-            Default: 8.0
-        is_target_ligand: Whether the target is a ligand
-            Default: False
-        gen_target_chain: Chain identifier for the target in the generated PDB file
-            Default: None
-            if None, use target_pdb_chain as gen_target_chain
-        fixed_residues_override: Optional list of residue positions to fix during
-            ``mpnn_fixed`` inverse folding, in ``["B45", "B46"]`` format.
-            When provided, these positions are used *instead* of computing
-            interface residues.  Useful for motif binder evaluation where
-            the motif residues (not interface residues) should be fixed.
-            Default: None (use interface-based detection)
-
-    Returns:
-        Dictionary containing the evaluation results
-            - complex_statistics: List of dicts with chosen folding model metrics for each sequence
-                Format: [{"mpnn_seq_1": {"model_1": {"pLDDT": float, "pTM": float, ...}}}, ...]
-                All sequences are returned with prefixes to distinguish their type
-            - binder_statistics: List of dicts with chosen folding model metrics for each sequence
-                Format: [{"mpnn_seq_1": {"model_1": {"pLDDT": float, "pTM": float, ...}}}, ...]
-                All sequences are returned with prefixes to distinguish their type
-            - rmsd_results: List of dicts with RMSD metrics for each sequence
-                Format: [{"mpnn_seq_1": {"binder_scRMSD": float, "binder_bound_unbound_RMSD": float}}, ...]
-                All sequences are returned with prefixes to distinguish their type
-            - filter_pass: List of dicts indicating which sequences passed the filters
-                Format: [{"mpnn_seq_1": bool}, ...]
-                All sequences are returned with prefixes to distinguish their type
+    ``aa_stats`` is per sequence type and parallel to that type's entry in
+    ``sequences_dict``, and each row records the sequence it was computed from so
+    the join is checkable rather than assumed -- see
+    ``binder_eval.sequences_for_type``.
     """
 
-    model_name = folding_model_specs["model_name"]
-    assert model_name in [
-        "colabdesign",
-        "RF3",
-        "PTX",
-        "BOLTZ2",
-    ], f"Folding model {model_name} not supported"
-    if is_target_ligand and model_name == "colabdesign":
-        raise ValueError("Colabdesign does not support ligand targets")
+    name: str
+    binder_chain: str
+    gen_target_chain: list
+    target_pdb_chain: list
+    updated_pdb_path: str
+    sequences_dict: dict
+    all_sequences: list
+    sequence_types_list: list
+    all_interface_residues: list
+    interface_seq_indices: list
+    interface_resseqs: list
+    binder_length: int
+    aa_stats: dict
+
+
+def composition_of(sequence: str, interface_residues) -> dict:
+    """One sequence's amino-acid composition, whole and at the interface.
+
+    Not a measurement of any structure: it is what the sequence is made of, and
+    it is the same whichever folder predicts it.
+    """
+    all_counts = Counter(sequence)
+    if interface_residues is not None and len(interface_residues) > 0:
+        # Interface indices match sequence indices; adjust here if that changes.
+        interface_counts = Counter("".join(sequence[i] for i in interface_residues))
+    else:
+        interface_counts = {}
+    return {"residue_counts": dict(all_counts), "interface_counts": dict(interface_counts)}
+
+
+def assemble_binder_sequences(
+    pdb_file_path,
+    target_pdb_path,
+    tmp_path: str = "./tmp/metrics/",
+    target_pdb_chain: list = None,
+    sequence_types: list = None,
+    inverse_folding_model: str = None,
+    is_target_ligand: bool = False,
+    interface_cutoff: float = None,
+    gen_target_chain: list = None,
+    binder_chain: str = None,
+    num_redesign_seqs: int = None,
+    shared_redesign_count: int | None = None,
+    fixed_residues_override: list | None = None,
+) -> BinderSequenceSet:
+    """Build the sequences for one design, folding nothing.
+
+    Split out of :func:`run_binder_eval` so that every complex folder can be
+    reached the same way. Inverse folding, the interface query and the
+    composition counts are properties of the DESIGN; folding is the only part
+    that is a property of a folder, and it is the only part that belongs in a
+    per-folder pass.
+    """
+    name = pdb_name_from_path(pdb_file_path)
+    updated_pdb_path = updated_structure_path(pdb_file_path, is_target_ligand)
+    # Determine chain IDs
+    # sort target_pdb_chain alphabetically to be sure that the first chain is the starting chain
+    target_pdb_chain = sorted(target_pdb_chain)
+    # If gen_target_chain is not provided, use target_pdb_chain as gen_target_chain
+    if gen_target_chain is None:
+        gen_target_chain = target_pdb_chain
+    starting_chain_id = target_pdb_chain[0]
+    # If binder_chain is not provided, use the last chain id in the refolded complex
+    if binder_chain is None:
+        all_chain_ids = [
+            chr(ord(starting_chain_id) + i) for i in range(len(target_pdb_chain) + 1)
+        ]  # target chains + binder chain
+        binder_chain = all_chain_ids[-1]
 
     # Check if sequence types are valid
     valid_types = {"mpnn", "mpnn_fixed", "self"}
@@ -496,6 +492,168 @@ def run_binder_eval(
 
     logger.info("Inverse folding finished")
 
+
+    aa_stats: dict = {t: [] for t in set(sequence_types_list)}
+    for sequence_entry, seq_type, interface_residues in zip(
+        all_sequences, sequence_types_list, all_interface_residues, strict=False
+    ):
+        sequence = sequence_entry["seq"]
+        aa_stats[seq_type].append(
+            {
+                # The sequence this row's metrics were computed from. Downstream
+                # code used to recover it by indexing sequences_dict in parallel,
+                # which is only correct while both lists stay in append order and
+                # fails silently otherwise. Recording it makes that join checkable.
+                "sequence": sequence,
+                **composition_of(sequence, interface_residues),
+                "binder_length": binder_length,
+            }
+        )
+
+    return BinderSequenceSet(
+        name=name,
+        binder_chain=binder_chain,
+        gen_target_chain=gen_target_chain,
+        target_pdb_chain=target_pdb_chain,
+        updated_pdb_path=updated_pdb_path,
+        sequences_dict=dict(sequences_dict),
+        all_sequences=all_sequences,
+        sequence_types_list=sequence_types_list,
+        all_interface_residues=all_interface_residues,
+        interface_seq_indices=interface_seq_indices,
+        interface_resseqs=interface_resseqs,
+        binder_length=binder_length,
+        aa_stats=aa_stats,
+    )
+
+
+def run_binder_eval(
+    pdb_file_path: str | Path,
+    target_pdb_path: str | Path,
+    folding_model_specs: dict[str, dict[str, str]],
+    tmp_path: str | Path = "./tmp/metrics/",
+    target_pdb_chain: list[str] = ["A"],
+    sequence_types: list[Literal["mpnn", "mpnn_fixed", "self"]] = ["self"],
+    interface_cutoff: float = DEFAULT_INTERFACE_CUTOFF_PROTEIN,
+    is_target_ligand: bool = False,
+    inverse_folding_model: str = DEFAULT_INVERSE_FOLDING_MODEL,
+    gen_target_chain: list[str] = None,  # If none, use target_pdb_chain as gen_target_chain
+    binder_chain: str = None,  # If none, use the last chain id in the refolded complex
+    num_redesign_seqs: int = None,  # If none, default to 8 for protein targets, 1 for ligand targets
+    # How many redesigns to GENERATE, which is the count both tracks ask for so
+    # the set can be shared. num_redesign_seqs is how many this track USES.
+    shared_redesign_count: int | None = None,
+    fixed_residues_override: list[str] | None = None,
+    n_af2_models: int = 1,
+) -> dict[str, list[dict[str, dict]]]:
+    """Evaluates protein binder designs using inverse folding models and folding models.
+
+    This function performs a comprehensive evaluation of protein binder designs by:
+    1. Generating sequences using ProteinMPNN/LigandMPNN (if "mpnn" in sequence_types)
+    2. Generating sequences using ProteinMPNN/LigandMPNN with interface residues fixed (if "mpnn_fixed" in sequence_types)
+    3. Using self-generated sequences from PDB file (if "self" in sequence_types)
+    4. Evaluating complexes using chosen folding model with target structure as template
+    5. Computing RMSD metrics between different states
+
+    Args:
+        pdb_file_path: Path to input PDB file containing the target structure
+        target_pdb_path: Path to input PDB file containing the target structure
+        model_info: Dictionary containing information about the folding models
+            model_info should be in the format:
+            {
+                "model_name": {"colabdesign", "RF3", "PTX"}, # Model name must be provided
+                "runner": {RF3RewardRunner, PTXRewardRunner}, # Runner must be provided for RF3 and PTX
+                "filter_path": PATH/TO/FILTER/FILE, # Filter path must be provided for colabdesign
+                "target_msa_paths": [PATH/TO/MSA/FILE], # Target MSA paths must be provided for PTX
+            }
+        tmp_path: Directory to store temporary files from ProteinMPNN and AlphaFold
+            Default: "./tmp/metrics/"
+        target_pdb_chain: Chain identifier for the target in the original target PDB file
+        binder_chain: Chain identifier for the binder in the PDB file
+        sequence_types: List of sequence types to evaluate. Options:
+            - "mpnn": Use ProteinMPNN redesigned sequences
+            - "mpnn_fixed": Use ProteinMPNN redesigned sequences with interface residues fixed
+            - "self": Use self-generated sequences from the PDB file
+        interface_cutoff: Contact distance in Angstroms for the interface definition. Feeds
+            protein-interface's strict mode for protein targets, and the all-atom CA-free
+            path for ligand ones. All-atom, so it is not the 8.0 the CA-based predecessor
+            used -- see metrics/interface.py.
+            Default: 8.0
+        is_target_ligand: Whether the target is a ligand
+            Default: False
+        gen_target_chain: Chain identifier for the target in the generated PDB file
+            Default: None
+            if None, use target_pdb_chain as gen_target_chain
+        fixed_residues_override: Optional list of residue positions to fix during
+            ``mpnn_fixed`` inverse folding, in ``["B45", "B46"]`` format.
+            When provided, these positions are used *instead* of computing
+            interface residues.  Useful for motif binder evaluation where
+            the motif residues (not interface residues) should be fixed.
+            Default: None (use interface-based detection)
+
+    Returns:
+        Dictionary containing the evaluation results
+            - complex_statistics: List of dicts with chosen folding model metrics for each sequence
+                Format: [{"mpnn_seq_1": {"model_1": {"pLDDT": float, "pTM": float, ...}}}, ...]
+                All sequences are returned with prefixes to distinguish their type
+            - binder_statistics: List of dicts with chosen folding model metrics for each sequence
+                Format: [{"mpnn_seq_1": {"model_1": {"pLDDT": float, "pTM": float, ...}}}, ...]
+                All sequences are returned with prefixes to distinguish their type
+            - rmsd_results: List of dicts with RMSD metrics for each sequence
+                Format: [{"mpnn_seq_1": {"binder_scRMSD": float, "binder_bound_unbound_RMSD": float}}, ...]
+                All sequences are returned with prefixes to distinguish their type
+            - filter_pass: List of dicts indicating which sequences passed the filters
+                Format: [{"mpnn_seq_1": bool}, ...]
+                All sequences are returned with prefixes to distinguish their type
+    """
+
+    model_name = folding_model_specs["model_name"]
+    assert model_name in [
+        "colabdesign",
+        "RF3",
+        "PTX",
+        "BOLTZ2",
+    ], f"Folding model {model_name} not supported"
+    if is_target_ligand and model_name == "colabdesign":
+        raise ValueError("Colabdesign does not support ligand targets")
+
+    # Check if sequence types are valid
+    valid_types = {"mpnn", "mpnn_fixed", "self"}
+    invalid_types = set(sequence_types) - valid_types
+    if invalid_types:
+        raise ValueError(f"Invalid sequence types: {invalid_types}. Valid types are: {valid_types}")
+
+    # Assembled once, by the code that owns it. This used to be inline here,
+    # which meant the sequences, the interface query and the composition counts
+    # were entangled with the folding dispatch below -- so a second complex
+    # folder could only be reached through a separate mechanism that had to
+    # assemble its own.
+    assembled = assemble_binder_sequences(
+        pdb_file_path=pdb_file_path,
+        target_pdb_path=target_pdb_path,
+        tmp_path=tmp_path,
+        target_pdb_chain=target_pdb_chain,
+        sequence_types=sequence_types,
+        inverse_folding_model=inverse_folding_model,
+        is_target_ligand=is_target_ligand,
+        interface_cutoff=interface_cutoff,
+        gen_target_chain=gen_target_chain,
+        binder_chain=binder_chain,
+        num_redesign_seqs=num_redesign_seqs,
+        shared_redesign_count=shared_redesign_count,
+        fixed_residues_override=fixed_residues_override,
+    )
+    name = assembled.name
+    binder_chain = assembled.binder_chain
+    gen_target_chain = assembled.gen_target_chain
+    target_pdb_chain = assembled.target_pdb_chain
+    updated_pdb_path = assembled.updated_pdb_path
+    sequences_dict = assembled.sequences_dict
+    all_sequences = assembled.all_sequences
+    sequence_types_list = assembled.sequence_types_list
+    all_interface_residues = assembled.all_interface_residues
+    binder_length = assembled.binder_length
+
     if model_name == "colabdesign":
         from proteinfoundation.utils.colabdesign_utils import get_af2_advanced_settings, run_af_eval
 
@@ -578,15 +736,10 @@ def run_binder_eval(
         new_seq_name = f"{seq_type}_seq_{seq_num + 1}"
 
         sequence = all_sequences[seq_num]["seq"]
-        # Count all residues
-        all_counts = Counter(sequence)
-        # Count only interface residues, careful about indexing
-        if interface_residues and len(interface_residues) > 0:
-            # Interface indices returned by get_interface_residues should match sequence indices: adjust if not
-            interface_seq = "".join([sequence[i] for i in interface_residues])
-            interface_counts = Counter(interface_seq)
-        else:
-            interface_counts = {}
+        # By the same function the assembled set used, so the counts on a row and
+        # the counts in aa_stats cannot be two answers to one question.
+        counts = composition_of(sequence, interface_residues)
+        all_counts, interface_counts = counts["residue_counts"], counts["interface_counts"]
 
         # Add counts to complex stats and preserve complex PDB path if present:
         new_complex_stat = {
