@@ -481,5 +481,4 @@ def test_a_kept_pae_reduces_to_itself_rather_than_to_nan(tmp_path):
     """End to end with the reducer analyze uses: one draw carrying the reading
     and four carrying none must come out as that reading, not as NaN."""
     entries = _with_models(tmp_path, pae=False)
-    per_draw = [m["i_pAE"] for m in entries.values() if "i_pAE" in m]
-    assert reduce_over_draws(per_draw) == _stats(0)["i_pAE"]
+    assert reduce_over_draws(entries)["i_pAE"] == _stats(0)["i_pAE"]
