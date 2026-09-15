@@ -492,7 +492,6 @@ def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
     )
 
     available = [
-        "mpnn_apo_esmfold_binder_scRMSD_ca_all",
         "mpnn_apo_esmfold2_binder_scRMSD_ca_all",
         "mpnn_complex_af2_i_pAE_all",
         "mpnn_complex_af2_binder_pLDDT_all",
@@ -502,10 +501,10 @@ def test_the_apo_placeholder_expands_from_the_metric_not_the_key():
     ]
     out = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "mpnn", available)
     apo = {k: v for k, v in out.items() if k.startswith("apo_")}
-    assert set(apo) == {"apo_scRMSD_ca_esmfold", "apo_scRMSD_ca_esmfold2"}, apo
+    assert set(apo) == {"apo_scRMSD_ca_esmfold2"}, apo
     assert (
         apo["apo_scRMSD_ca_esmfold2"]["metric"] == "esmfold2_binder_scRMSD_ca"
-    ), "the expanded metric must travel too; the model fills the backend slot, so it leads"
+    ), "the resolved metric must travel too; the model fills the backend slot, so it leads"
 
 
 def test_a_criterion_naming_a_column_the_run_lacks_is_reported(caplog):
@@ -834,24 +833,26 @@ def test_every_evaluate_config_refolds_with_at_least_two_folders():
         assert len(resolved.designability) >= 2, f"{path}: {resolved.designability}"
     assert checked >= 10, f"only {checked} configs declare folding_models; did a migration miss some?"
 
-def test_the_apo_criterion_gates_on_every_model_the_run_used():
-    """The consequence of the line above, and the reason it is a decision rather
-    than a default: with two apo folders a design must clear the threshold under
-    BOTH. Adding a model tightens the gate."""
+def test_adding_an_apo_folder_does_not_add_a_criterion():
+    """This used to gate on EVERY apo folder the run produced, conjunctively, and
+    that was documented as a deliberate decision: "adding a model tightens the
+    gate". It was reversed because tightening arrived by accident. EFNB3's
+    migration produced an AF2 apo fold and the pass rate fell 16.1% -> 3.0% with
+    no design changing and nobody choosing it."""
     from proteinfoundation.result_analysis.binder_analysis_utils import (
         DEFAULT_PROTEIN_BINDER_THRESHOLDS,
         expand_model_criteria,
     )
 
-    row = {
-        "self_apo_esmfold2_binder_scRMSD_ca_all": [1.0],
-        "self_apo_colabfold_binder_scRMSD_ca_all": [9.0],
-    }
-    expanded = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "self", set(row))
-    apo = {name: spec for name, spec in expanded.items() if spec.get("column_prefix") == "apo"}
-    assert len(apo) == 2, f"one criterion per folding model, got {sorted(apo)}"
-    metrics = {spec["metric"] for spec in apo.values()}
-    assert metrics == {"esmfold2_binder_scRMSD_ca", "colabfold_binder_scRMSD_ca"}
+    one = {"self_apo_af2_binder_scRMSD_ca_all": [1.0]}
+    two = {**one, "self_apo_esmfold2_binder_scRMSD_ca_all": [9.0]}
+
+    def apo_of(row):
+        expanded = expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "self", set(row), "af2")
+        return {n: sp for n, sp in expanded.items() if sp.get("column_prefix") == "apo"}
+
+    assert set(apo_of(one)) == set(apo_of(two)) == {"apo_scRMSD_ca_af2"}
+    assert {sp["metric"] for sp in apo_of(two).values()} == {"af2_binder_scRMSD_ca"}
 
 
 # ----------------------------- a failed fold survives the CSV round trip
