@@ -8,6 +8,7 @@ mean the same sequence everywhere, and does an unanswerable question stay
 unanswered".
 """
 
+import contextlib
 import math
 import pathlib
 import re
@@ -910,20 +911,40 @@ def test_a_design_with_one_unfoldable_redesign_still_gets_a_verdict_each():
 # --------------------------------------- who is entitled to complain about a gap
 
 
-def test_a_row_under_construction_does_not_report_its_gaps(caplog):
+@contextlib.contextmanager
+def _loguru_records():
+    """Capture loguru records. pytest's caplog does not see them -- asserting on
+    caplog here passes whatever the code does, which is worse than no test."""
+    from loguru import logger as _logger
+
+    seen: list = []
+    sink = _logger.add(lambda m: seen.append(m.record), level="DEBUG")
+    try:
+        yield seen
+    finally:
+        _logger.remove(sink)
+
+
+def _levels(records, *names):
+    return [r["level"].name for r in records if any(n in r["message"] for n in names)]
+
+
+def test_a_row_under_construction_does_not_report_its_gaps():
     """Evaluate resolves criteria against a row the pass plan is still filling, so
     a criterion whose column has not been computed YET is the normal state. It was
     reported as an error anyway: 657 designs x 7 criteria x 5 passes of it per
     campaign, loud enough to bury the errors that mean something."""
     from proteinfoundation.evaluation.binder_eval_utils import per_sequence_pass
 
-    partial = {"mpnn_complex_af2_i_pAE_all": [0.1]}  # the other criteria's columns are not written yet
-    with caplog.at_level("WARNING"):
+    partial = {"mpnn_complex_af2_i_pAE_all": [0.1]}  # the other columns are not written yet
+    with _loguru_records() as seen:
         assert per_sequence_pass(partial, "mpnn", PROTEIN) is None, "still cannot judge"
-    assert not caplog.records, f"evaluate should stay quiet about a partial row, said: {caplog.records}"
+    loud = [r for r in seen if r["level"].name in ("ERROR", "WARNING")]
+    assert not loud, f"evaluate should stay quiet about a partial row, said: {[r['message'] for r in loud]}"
+    assert _levels(seen, "which this run did not produce"), "and the gap must still be visible under -v"
 
 
-def test_a_finished_frame_still_reports_its_gaps(caplog):
+def test_a_finished_frame_still_reports_its_gaps():
     """The same gap in analyze is a real fault -- nothing later will fill it --
     and must stay loud. Demoted for one caller, not removed."""
     from proteinfoundation.result_analysis.binder_analysis_utils import (
@@ -931,6 +952,8 @@ def test_a_finished_frame_still_reports_its_gaps(caplog):
         expand_model_criteria,
     )
 
-    with caplog.at_level("ERROR"):
+    with _loguru_records() as seen:
         expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "mpnn", ["mpnn_complex_af2_i_pAE_all"])
-    assert caplog.records, "a finished frame missing a gated column has to say so"
+    assert "ERROR" in _levels(seen, "which this run did not produce", "matched no"), (
+        "a finished frame missing a gated column has to say so"
+    )
