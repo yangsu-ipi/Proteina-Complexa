@@ -238,3 +238,50 @@ def test_provenance_lists_survive_the_reduction_instead_of_being_averaged():
     })
     assert got["binder_ss_counts"] == [5.0, 5.0]
     assert got["reduced_over_models"] == ["i_pTM", "pTM"]
+
+
+# ---------------------------------------------------------------------------
+# Every complex folder is reachable the same way
+# ---------------------------------------------------------------------------
+
+
+def test_every_folder_declared_complex_capable_is_registered_as_a_backend():
+    """The invariant behind "no folder is special". _FOLDER_CAPABILITIES is what
+    a config is validated against, and CONSENSUS_BACKENDS is what can actually be
+    folded through the shared path -- so a folder in the first and not the second
+    is one a campaign may name and only the gated mechanism can reach. RF3 was
+    exactly that: declaring it complex-capable let a config ask for it, while
+    being absent here meant it could only ever be folders.complex[0], so a
+    campaign naming it could have no second folder beside it and one naming it
+    second could not use it at all.
+    """
+    from proteinfoundation.metrics.column_names import _FOLDER_CAPABILITIES
+
+    declared = {name for name, tracks in _FOLDER_CAPABILITIES.items() if "complex" in tracks}
+    assert declared <= set(cf.CONSENSUS_BACKENDS), (
+        f"{sorted(declared - set(cf.CONSENSUS_BACKENDS))} can fold a complex by _FOLDER_CAPABILITIES "
+        f"but cannot be reached through score_binders"
+    )
+
+
+def test_rf3_refuses_a_context_with_no_runner_rather_than_folding_nothing():
+    """It is an object holding weights, not a function of its inputs. A caller
+    that has only sequences has to be told so, not handed empty metrics that look
+    like a fold which found nothing."""
+    with pytest.raises(ValueError, match="runner"):
+        cf.CONSENSUS_BACKENDS["rf3"](["MTGT"], "AAAA", {}, None, "seed1", None)
+
+
+def test_rf3_draws_once():
+    """Its ensemble is not a sampler's. One prediction per binder, like AF2 per
+    parameter set and unlike ESMFold2 per seed."""
+    assert draw_ids_for("rf3", {"n_seeds": 3}, TARGET, SEQ) == draw_ids_for("rf3", {}, TARGET, SEQ)
+    assert len(draw_ids_for("rf3", {"n_seeds": 3}, TARGET, SEQ)) == 1
+
+
+def test_a_harness_envelope_is_unwrapped_for_every_backend_that_uses_one():
+    """Both complex harnesses return {"seq_N": stats}. Reading the envelope as
+    the statistics is what made _score_af2 return a path and no numbers."""
+    assert cf._unwrap_sequence_envelope({"seq_1": {"i_pTM": 0.8}}) == {"i_pTM": 0.8}
+    assert cf._unwrap_sequence_envelope({"i_pTM": 0.8}) == {"i_pTM": 0.8}, "a bare dict is already the stats"
+    assert cf._unwrap_sequence_envelope(None) == {}

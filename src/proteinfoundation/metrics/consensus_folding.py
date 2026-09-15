@@ -226,6 +226,19 @@ class ComplexFoldContext:
     binder_chain: str | None = None
     design_name: str = "design"
     output_dir: str | None = None
+    # A folder that is an object rather than a function of its inputs. RF3 is
+    # handed a constructed runner holding its weights; the field is here rather
+    # than in that backend's own signature because the whole point of this
+    # dataclass is that every folder receives the same context and takes what it
+    # needs -- a backend with a private argument is a backend that cannot be
+    # reached the same way as the others, which is how the split this removes
+    # came about in the first place.
+    runner: object | None = None
+    # Whether the target is a ligand rather than a protein. Changes how a folder
+    # templates: RF3 selects a ground-truth conformer for ligands and a template
+    # for proteins. The sequence-only folders ignore it.
+    is_target_ligand: bool = False
+    smiles: str | None = None
 
 
 def _score_esmfold2(
@@ -694,9 +707,7 @@ def _score_af2(
     # pdb_path and no numbers at all. It went unnoticed because af2 has only ever
     # been reached as folders.complex[0], which does not come through here -- the
     # first thing routing it through score_binders would have hit.
-    envelope = stats[0] if isinstance(stats[0], dict) else {}
-    inner = [v for k, v in envelope.items() if k.startswith("seq_") and isinstance(v, dict)]
-    payload = inner[0] if len(inner) == 1 else envelope
+    payload = _unwrap_sequence_envelope(stats[0])
     # What each parameter set said, kept apart. The harness rides them along
     # beside its own mean for exactly this; a harness too old to do so leaves the
     # key absent and this degrades to the single reduced entry it used to return.
@@ -726,6 +737,21 @@ def _score_af2(
     return {"draws": draws}
 
 
+def _unwrap_sequence_envelope(entry) -> dict:
+    """The stats inside a harness's ``{"seq_N": stats}`` wrapper.
+
+    Both complex harnesses envelope each sequence's statistics this way. Reading
+    the envelope as though it were the statistics is not hypothetical: it is what
+    _score_af2 did, so the metric filter matched nothing and the backend returned
+    a structure path and no numbers. It went unnoticed because af2 was only ever
+    reached as folders.complex[0], which does not come through here.
+    """
+    if not isinstance(entry, dict):
+        return {}
+    inner = [v for k, v in entry.items() if k.startswith("seq_") and isinstance(v, dict)]
+    return inner[0] if len(inner) == 1 else entry
+
+
 def _place_structure(produced: str, wanted: str | None) -> str:
     """Put a harness-produced structure where the advisory store wants it.
 
@@ -741,11 +767,73 @@ def _place_structure(produced: str, wanted: str | None) -> str:
     return wanted
 
 
+def _score_rf3(
+    target_seqs: list[str],
+    binder_seq: str,
+    cfg: dict,
+    out_pdb_path: str | None = None,
+    draw: str | int = 0,
+    context: ComplexFoldContext | None = None,
+    out_path_for=None,
+) -> dict[str, float]:
+    """Fold target+binder with RF3, through the harness that already does it.
+
+    The third complex folder, and the last one that could only be reached through
+    the gated path. Registering it here is what makes "every complex folder is
+    reached the same way" true rather than true of two out of three -- while RF3
+    was reachable only through run_binder_eval's dispatch, a campaign naming it
+    could not have a second folder beside it, and one naming it second could not
+    use it at all.
+
+    RF3 reports no pTM or i_pTM and no per-chain pLDDT, so those columns are
+    absent for it rather than zero. Its confidences arrive on a 0-1 scale already
+    divided by PAE_MAX_BIN, which is the harness's own normalisation and is left
+    alone: a number comparable to AF2's is the harness's business, not this
+    function's.
+
+    One binder per call, where the harness can batch several. That is a real cost
+    and it is paid deliberately: batching is across SEQUENCES, while the contract
+    here is one call per (sequence, draw), and widening it for the one folder no
+    campaign currently runs would complicate the path both folders that are run
+    take. Worth revisiting when RF3 is actually used.
+    """
+    if context is None or context.runner is None or not context.design_pdb:
+        raise ValueError(
+            "rf3 folds a complex through a constructed runner holding its weights, so it needs a "
+            "ComplexFoldContext carrying runner and design_pdb. A caller with only sequences "
+            "cannot use this backend -- use esmfold2, which folds from sequence."
+        )
+    from proteinfoundation.utils.rf3_model import run_rf3_eval
+
+    stats, paths = run_rf3_eval(
+        rf3_runner=context.runner,
+        target_chain_ids=list(context.target_chains),
+        is_target_ligand=context.is_target_ligand,
+        binder_sequences=[{"seq": binder_seq}],
+        sequence_type_list=["self"],
+        design_name=context.design_name,
+        output_path=context.output_dir or os.path.dirname(out_pdb_path or "") or ".",
+        updated_pdb_path=context.design_pdb,
+        binder_chain_id=context.binder_chain or "B",
+        smiles=context.smiles,
+    )
+    if not stats:
+        return {}
+    payload = _unwrap_sequence_envelope(stats[0])
+    metrics = {k: float(v) for k, v in payload.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
+    produced = (paths or [None])[0]
+    if produced:
+        metrics["pdb_path"] = _place_structure(produced, out_pdb_path)
+    return metrics
+
+
 CONSENSUS_BACKENDS: dict[str, Callable[[list[str], str, dict], dict[str, float]]] = {
     "esmfold2": _score_esmfold2,
     # Registered beside it, not above it. The distinction that used to live here
     # -- one folder gates, the rest advise -- was never a property of the models.
     "af2": _score_af2,
+    # The last folder that could only be reached through the gated path.
+    "rf3": _score_rf3,
 }
 
 
