@@ -3179,7 +3179,17 @@ def main(cfg: DictConfig) -> None:
         from proteinfoundation.result_analysis.binder_analysis_utils import (
             add_outlier_columns,
             get_thresholds_for_result_type,
+            reduce_draws_in_frame,
         )
+
+        # Collapse each folder's draws first, so every _all cell below is the
+        # per-sequence list the rest of this contract assumes. Evaluate records
+        # one value per prediction and reduces none: whether five AF2 parameter
+        # sets are meaned or their worst case taken is a formulation over recorded
+        # numbers, like the ranking and the thresholds, so changing it is an
+        # analyze run rather than a refold of the campaign. A frame whose cells
+        # are already scalars passes through untouched.
+        combined_df = reduce_draws_in_frame(combined_df)
 
         # Which sequence each row's scalars describe is a formulation over the
         # per-sequence lists, like the thresholds below -- not a measurement. So it

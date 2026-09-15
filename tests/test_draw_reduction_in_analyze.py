@@ -1,0 +1,192 @@
+"""Where a folder's draws get collapsed, and why it is here rather than there.
+
+Evaluate records one value per prediction and reduces none. Whether five AF2
+parameter sets are meaned, or their worst case taken, is a formulation over
+recorded numbers -- exactly like the ranking that picks which sequence a row
+presents, and like the thresholds that turn numbers into verdicts. All three
+belong in analyze, where changing one costs a re-read.
+
+It used to live in the folding code, and the cost was not theoretical: AF2's five
+models were averaged inside the harness and the parts discarded, so asking a
+different question of them meant predicting the campaign again -- and because
+only the first model's structure stayed in reach, anything re-read off "the"
+structure answered for one model while the number beside it answered for five.
+
+The invariant that matters most here is that moving the reduction did not move
+any number: analyze reducing the recorded draws must agree with what evaluate
+used to freeze into the artifact.
+"""
+
+import ast
+import math
+
+import pandas as pd
+import pytest
+
+from proteinfoundation.metrics.consensus_folding import draws_by_metric, reduce_over_draws
+from proteinfoundation.result_analysis.analysis_utils import literal_eval_with_infinities
+from proteinfoundation.result_analysis.binder_analysis_utils import (
+    is_placement_column,
+    reduce_draws,
+    reduce_draws_in_frame,
+)
+
+
+# ---------------------------------------------------------------------------
+# Which rule applies
+# ---------------------------------------------------------------------------
+
+
+def test_placement_is_recognised_in_both_slot_spellings():
+    """The primary slot says complex_scRMSD_ca and the advisory slot says
+    scRMSD_ca for the same measurement. One rule has to catch both, or the same
+    metric reduces two ways depending on which folder produced it."""
+    assert is_placement_column("mpnn_complex_af2_complex_scRMSD_ca_all")
+    assert is_placement_column("mpnn_complex_esmfold2_scRMSD_ca_all")
+    assert is_placement_column("self_complex_af2_binder_scRMSD_target_aligned_ca_all")
+
+
+def test_fold_quality_and_confidence_are_not_placement():
+    """binder_scRMSD_ca asks how well the binder folded, not where it landed."""
+    assert not is_placement_column("mpnn_complex_af2_binder_scRMSD_ca_all")
+    assert not is_placement_column("mpnn_complex_af2_i_pTM_all")
+    assert not is_placement_column("mpnn_complex_af2_avg_ipSAE_all")
+
+
+# ---------------------------------------------------------------------------
+# Collapsing one sequence's draws
+# ---------------------------------------------------------------------------
+
+
+def test_confidence_means_and_placement_takes_the_worst_draw():
+    assert reduce_draws([0.9, 0.5], placement=False) == pytest.approx(0.7)
+    assert reduce_draws([0.5, 8.0], placement=True) == pytest.approx(8.0)
+
+
+def test_a_failed_draw_is_dropped_not_folded_in():
+    """One NaN must not cost four good measurements."""
+    assert reduce_draws([1.0, float("nan"), 3.0], placement=False) == pytest.approx(2.0)
+    assert reduce_draws([1.0, float("inf"), 3.0], placement=True) == pytest.approx(3.0)
+
+
+def test_nothing_finite_stays_nan_rather_than_becoming_zero():
+    """A metric with nothing behind it must not become a plausible-looking number
+    that clears a threshold. That holds for the worst case too: a failed draw
+    leaves it unknown, not zero."""
+    assert math.isnan(reduce_draws([float("nan"), float("inf")], placement=False))
+    assert math.isnan(reduce_draws([float("nan")], placement=True))
+    assert math.isnan(reduce_draws([], placement=False))
+
+
+def test_a_structure_path_takes_the_first_draw_rather_than_averaging():
+    assert reduce_draws(["/a.pdb", "/b.pdb"], placement=False) == "/a.pdb"
+
+
+def test_an_already_reduced_value_passes_straight_through():
+    """What a frame written before evaluate recorded draws holds, and what the
+    primary backend's columns still hold until every folder is reached the same
+    way. Both must survive this untouched."""
+    assert reduce_draws(0.83, placement=False) == 0.83
+    assert reduce_draws("af2", placement=True) == "af2"
+
+
+# ---------------------------------------------------------------------------
+# The invariant: moving the reduction moved no number
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "by_draw",
+    [
+        {"model1": {"i_pTM": 0.9, "scRMSD_ca": 0.5}, "model2": {"i_pTM": 0.5, "scRMSD_ca": 8.0}},
+        {f"model{k}": {"avg_ipSAE": 0.1 * k, "binder_scRMSD_ca": float(k)} for k in range(1, 6)},
+        {"seed11": {"i_pAE": 0.2}, "seed22": {"i_pAE": 0.4}, "seed33": {"i_pAE": 0.6}},
+    ],
+)
+def test_analyze_reducing_the_draws_agrees_with_what_evaluate_used_to_freeze(by_draw):
+    """The whole point of the move. If these disagreed, every finished campaign's
+    numbers would shift for no reason anyone could name."""
+    was = reduce_over_draws(by_draw)
+    per_draw = draws_by_metric(by_draw)
+    for metric, values in per_draw.items():
+        if metric == "n_predictions":
+            continue
+        placement = is_placement_column(f"mpnn_complex_af2_{metric}_all")
+        assert reduce_draws(values, placement) == pytest.approx(was[metric]), metric
+
+
+def test_a_draw_missing_a_metric_holds_its_place_in_the_list():
+    """Position k must be draw k in every list, or two metrics of one sequence
+    describe different predictions -- the pairing failure sequences_for_type
+    exists to stop, one axis down."""
+    per_draw = draws_by_metric({"model1": {"a": 1.0, "b": 2.0}, "model2": {"a": 3.0}})
+    assert per_draw["a"] == [1.0, 3.0]
+    assert len(per_draw["b"]) == 2 and math.isnan(per_draw["b"][1])
+
+
+# ---------------------------------------------------------------------------
+# Over a frame
+# ---------------------------------------------------------------------------
+
+
+def _frame():
+    return pd.DataFrame({
+        # two sequences, each with three draws
+        "mpnn_complex_af2_i_pTM_all": [[[0.9, 0.5, 0.7], [0.6, 0.6, 0.6]]],
+        "mpnn_complex_af2_scRMSD_ca_all": [[[0.5, 8.0, 0.4], [1.0, 1.0, 1.0]]],
+        # already reduced, as a pre-draw frame holds it
+        "mpnn_complex_af2_binder_dSASA_all": [[900.0, 950.0]],
+        "mpnn_sequence_all": [["AAAA", "CCCC"]],
+    })
+
+
+def test_a_per_draw_cell_becomes_the_per_sequence_list_analyze_reads():
+    """The contract downstream is unchanged: X_all is a list over sequences and
+    X is X_all[best_idx]. Only the number at each position is now computed here."""
+    out = reduce_draws_in_frame(_frame())
+    assert out["mpnn_complex_af2_i_pTM_all"][0] == pytest.approx([0.7, 0.6])
+    assert out["mpnn_complex_af2_scRMSD_ca_all"][0] == pytest.approx([8.0, 1.0]), "placement worst case"
+
+
+def test_an_already_reduced_column_is_left_exactly_as_it_is():
+    """Mixed frames are the normal case while the primary backend still reduces
+    in evaluate, and a pooled frame can hold runs from both eras."""
+    out = reduce_draws_in_frame(_frame())
+    assert out["mpnn_complex_af2_binder_dSASA_all"][0] == [900.0, 950.0]
+    assert out["mpnn_sequence_all"][0] == ["AAAA", "CCCC"]
+
+
+def test_reducing_twice_changes_nothing():
+    """Analyze re-runs over its own output, and a second pass must not mean the
+    means again."""
+    once = reduce_draws_in_frame(_frame())
+    first = list(once["mpnn_complex_af2_i_pTM_all"][0])
+    twice = reduce_draws_in_frame(once)
+    assert list(twice["mpnn_complex_af2_i_pTM_all"][0]) == pytest.approx(first)
+
+
+def test_per_draw_cells_survive_the_csv_round_trip():
+    """The frame reaches analyze as the repr of a Python list, parsed back by
+    literal_eval_with_infinities. Nesting one list inside another must survive it
+    -- including the NaN a failed draw leaves, which is a bare name that plain
+    ast.literal_eval refuses."""
+    cell = [[0.9, float("nan"), 0.7], [0.6, 0.6, 0.6]]
+    parsed = literal_eval_with_infinities(repr(cell))
+    assert len(parsed) == 2 and len(parsed[0]) == 3
+    assert math.isnan(parsed[0][1])
+    assert reduce_draws(parsed[0], placement=False) == pytest.approx(0.8)
+    with pytest.raises(ValueError):
+        ast.literal_eval(repr(cell))
+
+
+def test_a_nested_metric_name_does_not_inherit_the_outer_ones_rule():
+    """binder_scRMSD_ca ends with scRMSD_ca, and scRMSD_ca is a placement name.
+    Matching on 'ends with any placement name' therefore classified the binder's
+    own fold quality as placement and would have switched it from a mean to a
+    worst case across every campaign -- silently, because both are plausible
+    numbers. The longest name the column ends with is the metric it carries."""
+    assert is_placement_column("mpnn_complex_esmfold2_scRMSD_ca_all")
+    assert not is_placement_column("mpnn_complex_esmfold2_binder_scRMSD_ca_all")
+    assert is_placement_column("mpnn_complex_af2_binder_scRMSD_target_aligned_ca_all"), (
+        "a longer placement name is still a placement name"
+    )

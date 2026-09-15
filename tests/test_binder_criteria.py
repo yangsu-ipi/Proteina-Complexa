@@ -588,7 +588,7 @@ def test_the_analyze_refresh_survives_a_csv_round_trip(tmp_path):
 
     out = refresh_per_sequence_verdicts(reread, ["self"], DEFAULT_PROTEIN_BINDER_THRESHOLDS)
     assert list(out["self_pass_all"].iloc[0]) == [1]
-    assert out["self_pass"].iloc[0] == 1
+    assert out["self_pass_best"].iloc[0] == 1
 
 
 def test_the_odd_shapes_a_column_can_hold():
@@ -688,8 +688,14 @@ def test_the_headline_follows_the_ranking_not_the_order():
     df = _frame([[9.0, 1.0], [1.0, 9.0]], [[0, 1], [1, 0]])
     out = pick_headline_sequence(df, ["mpnn"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
     assert list(out["mpnn_best_idx"]) == [1, 0]
-    assert list(out["mpnn_complex_af2_i_pAE"]) == [1.0, 1.0]
-    assert list(out["mpnn_pass"]) == [1, 1], "the verdict must follow the same index"
+    # X_best, not bare X: the bare name reads as a measurement of the design, and
+    # for the ranking criterion's own metric it is the minimum over redesigns.
+    assert list(out["mpnn_complex_af2_i_pAE_best"]) == [1.0, 1.0]
+    assert "mpnn_complex_af2_i_pAE" not in out.columns, (
+        "the frame came in carrying the pre-rename scalar from an earlier run's ranking; "
+        "leaving it beside the new one puts a stale number under the more inviting name"
+    )
+    assert list(out["mpnn_pass_best"]) == [1, 1], "the verdict must follow the same index"
 
 
 def test_direction_maximize_is_honoured():
@@ -708,7 +714,7 @@ def test_an_unrankable_row_falls_back_to_index_zero_and_says_so():
     df = _frame([[float("nan"), float("nan")]], [[0, 1]])
     out = pick_headline_sequence(df, ["mpnn"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
     assert list(out["mpnn_best_idx"]) == [0]
-    assert list(out["mpnn_pass"]) == [0]
+    assert list(out["mpnn_pass_best"]) == [0]
 
 
 def test_a_single_sequence_type_is_unaffected():
@@ -726,7 +732,7 @@ def test_a_single_sequence_type_is_unaffected():
     })
     out = pick_headline_sequence(df, ["self"], {"i_pAE": {"scale": 1.0, "direction": "minimize"}})
     assert list(out["self_best_idx"]) == [0]
-    assert list(out["self_complex_af2_i_pAE"]) == [0.4]
+    assert list(out["self_complex_af2_i_pAE_best"]) == [0.4]
 
 
 def test_the_monomer_best_sequence_follows_its_own_ranking():

@@ -817,6 +817,13 @@ def _agreeing_indices(row: dict, columns: list[str]) -> set[int] | None:
         values = row.get(f"{column}_all")
         if not isinstance(values, list):
             continue
+        # X_best is where the headline scalar lives; bare X is where it lived
+        # before it was named for what it is. Both are read, because a frame
+        # written either way must still be checkable -- and because reading only
+        # the new name would make this function vacuous on old frames rather than
+        # wrong, which is the quieter of the two failures and the one this
+        # function was already killed by once.
+        column = f"{column}_best" if f"{column}_best" in row else column
         if column not in row:
             # A column with no scalar makes no claim about which sequence the row
             # describes, so it cannot disagree with one. Evaluate emits per-sequence
@@ -873,7 +880,7 @@ def assert_headline_indices_agree(row: dict, seq_type: str, backend: str) -> Non
     # The verdict is a headline column too, and the one that actually drifted: it
     # is re-derived downstream, so it is the one most able to end up describing a
     # different sequence than the metrics beside it.
-    primary_columns.append(f"{seq_type}_pass")
+    primary_columns.append(f"{seq_type}_pass")  # resolved to _pass_best by _agreeing_indices
     primary = _agreeing_indices(row, primary_columns)
     advisory = _agreeing_indices(row, [advisory_column(seq_type, backend, m) for m in CONSENSUS_METRIC_SUFFIXES])
     if primary is not None and not primary:
@@ -1421,6 +1428,34 @@ CONSENSUS_PLACEMENT_SUFFIXES = frozenset(
 )
 
 
+def draws_by_metric(by_draw: dict[str, dict[str, float | str]]) -> dict[str, list]:
+    """``{metric: [value per draw]}`` in draw order, reducing nothing.
+
+    The un-reduced form of :func:`reduce_over_draws`, for a caller that wants the
+    draws themselves in the artifact so the reduction can be re-asked later.
+    Which reduction is right is a formulation over recorded values -- mean here,
+    worst case there -- and a formulation belongs with the thresholds in analyze,
+    where changing it costs a re-read rather than a refold. That is the same
+    argument pick_headline_sequence makes for choosing among sequences.
+
+    Draws a metric is missing from hold NaN at that position, so every list is
+    the same length and position k is draw k in every one of them.
+    """
+    if not by_draw:
+        return {}
+    order = sorted(by_draw)
+    keys: list[str] = []
+    for draw in order:
+        for key in by_draw[draw]:
+            if key not in keys:
+                keys.append(key)
+    out: dict[str, list] = {
+        key: [by_draw[draw].get(key, float("nan")) for draw in order] for key in keys
+    }
+    out["n_predictions"] = float(len(order))
+    return out
+
+
 def reduce_over_draws(by_draw: dict[str, dict[str, float | str]]) -> dict[str, float | str]:
     """Pool a binder's metrics across the draws that produced them.
 
@@ -1602,8 +1637,13 @@ def score_binders(
     reference_pdb_path: str | None = None,
     derive_tmol: bool = False,
     context: "ComplexFoldContext | None" = None,
+    reduce: bool = True,
 ) -> list[dict[str, float | str]]:
     """Advisory metrics for each binder against the target, in input order.
+
+    *reduce* false returns ``{metric: [value per draw]}`` instead of a pooled
+    scalar per metric, so the artifact carries the draws and the reduction can be
+    re-asked in analyze. See :func:`draws_by_metric`.
 
     Never raises and never blocks a campaign: an unavailable backend or a failed
     fold yields empty dicts, and the caller writes NaN columns. Failures are not
@@ -1845,4 +1885,5 @@ def score_binders(
         folded = sum(len(v) for v in fresh.values())
         logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, draw) folds")
 
-    return [reduce_over_draws(scores.get(seq, {})) for seq in binder_seqs]
+    shape = reduce_over_draws if reduce else draws_by_metric
+    return [shape(scores.get(seq, {})) for seq in binder_seqs]

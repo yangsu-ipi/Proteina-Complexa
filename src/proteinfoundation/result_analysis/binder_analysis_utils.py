@@ -214,6 +214,127 @@ DEFAULT_LIGAND_BINDER_THRESHOLDS = {
 # =============================================================================
 
 
+# =============================================================================
+# Reducing a folder's draws
+# =============================================================================
+#
+# A draw is one prediction: ESMFold2 repeats by seed, AF2 by parameter set.
+# Evaluate records every one of them and reduces none, so an ``_all`` cell in a
+# frame written that way is a list over SEQUENCES whose entries are lists over
+# DRAWS. Collapsing them is a formulation over recorded values -- which is why it
+# lives here, beside the thresholds, rather than in the folding code.
+#
+# It used to live there, and the cost was not theoretical. AF2's five models were
+# averaged inside the folding harness and the parts discarded, so the only way to
+# ask a different question of them was to predict the campaign again; and because
+# only the first model's structure was kept in reach, anything re-read off "the"
+# structure silently answered for one model while the number beside it answered
+# for five. Recording the draws is what makes changing this rule a re-read.
+
+
+def is_placement_column(column: str) -> bool:
+    """Whether *column* measures WHERE the binder landed rather than how it folded.
+
+    Placement reduces by worst case: every draw has to agree the binder is where
+    it belongs, and a mean pulls a design that is misplaced in four draws of five
+    toward the cutoff. Fold quality against the designed backbone takes the mean,
+    where the spread between draws is uncertainty about one structure.
+
+    Matched on the name against both spellings of the same set -- the primary
+    slot's ``complex_scRMSD_ca`` and the advisory slot's ``scRMSD_ca`` -- so one
+    definition of "this is about placement" serves both and neither drifts.
+
+    By LONGEST match, not by any match, because these names nest:
+    ``binder_scRMSD_ca`` ends with ``scRMSD_ca``. Asking whether the column ends
+    with a placement name answered yes for the binder's own fold quality, which
+    would have switched it from a mean to a worst case across every campaign --
+    silently, since both are plausible numbers. The longest name the column ends
+    with is the metric it carries, and only that one decides.
+    """
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_DERIVED_SUFFIXES,
+        CONSENSUS_METRIC_SUFFIXES,
+        CONSENSUS_PLACEMENT_SUFFIXES,
+        CONSENSUS_RMSD_SUFFIXES,
+    )
+    from proteinfoundation.metrics.ensembling import PLACEMENT_METRICS
+
+    stem = column[: -len("_all")] if column.endswith("_all") else column
+    placement = {*PLACEMENT_METRICS, *CONSENSUS_PLACEMENT_SUFFIXES}
+    known = {
+        *placement,
+        *CONSENSUS_METRIC_SUFFIXES,
+        *CONSENSUS_DERIVED_SUFFIXES,
+        *CONSENSUS_RMSD_SUFFIXES,
+        *CONSENSUS_RMSD_SUFFIXES.values(),
+    }
+    matched = [name for name in known if stem.endswith(name)]
+    if not matched:
+        return False
+    return max(matched, key=len) in placement
+
+
+def reduce_draws(values: list, placement: bool) -> Any:
+    """Collapse one sequence's draws to the scalar a row reports.
+
+    A draw that produced no usable number is dropped rather than folded in, so
+    one NaN cannot cost four good measurements, and a metric with nothing finite
+    behind it stays NaN rather than becoming a plausible-looking zero. That holds
+    for the worst case too: a failed draw leaves it unknown, not zero.
+
+    Non-numeric draws (a structure path, the SASA engine) take the first, which
+    is what a reader pointed at "the" structure gets; and a value that is not a
+    list at all is already reduced and passes straight through, which is how a
+    frame written before evaluate recorded draws still reads.
+    """
+    if not isinstance(values, (list, tuple)):
+        return values
+    if not values:
+        return float("nan")
+    numeric = [
+        float(v)
+        for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+    ]
+    if not numeric:
+        non_numeric = [v for v in values if not isinstance(v, (int, float, bool))]
+        return non_numeric[0] if non_numeric else float("nan")
+    return max(numeric) if placement else sum(numeric) / len(numeric)
+
+
+def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Collapse every per-draw ``_all`` cell into the per-sequence list analyze reads.
+
+    Applied once, on the way in, so that everything downstream keeps the contract
+    it already has: ``X_all`` is a list over sequences and ``X`` is
+    ``X_all[best_idx]``. What changes is only that the number at each position is
+    now computed here from the draws behind it, rather than having been computed
+    in evaluate and frozen into the artifact.
+
+    Tolerant by design. A cell whose entries are already scalars is left exactly
+    as it is, which is what a frame written before evaluate recorded draws holds,
+    and what the primary backend's columns still hold until every complex folder
+    is reached the same way. Mixed frames are therefore fine, and a pooled frame
+    holding both is fine.
+    """
+    for column in [c for c in df.columns if c.endswith("_all")]:
+        placement = is_placement_column(column)
+        reduced = []
+        touched = False
+        for cell in df[column]:
+            if not isinstance(cell, (list, tuple)) or not any(
+                isinstance(v, (list, tuple)) for v in cell
+            ):
+                reduced.append(cell)
+                continue
+            touched = True
+            reduced.append([reduce_draws(v, placement) for v in cell])
+        if touched:
+            df[column] = reduced
+            logger.debug(f"Reduced per-draw values in {column} ({'worst case' if placement else 'mean'})")
+    return df
+
+
 def normalize_metric_name(metric_name: str) -> str:
     """Normalize a metric name to its canonical form using METRIC_CASE_MAPPING.
 
@@ -248,6 +369,80 @@ def normalize_threshold_dict(thresholds: dict) -> dict:
         normalized_name = normalize_metric_name(metric_name)
         normalized[normalized_name] = spec
     return normalized
+
+
+# A ranking criterion may name the folder whose opinion it reads, so "best" can
+# be defined across folders -- low i_pAE in AF2 AND in ESMFold2 -- rather than by
+# whichever one the frame happens to call primary.
+#
+# Spelled into the KEY rather than only into the spec, because the criteria dict
+# is keyed by quantity and two criteria on i_pAE from two folders would otherwise
+# need the same key twice. Python resolves that silently in favour of the last,
+# which is the failure resolve_backend_overrides carries a scar from: `binder`
+# and `complex` scRMSD_ca collided on one key and one of them simply stopped
+# being applied. A folder-qualified key cannot collide.
+RANKING_BACKEND_SEPARATOR = ":"
+
+
+def split_ranking_key(name: str) -> tuple[str | None, str]:
+    """``"esmfold2:i_pAE"`` -> ``("esmfold2", "i_pAE")``; a bare name -> ``(None, name)``.
+
+    None means "whichever folder this frame says produced its complexes", which
+    is what every criterion meant before folders could be named and is what an
+    unqualified criterion still means.
+    """
+    backend, separator, metric = name.partition(RANKING_BACKEND_SEPARATOR)
+    if not separator:
+        return None, name
+    return (backend or None), metric
+
+
+def ranking_criterion_backend(name: str, spec, default_backend: str) -> tuple[str, str, bool]:
+    """Which folder and metric a ranking criterion reads, and whether it said so.
+
+    The key wins over the spec: it is the half that has to be unique anyway, so
+    letting a spec field contradict it would make two spellings of one fact.
+    The third element says the folder was NAMED, which is what lets a missing
+    column be an error rather than a shrug -- a criterion that asked for
+    ESMFold2 on a campaign that never ran it is a question nothing can answer,
+    and ranking by the remainder would silently rank by something else.
+    """
+    backend, metric = split_ranking_key(name)
+    if backend is None and isinstance(spec, Mapping):
+        backend = spec.get("backend")
+    return (backend or default_backend), metric, backend is not None
+
+
+def resolve_ranking_columns(
+    seq_type: str, ranking_criteria: dict, default_backend: str, available=None
+) -> dict[str, str]:
+    """``{criterion key: the per-sequence column it ranks on}``.
+
+    One column per criterion rather than one backend for all of them, which is
+    the whole generalisation: the folder is resolved per criterion, so a run can
+    ask for agreement between folders instead of taking one folder's word.
+
+    *available* is the frame's columns. Given it, a criterion that NAMED a folder
+    whose column is absent raises rather than being skipped -- see
+    :func:`ranking_criterion_backend` for why that asymmetry is deliberate.
+    """
+    from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
+
+    out: dict[str, str] = {}
+    unanswerable: list[str] = []
+    for name, spec in ranking_criteria.items():
+        backend, metric, named = ranking_criterion_backend(name, spec, default_backend)
+        column = threshold_column(seq_type, metric, parse_threshold_spec(spec), backend)
+        if named and available is not None and column not in available:
+            unanswerable.append(f"{name} -> {column}")
+        out[name] = column
+    if unanswerable:
+        raise ThresholdSpecError(
+            f"Ranking criteria {sorted(unanswerable)} name a folder this frame has no columns for. "
+            f"Ranking by the rest would choose a sequence by criteria nobody asked for, silently. "
+            f"Drop the criterion, or run that folder."
+        )
+    return out
 
 
 def build_column_name(

@@ -203,6 +203,6 @@ def test_the_two_sample_counts_read_the_columns_that_can_answer_them():
     assert "sum(len(sample) for sample in row[rc])" in block, "the per-redesign lists"
     assert "len(row[fc])" in block, "and the design count still comes from the headline"
     # Both columns have to survive the aggregation to be read after it.
-    setup = source[source.index("path_col = {t: rename(") :][:1200]
+    setup = source[source.index("path_col = {t: f\"{rename(") :][:1200]
     assert "all_columns.append(path_col[seq_type])" in setup
     assert "all_columns.append(all_paths_col[seq_type])" in setup

@@ -123,4 +123,4 @@ def test_the_headline_composition_is_a_vector_not_one_count_of_twenty():
     out = pick_headline_sequence(df, ["self"], DEFAULT_PROTEIN_RANKING_CRITERIA)
 
     assert out.at[0, "self_best_idx"] == 1, "the second redesign ranks better"
-    assert out.at[0, "self_aa_counts"] == second, "a whole vector, and the ranked one"
+    assert out.at[0, "self_aa_counts_best"] == second, "a whole vector, and the ranked one"

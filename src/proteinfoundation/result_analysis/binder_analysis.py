@@ -42,6 +42,7 @@ from proteinfoundation.result_analysis.binder_analysis_utils import (
     redesign_pass_vector,
     reject_thresholds_on_packed_columns,
     resolve_backend_overrides,
+    resolve_ranking_columns,
     threshold_column,
 )
 
@@ -357,10 +358,14 @@ def pick_headline_sequence(
         # threshold_column already returns the `_all` list column -- build_column_name
         # appends the suffix itself -- so this is the per-sequence column, not a
         # scalar to be suffixed again.
-        criteria_columns = {
-            name: threshold_column(seq_type, name, spec, complex_backend)
-            for name, spec in ranking_criteria.items()
-        }
+        # One folder resolved per criterion, not one for all of them. "Best" can
+        # then mean agreement between folders -- low i_pAE in AF2 AND in
+        # ESMFold2 -- rather than whichever folder the frame calls primary having
+        # the only vote. An unqualified criterion still means that folder, which
+        # is what every criterion meant before this.
+        criteria_columns = resolve_ranking_columns(
+            seq_type, ranking_criteria, complex_backend, available=set(df.columns)
+        )
         missing = sorted(c for c in criteria_columns.values() if c not in df.columns)
         if missing:
             # Cannot rank without the numbers to rank on. Index 0 is the honest
@@ -398,11 +403,25 @@ def pick_headline_sequence(
 
         df[f"{seq_type}_best_idx"] = best_indices
         for column in pairs:
-            existing = df[column] if column in df.columns else [None] * len(df)
-            df[column] = [
+            # Written as X_best, never as a bare X. The bare name reads as a
+            # measurement of the design and is not one: it is the value at the
+            # redesign some criterion picked, and for the criterion's OWN metric
+            # it is an order statistic of itself -- the minimum i_pAE over
+            # redesigns, published under the name i_pAE. Nothing distinguished
+            # the two, because nothing else in the frame was a reduction at all.
+            best_column = f"{column}_best"
+            existing = df[best_column] if best_column in df.columns else [None] * len(df)
+            df[best_column] = [
                 values[i] if isinstance(values, list) and i < len(values) else current
                 for values, i, current in zip(df[f"{column}_all"], best_indices, existing, strict=False)
             ]
+            if column in df.columns:
+                # A frame written before the rename carries the old scalar, whose
+                # value came from THAT run's ranking. Leaving it beside the new
+                # one would put a stale number under the more inviting name --
+                # the misleading-name problem with worse data behind it. It is
+                # fully reproducible from _all and best_idx, so nothing is lost.
+                df.drop(columns=[column], inplace=True)
         logger.info(
             f"Headline for {seq_type} set from {len(pairs)} per-sequence lists "
             f"by {sorted(ranking_criteria)} over {len(df)} rows"
@@ -551,7 +570,11 @@ def refresh_per_sequence_verdicts(df: pd.DataFrame, seq_types: list[str], succes
         # The headline verdict mirrors the row's own best-sequence index, which is
         # what every other headline column on the row already uses.
         best = df.get(f"{seq_type}_best_idx")
-        df[f"{seq_type}_pass"] = [
+        # _best like every other headline column: the verdict is the chosen
+        # redesign's, not the design's. A design with one passing redesign out of
+        # eight and one with eight of eight both read 1 here, and only
+        # {seq}_pass_all tells them apart.
+        df[f"{seq_type}_pass_best"] = [
             (v[int(b)] if best is not None and 0 <= int(b) < len(v) else (v[0] if v else None))
             for v, b in zip(vectors, best if best is not None else [0] * len(vectors), strict=False)
         ]
@@ -573,7 +596,7 @@ def _assert_verdict_follows_the_headline(df: pd.DataFrame, seq_type: str) -> Non
     Checked here rather than trusted from the code above, because the bug was in
     the code above.
     """
-    idx_col, pass_col, all_col = f"{seq_type}_best_idx", f"{seq_type}_pass", f"{seq_type}_pass_all"
+    idx_col, pass_col, all_col = f"{seq_type}_best_idx", f"{seq_type}_pass_best", f"{seq_type}_pass_all"
     if not {idx_col, pass_col, all_col} <= set(df.columns):
         # A frame from before the index column existed. Index 0 is then the only
         # answer available and the fallback above is the honest one.
@@ -911,13 +934,16 @@ def compute_filter_pass_rate(
     # a hardcoded {seq}_complex_pdb_path silently aggregated nothing after the
     # rename, and the two counts derived from it reported 0 for every run.
     backend = complex_backend_of(df) or "af2"
-    path_col = {t: rename(f"{t}_complex_pdb_path", backend) for t in sequence_types}
+    # The headline path, under the name the headline now carries. Reading the
+    # bare name here would have counted designs from a column that no longer
+    # exists and reported zero of them.
+    path_col = {t: f"{rename(f'{t}_complex_pdb_path', backend)}_best" for t in sequence_types}
     # Two different questions, and the headline column can only answer one. It
     # holds one path per design, so counting its members over a group counts
     # designs -- but summing their lengths counted characters, and once the
     # aggregation had coerced a non-list string to [], zero. The per-redesign
     # count is in the _all column, which really is a list per design.
-    all_paths_col = {t: f"{c}_all" for t, c in path_col.items()}
+    all_paths_col = {t: f"{c[: -len('_best')]}_all" for t, c in path_col.items()}
     all_columns = []
     for seq_type in sequence_types:
         for metric_name, spec in expand_model_criteria(thresholds, seq_type, df.columns).items():
