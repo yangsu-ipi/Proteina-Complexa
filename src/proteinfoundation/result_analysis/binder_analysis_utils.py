@@ -683,13 +683,19 @@ MODEL_PLACEHOLDER = "{model}"
 def expand_model_criteria(
     thresholds: dict, seq_type: str, available_columns, complex_backend: str = "af2"
 ) -> dict:
-    """Expand ``{model}``-templated criteria against the columns a run produced.
+    """Resolve ``{model}``-templated criteria against the columns a run produced.
 
-    A criterion like ``scRMSD_ca_{model}`` with ``column_prefix: apo`` stands for
-    "every apo folding model this run used". Expanding against the *columns*
-    rather than against config means the evaluation stage and the analysis stage
-    cannot disagree about which models are gated -- they read the same frame --
-    and it works whether the run asked for one model or several.
+    A criterion like ``scRMSD_ca_{model}`` with ``column_prefix: apo`` names the
+    apo fold of the folder this run is gated on -- the one in
+    ``complex_folding_backend`` -- and is checked against the *columns* rather
+    than against config, so the evaluation stage and the analysis stage cannot
+    disagree about what is gated.
+
+    It used to stand for "every apo folder this run used", conjunctively, which
+    meant the gate tightened itself whenever a folder was added: see the comment
+    at the expansion below for what that cost on EFNB3. A folder's opinion is
+    worth recording either way, and every advisory column still is; what changed
+    is that it no longer silently becomes a pass/fail criterion.
 
     Criteria without the placeholder pass through untouched.
 
@@ -734,11 +740,29 @@ def expand_model_criteria(
         prefix = parsed.get("column_prefix", "complex")
         head, _, tail = effective.partition(MODEL_PLACEHOLDER)
         lead = build_column_name(seq_type, prefix, head, complex_backend)[: -len("_all")]
-        models = sorted(
+        present = sorted(
             col[len(lead) : -len(tail + "_all")] if tail else col[len(lead) : -len("_all")]
             for col in columns
             if col.startswith(lead) and col.endswith(tail + "_all")
         )
+        # The gating folder answers this criterion, and only it. Expanding over
+        # every folder present made the expansions CONJUNCTIVE, so a run that
+        # gained a folder silently gained a mandatory criterion: EFNB3's apo gate
+        # went from "ESMFold2 agrees the binder folds the same unbound" to
+        # "ESMFold2 and AF2 both agree" the moment the migration produced an AF2
+        # apo fold, and the pass rate fell 16.1% -> 3.0% with no design changing.
+        # Nobody chose that, and it made two campaigns with different folder sets
+        # incomparable. Every other criterion resolves to the one backend named in
+        # complex_folding_backend; this one now does too.
+        models = [complex_backend] if complex_backend in present else []
+        if present and not models:
+            logger.error(
+                f"Criterion '{name}' is judged by the gating folder '{complex_backend}', which produced "
+                f"no {prefix} column for '{seq_type}'; {present} did. No verdict will be produced. Set "
+                f"the run's complex folding backend, or override aggregation.success_thresholds."
+            )
+            out[name] = spec
+            continue
         if not models:
             # Kept, not dropped. Dropping it would leave the remaining criteria to
             # be evaluated on their own, and a design passing a three-criterion
@@ -754,10 +778,10 @@ def expand_model_criteria(
             out[name] = spec
             continue
         for model in models:
-            # The expanded METRIC has to travel with the expanded key, or the
-            # consumer resolves the column from a spec still holding "{model}".
-            # Keyed by criterion-and-model so the four apo columns of a two-model
-            # run stay distinguishable in logs and in the emitted criteria JSON.
+            # The resolved METRIC has to travel with the resolved key, or the
+            # consumer reads the column from a spec still holding "{model}".
+            # Keyed by criterion-and-folder so the emitted criteria JSON says
+            # which folder answered, rather than leaving it to be inferred.
             out[f"{name}_{model}"] = {**parsed, "metric": f"{head}{model}{tail}"}
     return out
 

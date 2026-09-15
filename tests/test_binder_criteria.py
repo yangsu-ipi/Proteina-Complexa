@@ -146,51 +146,66 @@ def test_empty_input_is_empty_not_a_pass():
 # ------------------------------------------------------- per-model expansion
 
 
-@pytest.mark.parametrize("models", [["esmfold"], ["esmfold2"], ["esmfold", "esmfold2"], ["colabfold", "esmfold2"]])
-def test_apo_criterion_follows_the_models_actually_produced(models):
-    """The criterion is templated so no threshold override is needed when
-    apo_folding_models changes."""
+@pytest.mark.parametrize(
+    "models", [["af2"], ["af2", "esmfold2"], ["colabfold", "af2", "esmfold2"]]
+)
+def test_the_apo_criterion_is_answered_by_the_gating_folder(models):
+    """One criterion, whichever folders also produced an apo fold.
+
+    It used to be one criterion PER folder, conjunctively, so a run that gained a
+    folder gained a mandatory criterion nobody added. On EFNB3 the migration
+    produced an AF2 apo fold and the pass rate fell from 16.1% to 3.0% with not
+    one design changing.
+    """
     columns = list(row(apo={m: [1.0] for m in models}))
-    expanded = expand_model_criteria(PROTEIN, "mpnn", columns)
-    apo = sorted(k for k in expanded if k.startswith("apo_scRMSD_ca_"))
-    assert apo == sorted(f"apo_scRMSD_ca_{m}" for m in models)
-    # The non-apo criteria, whatever they number, plus one per apo model.
+    expanded = expand_model_criteria(PROTEIN, "mpnn", columns, complex_backend="af2")
+    assert sorted(k for k in expanded if k.startswith("apo_scRMSD_ca")) == ["apo_scRMSD_ca_af2"]
     non_apo = sum(1 for k in PROTEIN if not k.startswith("apo_"))
-    assert len(expanded) == non_apo + len(models)
+    assert len(expanded) == non_apo + 1, "adding a folder must not add a criterion"
 
 
-def test_two_apo_models_must_both_pass():
-    """Conjunctive, like the three holo criteria: if two predictors disagree about
-    whether the binder folds alone, that is not a pass."""
-    both = row(
+def test_another_folders_apo_fold_does_not_decide_the_verdict():
+    """ESMFold2 saying the binder falls apart unbound is worth recording, and it
+    is not the gate. AF2 is what this run is gated on, so AF2 answers."""
+    values = row(
         i_pae=[0.1] * 3,
         plddt=[0.95] * 3,
         scrmsd=[1.0] * 3,
-        apo={"esmfold": [1.0, 1.0, 3.0], "esmfold2": [1.0, 3.0, 1.0]},
+        apo={"af2": [1.0, 1.0, 3.0], "esmfold2": [1.0, 3.0, 1.0]},
     )
-    assert per_sequence_pass(both, "mpnn", PROTEIN) == [1, 0, 0]
+    assert per_sequence_pass(values, "mpnn", PROTEIN) == [1, 1, 0], (
+        "redesign 1 fails only ESMFold2's apo, which does not gate this run"
+    )
+
+
+def test_the_gating_folder_having_no_apo_fold_is_not_a_pass():
+    """The honest outcome is 'cannot judge', the same as any other criterion whose
+    column is absent -- never a silently shorter gate."""
+    values = row(i_pae=[0.1], plddt=[0.95], scrmsd=[1.0], apo={"esmfold2": [1.0]})
+    assert per_sequence_pass(values, "mpnn", PROTEIN) is None
 
 
 def test_expansion_does_not_leak_across_sequence_types():
     """self and mpnn can be folded by different model sets in one run."""
-    columns = list(row("self", apo={"esmfold": [1.0]})) + list(row("mpnn", apo={"esmfold": [1.0], "esmfold2": [1.0]}))
-    assert sorted(k for k in expand_model_criteria(PROTEIN, "self", columns) if k.startswith("apo_scRMSD_ca_")) == [
-        "apo_scRMSD_ca_esmfold"
-    ]
-    assert sorted(k for k in expand_model_criteria(PROTEIN, "mpnn", columns) if k.startswith("apo_scRMSD_ca_")) == [
-        "apo_scRMSD_ca_esmfold",
-        "apo_scRMSD_ca_esmfold2",
-    ]
+    columns = list(row("self", apo={"af2": [1.0]})) + list(row("mpnn", apo={"esmfold2": [1.0]}))
+    assert sorted(
+        k for k in expand_model_criteria(PROTEIN, "self", columns, complex_backend="af2")
+        if k.startswith("apo_scRMSD_ca_")
+    ) == ["apo_scRMSD_ca_af2"]
+    assert not [
+        k for k in expand_model_criteria(PROTEIN, "mpnn", columns, complex_backend="af2")
+        if k.startswith("apo_scRMSD_ca_")
+    ], "mpnn has no af2 apo fold here, so the criterion stays unresolved"
 
 
 def test_holo_scrmsd_is_never_mistaken_for_an_apo_model():
     """binder_scRMSD_ca and apo_scRMSD_ca_<model> differ only in prefix."""
-    expanded = expand_model_criteria(PROTEIN, "mpnn", list(row(apo={"esmfold": [1.0]})))
+    expanded = expand_model_criteria(PROTEIN, "mpnn", list(row(apo={"af2": [1.0]})), complex_backend="af2")
     # Three criteria now end in scRMSD_ca; each must keep its own prefix. Before
     # keys became names these could not coexist at all.
     assert parse_threshold_spec(expanded["binder_scRMSD_ca"])["column_prefix"] == "binder"
     assert parse_threshold_spec(expanded["complex_scRMSD_ca"])["column_prefix"] == "complex"
-    assert parse_threshold_spec(expanded["apo_scRMSD_ca_esmfold"])["column_prefix"] == "apo"
+    assert parse_threshold_spec(expanded["apo_scRMSD_ca_af2"])["column_prefix"] == "apo"
 
 
 def test_unmatched_template_is_kept_so_the_gate_cannot_quietly_shrink():
