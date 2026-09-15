@@ -147,6 +147,12 @@ def test_the_complex_constructor_accepts_the_model_and_the_harness():
     with pytest.raises(ValueError, match="not supported"):
         initialize_folding_model("no_such_folder", ["A"], "task", False)
 
+    # A folder that needs no construction is not an unsupported folder. This
+    # raised for esmfold2, which every binder campaign configures and
+    # CONSENSUS_BACKENDS folds -- so the pass naming it as its only complex
+    # folder died on the folder it was created to run.
+    assert initialize_folding_model("esmfold2", ["A"], "task", False)["model_name"] == "esmfold2"
+
 
 def test_every_folder_name_a_config_may_use_resolves_somewhere():
     """The three ways a folder can be named -- model, monomer implementation,

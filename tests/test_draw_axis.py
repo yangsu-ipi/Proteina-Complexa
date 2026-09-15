@@ -285,3 +285,23 @@ def test_a_harness_envelope_is_unwrapped_for_every_backend_that_uses_one():
     assert cf._unwrap_sequence_envelope({"seq_1": {"i_pTM": 0.8}}) == {"i_pTM": 0.8}
     assert cf._unwrap_sequence_envelope({"i_pTM": 0.8}) == {"i_pTM": 0.8}, "a bare dict is already the stats"
     assert cf._unwrap_sequence_envelope(None) == {}
+
+
+def test_constructing_a_folder_refuses_nothing_the_backends_can_fold():
+    """There is one registry of what can fold a complex, and it is not this one.
+
+    initialize_folding_model used to raise for any folder it could not build,
+    which made it a second registry free to disagree with CONSENSUS_BACKENDS --
+    and it did. A pass naming esmfold2 as its only complex folder died there, on
+    a folder the campaign had configured and this registry folds perfectly well.
+    It only builds things now: RF3's runner, and nothing else.
+    """
+    from proteinfoundation.evaluation.binder_eval import initialize_folding_model
+
+    for backend in cf.CONSENSUS_BACKENDS:
+        if backend == "rf3":
+            continue  # constructing it loads weights; its own test covers the contract
+        specs = initialize_folding_model(backend, ["A"], "TARGET", is_target_ligand=False)
+        assert isinstance(specs, dict) and specs.get("runner") is None, (
+            f"{backend} folds from sequences and a context; nothing to construct"
+        )

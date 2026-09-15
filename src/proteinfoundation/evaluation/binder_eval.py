@@ -122,37 +122,37 @@ def initialize_folding_model(
     target_task_name: str,
     is_target_ligand: bool,
 ) -> dict[str, Any]:
-    """Initialize folding model specs for binder evaluation.
+    """What a complex folder needs CONSTRUCTED before it can be called.
 
-    Supported models: colabdesign, protenix_*, rf3_*, boltz2_*.
+    Almost nothing, now. Every complex folder is reached through
+    CONSENSUS_BACKENDS, which takes sequences and a ComplexFoldContext, so the
+    only thing left to build is a folder that is an object rather than a function
+    of its inputs -- RF3 and its weights.
 
-    Args:
-        folding_model: Name of the folding model (e.g. ``"colabdesign"``,
-            ``"protenix_v0.4.0"``, ``"rf3_latest"``, ``"boltz2_v1"``).
-        target_pdb_chain: Sorted chain IDs of the target structure.
-        target_task_name: Task name used to resolve MSA / template paths.
-        is_target_ligand: Whether the target is a small-molecule ligand.
+    It used to decide which folders could fold a complex at all, raising for
+    anything it could not construct. That made it a second registry beside
+    CONSENSUS_BACKENDS, free to disagree with it, and it did: a pass naming
+    esmfold2 as its only complex folder died here, on a folder the campaign had
+    configured and the other registry folds perfectly well. Whether a folder can
+    fold a complex is _FOLDER_CAPABILITIES' answer and CONSENSUS_BACKENDS'
+    mechanism; this function only builds things.
 
-    Returns:
-        Dictionary with ``"model_name"`` and model-specific runner / path keys.
-
-    Raises:
-        ValueError: If the model name is unsupported or incompatible with the
-            target type.
+    The ligand refusal stays, because it is about the MODEL rather than about
+    this function's vocabulary: ColabDesign cannot template a small molecule, and
+    a run that discovers that after folding has wasted the folds.
     """
     target_pdb_chain = sorted(target_pdb_chain)
+    family = folder_family(folding_model)
 
     # `af2` is the model; `colabdesign` is the harness that runs it for a complex,
     # the way `colabfold` is the CLI that runs it for a monomer. Both names reach
-    # here because the config vocabulary is the model's, and a run that named its
-    # columns af2 and then died because the constructor wanted the harness name
-    # would be the worst of both.
-    if folder_family(folding_model) == "af2":
+    # here because the config vocabulary is the model's.
+    if family == "af2":
         if is_target_ligand:
             raise ValueError("ColabDesign does not support ligand-protein complex folding")
         return {"model_name": "colabdesign"}
 
-    elif "rf3" in folding_model:
+    if family == "rf3":
         from proteinfoundation.rewards.rf3_reward import get_default_rf3_runner
 
         logger.info(f"Initializing RF3 model: {folding_model}")
@@ -166,8 +166,18 @@ def initialize_folding_model(
         )
         return {"model_name": "RF3", "runner": runner}
 
-    else:
-        raise ValueError(f"Folding model '{folding_model}' not supported")
+    # Everything else folds from sequences and a context, with nothing to build
+    # -- but only if it can fold a complex at all. That question has one answer,
+    # and it is the backend registry's, so a typo still fails here rather than
+    # becoming a run with a folder nothing will ever call.
+    from proteinfoundation.metrics.consensus_folding import CONSENSUS_BACKENDS
+
+    if folding_model in CONSENSUS_BACKENDS or family in CONSENSUS_BACKENDS:
+        return {"model_name": folding_model}
+    raise ValueError(
+        f"Folding model '{folding_model}' not supported: it is neither a folder this builds "
+        f"nor one {sorted(CONSENSUS_BACKENDS)} can fold."
+    )
 
 
 # =============================================================================
