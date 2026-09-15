@@ -277,3 +277,45 @@ def test_where_the_samples_live_does_not_depend_on_which_metrics_a_pass_computes
         "the sample path must not be gated on whether this pass computes binder metrics"
     )
     assert "get_target_info" in block
+
+
+def test_jax_only_gets_the_card_in_a_pass_that_folds_with_jax():
+    """JAX preallocates a fraction of the card when it is IMPORTED, and evaluate
+    imports it in every pass -- including the ones that fold with torch and never
+    call it.
+
+    XLA_SOLE_TENANT=0.9 was written on the premise that a pass has one folder and
+    may therefore take the card. True, and backwards for a torch folder: measured
+    on EFNB3, the ESMFold2 complex pass gave JAX 73.5 GB of an 80 GB card, left
+    ESMFold2 about 8, and all 19 of its folds failed on an SVD that could not
+    converge. The fused run that worked gave JAX 0.3 and left torch 57 GB.
+    """
+    from proteinfoundation.evaluation.evaluate_passes import (
+        XLA_IDLE_FRACTION,
+        evaluate_pass_plan,
+        xla_fraction_for,
+    )
+
+    got = {}
+    for step in evaluate_pass_plan(["af2", "esmfold2"]):
+        label = step["kind"] + (":" + ",".join(step["models"]) if step["models"] else "")
+        got.setdefault(label, xla_fraction_for(step, "0.9"))
+
+    assert got["fold:af2"] == "0.9", "af2 folds in JAX; the split exists so it can have the card"
+    assert got["fold:esmfold2"] == XLA_IDLE_FRACTION, (
+        "esmfold2 folds in torch; JAX must not take the card from it"
+    )
+    for label in ("redesign", "esm", "final"):
+        assert got[label] == XLA_IDLE_FRACTION, f"{label} folds nothing with JAX"
+
+
+def test_the_harness_name_resolves_to_its_model_for_this_question():
+    """colabdesign is the harness af2 runs in. Asking about the harness must give
+    the same answer as asking about the model, or the pass plan and the fraction
+    disagree about the same fold."""
+    from proteinfoundation.evaluation.evaluate_passes import pass_folds_with_jax
+
+    assert pass_folds_with_jax({"models": ["colabdesign"]})
+    assert pass_folds_with_jax({"models": ["af2"]})
+    assert not pass_folds_with_jax({"models": ["esmfold2"]})
+    assert not pass_folds_with_jax({"models": None})

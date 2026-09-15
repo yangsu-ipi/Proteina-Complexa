@@ -282,21 +282,26 @@ evaluate_split() {
   plan=$(python -c '
 import sys, yaml
 sys.path.insert(0, sys.argv[2])
-from proteinfoundation.evaluation.evaluate_passes import evaluate_pass_plan, pass_overrides
+from proteinfoundation.evaluation.evaluate_passes import (
+    evaluate_pass_plan, pass_overrides, xla_fraction_for)
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
 models = ((cfg.get("metric") or {}).get("folding_models")) or []
 for step in evaluate_pass_plan(models):
     label = step["kind"] + (":" + ",".join(step["models"]) if step["models"] else "")
-    print(label + "\t" + " ".join(pass_overrides(step)))
-' "$RESOLVED" "$COMPLEXA_REPO/src") || { echo "evaluate: could not derive the pass plan" >&2; exit 3; }
+    print("\t".join([label, xla_fraction_for(step, sys.argv[3]), " ".join(pass_overrides(step))]))
+' "$RESOLVED" "$COMPLEXA_REPO/src" "$XLA_SOLE_TENANT") || { echo "evaluate: could not derive the pass plan" >&2; exit 3; }
 
   [[ -n "$plan" ]] || { echo "evaluate: the derived pass plan is empty" >&2; exit 3; }
 
-  while IFS=$'\t' read -r label overrides; do
+  while IFS=$'\t' read -r label fraction overrides; do
     [[ -n "$label" ]] || continue
-    echo "=== evaluate pass: $label"
+    # The fraction follows the pass's FOLDER. JAX preallocates the card when it
+    # is imported, and evaluate imports it in every pass -- so a pass that folds
+    # in torch must hold it down, or it takes 90% of the card and the folder
+    # doing the work gets what is left.
+    echo "=== evaluate pass: $label (xla=$fraction)"
     # shellcheck disable=SC2086 -- overrides is a deliberate word-split list
-    all_shards proteinfoundation.evaluate "$XLA_SOLE_TENANT" $overrides
+    all_shards proteinfoundation.evaluate "$fraction" $overrides
   done <<< "$plan"
 }
 

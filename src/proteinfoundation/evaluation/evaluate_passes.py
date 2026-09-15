@@ -231,6 +231,44 @@ def evaluate_pass_plan(folding_models) -> list[dict]:
     return passes
 
 
+# Folders whose weights live in JAX. Everything else folds in torch.
+#
+# This matters because JAX PREALLOCATES a fraction of the card when it is
+# imported, and evaluate imports it unconditionally -- so the fraction is
+# claimed in every pass, including the ones that fold with torch and never call
+# it. XLA_SOLE_TENANT=0.9 was written on the premise that a pass has one folder
+# and may therefore take the card. True, and backwards for a torch folder: the
+# ESMFold2 complex pass gave JAX 73.5 GB of an 80 GB card, left ESMFold2 with
+# about 8, and every one of its folds failed. The fused run that worked gave JAX
+# 0.3 and left torch 57 GB.
+#
+# So the fraction follows the pass's folder rather than the split's premise.
+_JAX_BACKED = ("af2",)
+
+# What JAX gets in a pass that does not fold with it. Not zero: it is imported,
+# so it will claim something, and a hard floor is better than whatever it decides
+# to grow to beside a torch model that wants the rest.
+XLA_IDLE_FRACTION = "0.05"
+
+
+def pass_folds_with_jax(step: dict) -> bool:
+    """Whether this pass's folder is the one that preallocates the card."""
+    from proteinfoundation.metrics.column_names import folder_family
+
+    return any(folder_family(m) in _JAX_BACKED for m in (step.get("models") or ()))
+
+
+def xla_fraction_for(step: dict, sole_tenant: str) -> str:
+    """How much of the card JAX may take in this pass.
+
+    *sole_tenant* when the pass folds with JAX, because then it is the tenant and
+    the split exists so it can have the card. The idle floor otherwise -- a pass
+    folding in torch, or folding nothing at all, still imports JAX and still has
+    to leave the card to whatever does the work.
+    """
+    return sole_tenant if pass_folds_with_jax(step) else XLA_IDLE_FRACTION
+
+
 def pass_overrides(step: dict) -> list[str]:
     """One pass's Hydra overrides, as the campaign runner passes them."""
     out = [f"++metric.{EVALUATE_PASS_KEY}={step['kind']}"] if step["kind"] != PASS_FINAL else []
