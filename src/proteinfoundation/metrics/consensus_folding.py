@@ -1102,17 +1102,38 @@ def cfg_for_fingerprint(cfg: dict) -> dict:
 # on an SVD that does not always converge, so the columns came back NaN. One
 # backend's knob must not be able to invalidate another's cache.
 #
-# n_seeds is the same kind of key and is deliberately NOT here. It has been
-# hashed since the cache existed, so removing it now would change every
-# fingerprint and discard every campaign's ESMFold2 folds to fix a staleness
-# nobody is currently hitting -- the exact cost this reasoning exists to avoid.
-# Raising n_seeds therefore still refolds what it should have reused; the repair
-# is to accept the old fingerprint as legacy, the way read_binder_eval_cache
-# does, on the day someone wants to change it.
-_COUNT_ONLY_CFG_KEYS = ("n_af2_models",)
+# n_seeds is the same key for a sampler, and it is here for the same reason --
+# it was "nobody is currently hitting this" right up until EFNB3's retry, where
+# the campaign now asks for one seed and its cache holds three. The fingerprint
+# said different-scorer, every ESMFold2 complex was discarded, and the refold ran
+# into an SVD that does not always converge. Three seeds of good folds thrown
+# away to use one of them.
+#
+# Removing a key from a hash changes every fingerprint, which would discard the
+# very caches this is meant to keep -- so the old value is reconstructed and
+# accepted instead: a cache holding N draws was written when the count was N, so
+# legacy_count_fingerprint(N) reproduces exactly what that run would have
+# computed. Not a guess; the file says how many it holds.
+_COUNT_ONLY_CFG_KEYS = ("n_af2_models", "n_seeds", "n_esmfold2_seeds")
 
 
-def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> str:
+def legacy_count_fingerprint(backend: str, cfg: dict, target_seqs: list[str], n_draws: int) -> str:
+    """The fingerprint a run would have computed when the draw count was hashed.
+
+    Reconstructed from the cache itself rather than guessed: an entry holding
+    *n_draws* draws was written by a run asking for that many, so putting the
+    count back gives the exact value that run stored. Accepting it is what lets
+    the count leave the hash without discarding every cache keyed under it.
+    """
+    axis = CONSENSUS_DRAW_AXIS.get(backend, "seed")
+    restored = dict(cfg)
+    restored["n_af2_models" if axis == "model" else "n_seeds"] = n_draws
+    return consensus_fingerprint(backend, restored, target_seqs, _hash_counts=True)
+
+
+def consensus_fingerprint(
+    backend: str, cfg: dict, target_seqs: list[str], _hash_counts: bool = False
+) -> str:
     """Identity of an advisory scorer: backend, its settings, and the target.
 
     The target is part of the key because these are complex metrics -- the same
@@ -1125,7 +1146,9 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     canonical = json.dumps(
         {
             "backend": backend,
-            "cfg": cfg_for_fingerprint({k: v for k, v in cfg.items() if k not in _COUNT_ONLY_CFG_KEYS}),
+            "cfg": cfg_for_fingerprint(
+                cfg if _hash_counts else {k: v for k, v in cfg.items() if k not in _COUNT_ONLY_CFG_KEYS}
+            ),
             "target_seqs": list(target_seqs),
             # Every input to the seed is already covered -- target_seqs here, the
             # binder sequence as the entry key, an explicit cfg.seed in cfg --
@@ -1411,7 +1434,12 @@ def pae_family_from_store(pdb_path: str, n_target_chains: int, have: dict | None
 
 
 def read_consensus_cache(
-    cache_dir: str, backend: str, fingerprint: str, seed_for=None, derivation: str | None = None
+    cache_dir: str,
+    backend: str,
+    fingerprint: str,
+    seed_for=None,
+    derivation: str | None = None,
+    legacy_fingerprint_for=None,
 ) -> tuple[dict[str, dict[int, dict[str, float | str]]], bool]:
     """Cached advisory scores as ``({binder_seq: {seed: metrics}}, derivation_stale)``.
 
@@ -1436,7 +1464,23 @@ def read_consensus_cache(
     try:
         with open(path) as handle:
             cached = json.load(handle)
-        if cached.get("fingerprint") != fingerprint:
+        stored = cached.get("fingerprint")
+        if stored != fingerprint and legacy_fingerprint_for is not None:
+            # A cache written while the draw count was part of the identity. How
+            # many it holds is how many that run asked for, so the old value is
+            # reconstructable rather than guessable -- see legacy_count_fingerprint.
+            held = max(
+                (len(v) for v in (cached.get("scores") or {}).values() if isinstance(v, dict)),
+                default=0,
+            )
+            if held and legacy_fingerprint_for(held) == stored:
+                logger.info(
+                    f"Advisory fold cache at {path} was written when the draw count was part of the "
+                    f"scorer's identity ({held} draws). Adopting its folds under {fingerprint[:12]} "
+                    f"rather than discarding them for a count."
+                )
+                stored = fingerprint
+        if stored != fingerprint:
             logger.info(
                 f"Advisory fold cache at {path} was produced by a different scorer "
                 f"({str(cached.get('fingerprint'))[:12]} != {fingerprint[:12]}); recomputing"
@@ -1803,8 +1847,17 @@ def score_binders(
     derivation_stale = False
     if cache_dir and reuse_cache:
         scores, derivation_stale = read_consensus_cache(
-            cache_dir, backend, fingerprint, seed_for=first_seed_for, derivation=derivation
+            cache_dir,
+            backend,
+            fingerprint,
+            seed_for=first_seed_for,
+            derivation=derivation,
+            legacy_fingerprint_for=lambda n: legacy_count_fingerprint(backend, cfg, target_seqs, n),
         )
+        if scores:
+            # Rewritten under the current fingerprint so the reconstruction is
+            # paid for once rather than on every run.
+            write_consensus_cache(cache_dir, backend, fingerprint, scores, derivation=derivation)
 
     # Re-read the kept structures for metrics that are read off them, rather than
     # refolding. Runs when the derivation changed, when an entry simply lacks a

@@ -326,3 +326,57 @@ def test_one_backends_knob_cannot_invalidate_anothers_cache():
     one = cf.consensus_fingerprint("af2", {"n_af2_models": 1}, target)
     five = cf.consensus_fingerprint("af2", {"n_af2_models": 5}, target)
     assert one == five, "raising the draw count folds what is new, it does not discard what is held"
+
+
+def test_a_cache_written_when_the_count_was_hashed_is_adopted_not_discarded(tmp_path):
+    """Removing a key from a hash changes every fingerprint, which would discard
+    the very caches taking it out is meant to keep.
+
+    So the old value is reconstructed: a cache holding N draws was written by a
+    run asking for N, and putting N back reproduces exactly what that run stored.
+    EFNB3's retry is the case -- three seeds of good ESMFold2 folds on disk, a
+    campaign now asking for one, and a fingerprint that called it a different
+    scorer.
+    """
+    cfg, target = {"n_seeds": 3}, ["MKVTARGET"]
+    old_fp = cf.legacy_count_fingerprint("esmfold2", cfg, target, 3)
+    new_fp = cf.consensus_fingerprint("esmfold2", cfg, target)
+    assert old_fp != new_fp, "the count used to be in the identity"
+
+    path = pathlib.Path(consensus_cache_path(str(tmp_path), "esmfold2"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "fingerprint": old_fp, "schema": 3, "derivation": "d",
+        "scores": {SEQ: {f"seed{k}": {"i_pTM": 0.1 * k} for k in (11, 22, 33)}},
+    }))
+
+    got, _ = read_consensus_cache(
+        str(tmp_path), "esmfold2", new_fp, derivation="d",
+        legacy_fingerprint_for=lambda n: cf.legacy_count_fingerprint("esmfold2", cfg, target, n),
+    )
+    assert sorted(got[SEQ]) == ["seed11", "seed22", "seed33"], "three good folds, kept"
+
+
+def test_a_genuinely_different_scorer_is_still_refused(tmp_path):
+    """The reconstruction must not become a way for any cache to be accepted."""
+    cfg, target = {"n_seeds": 3}, ["MKVTARGET"]
+    path = pathlib.Path(consensus_cache_path(str(tmp_path), "esmfold2"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "fingerprint": "written-by-something-else", "schema": 3,
+        "scores": {SEQ: {"seed1": {"i_pTM": 0.5}}},
+    }))
+    got, _ = read_consensus_cache(
+        str(tmp_path), "esmfold2", cf.consensus_fingerprint("esmfold2", cfg, target),
+        legacy_fingerprint_for=lambda n: cf.legacy_count_fingerprint("esmfold2", cfg, target, n),
+    )
+    assert got == {}
+
+
+def test_changing_the_seed_count_no_longer_discards_the_folds_already_made():
+    """deterministic_seeds is prefix-stable so three seeds then five folds two,
+    not five -- which was only ever true if the count stayed out of the identity."""
+    target = ["MKVTARGET"]
+    assert cf.consensus_fingerprint("esmfold2", {"n_seeds": 3}, target) == cf.consensus_fingerprint(
+        "esmfold2", {"n_seeds": 5}, target
+    )
