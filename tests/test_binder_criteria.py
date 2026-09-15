@@ -905,3 +905,32 @@ def test_a_design_with_one_unfoldable_redesign_still_gets_a_verdict_each():
     vector = redesign_pass_vector(values, parsed)
     assert len(vector) == 2, vector
     assert vector[0] == 0, "the redesign whose fold failed cannot pass"
+
+
+# --------------------------------------- who is entitled to complain about a gap
+
+
+def test_a_row_under_construction_does_not_report_its_gaps(caplog):
+    """Evaluate resolves criteria against a row the pass plan is still filling, so
+    a criterion whose column has not been computed YET is the normal state. It was
+    reported as an error anyway: 657 designs x 7 criteria x 5 passes of it per
+    campaign, loud enough to bury the errors that mean something."""
+    from proteinfoundation.evaluation.binder_eval_utils import per_sequence_pass
+
+    partial = {"mpnn_complex_af2_i_pAE_all": [0.1]}  # the other criteria's columns are not written yet
+    with caplog.at_level("WARNING"):
+        assert per_sequence_pass(partial, "mpnn", PROTEIN) is None, "still cannot judge"
+    assert not caplog.records, f"evaluate should stay quiet about a partial row, said: {caplog.records}"
+
+
+def test_a_finished_frame_still_reports_its_gaps(caplog):
+    """The same gap in analyze is a real fault -- nothing later will fill it --
+    and must stay loud. Demoted for one caller, not removed."""
+    from proteinfoundation.result_analysis.binder_analysis_utils import (
+        DEFAULT_PROTEIN_BINDER_THRESHOLDS,
+        expand_model_criteria,
+    )
+
+    with caplog.at_level("ERROR"):
+        expand_model_criteria(DEFAULT_PROTEIN_BINDER_THRESHOLDS, "mpnn", ["mpnn_complex_af2_i_pAE_all"])
+    assert caplog.records, "a finished frame missing a gated column has to say so"

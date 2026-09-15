@@ -681,7 +681,11 @@ MODEL_PLACEHOLDER = "{model}"
 
 
 def expand_model_criteria(
-    thresholds: dict, seq_type: str, available_columns, complex_backend: str = "af2"
+    thresholds: dict,
+    seq_type: str,
+    available_columns,
+    complex_backend: str = "af2",
+    report_gaps: bool = True,
 ) -> dict:
     """Resolve ``{model}``-templated criteria against the columns a run produced.
 
@@ -706,6 +710,16 @@ def expand_model_criteria(
 
     Criteria without the placeholder pass through untouched.
 
+    *report_gaps* is what a caller knows and this function cannot: whether the
+    column set it was handed is the whole run. Analyze passes the finished frame,
+    where a column a criterion needs and cannot find is a real problem and is
+    reported. Evaluate asks the same question of a row still being built -- the
+    pass plan fills it one folder at a time, so most of the columns are legitimately
+    absent most of the time -- and 657 designs x 7 criteria x 5 passes of that is
+    tens of thousands of lines saying nothing, loud enough to bury the errors that
+    do matter. There the gaps go to debug, and per_sequence_pass reports the one
+    fact that follows from them: no verdict.
+
     Args:
         thresholds: Normalised threshold dictionary, possibly templated.
         seq_type: Sequence type whose columns to match against.
@@ -718,6 +732,10 @@ def expand_model_criteria(
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
 
     columns = set(available_columns)
+    # Demoted, never dropped: a gap is still worth seeing under -v when a caller
+    # has said the column set is partial.
+    say_error = logger.error if report_gaps else logger.debug
+    say_warning = logger.warning if report_gaps else logger.debug
     out: dict = {}
     for name, spec in thresholds.items():
         parsed = parse_threshold_spec(spec)
@@ -737,7 +755,7 @@ def expand_model_criteria(
             # downstream as "cannot judge", which is the honest outcome.
             col = build_column_name(seq_type, parsed.get("column_prefix", "complex"), effective, complex_backend)
             if col not in columns:
-                logger.error(
+                say_error(
                     f"Criterion '{name}' reads column '{col}', which this run did not produce, so no "
                     f"pass verdict will be emitted for '{seq_type}'. Enable the metric that produces "
                     f"it, or override aggregation.success_thresholds to drop the criterion."
@@ -770,14 +788,14 @@ def expand_model_criteria(
             # Said out loud, because which folder answered a criterion is not
             # something a reader should have to infer from the column list.
             models = list(present)
-            logger.warning(
+            say_warning(
                 f"Criterion '{name}' is answered by '{present[0]}' for '{seq_type}': the gating folder "
                 f"'{complex_backend}' produced no {prefix} fold, and '{present[0]}' is the only one that did."
             )
         else:
             models = []
             if present:
-                logger.error(
+                say_error(
                     f"Criterion '{name}' cannot be answered for '{seq_type}': the gating folder "
                     f"'{complex_backend}' produced no {prefix} fold and {present} disagree about who "
                     f"should stand in. No verdict will be produced. Name the folder in "
@@ -792,7 +810,7 @@ def expand_model_criteria(
             # to face. Left in place, the template names a column that does not
             # exist, which the consumers already treat as "cannot judge" rather
             # than "passed".
-            logger.error(
+            say_error(
                 f"Criterion '{name}' matched no {prefix} column for '{seq_type}', so it cannot be "
                 f"applied and no verdict will be produced. Expected columns like "
                 f"'{lead}<model>{tail}_all'. Check that the metric producing them is enabled."

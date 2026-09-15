@@ -620,9 +620,18 @@ def resolve_criteria(row_dict: dict, seq_type: str, thresholds: dict) -> dict[st
     from proteinfoundation.result_analysis.analysis_utils import parse_threshold_spec
     from proteinfoundation.result_analysis.binder_analysis_utils import expand_model_criteria, threshold_column
 
-    # {model}-templated criteria stand for "every apo model this run produced",
-    # so they are expanded against this row's columns before anything is built.
-    expanded = expand_model_criteria(thresholds, seq_type, row_dict.keys())
+    # {model}-templated criteria are resolved against this row's columns before
+    # anything is built.
+    #
+    # report_gaps=False because this row is under construction: the pass plan
+    # fills it one folder at a time, so a criterion whose column has not been
+    # computed yet is the normal state here, not a fault. Reporting it made
+    # evaluate emit tens of thousands of ERROR lines per campaign about columns a
+    # later pass would go on to write. per_sequence_pass below states the one
+    # consequence that actually follows -- no verdict for this row -- and analyze
+    # re-derives every verdict from the finished frame, where the same gap IS a
+    # fault and is reported.
+    expanded = expand_model_criteria(thresholds, seq_type, row_dict.keys(), report_gaps=False)
     resolved = {}
     for name, spec in expanded.items():
         parsed = parse_threshold_spec(spec)
