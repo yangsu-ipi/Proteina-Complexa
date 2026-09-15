@@ -36,6 +36,7 @@ from proteinfoundation.metrics.consensus_folding import (
     draw_ids_for,
     missing_pae_cutoffs,
     read_consensus_cache,
+    reduce_over_draws,
 )
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
@@ -149,8 +150,8 @@ def test_the_folders_mean_is_carried_but_labelled_as_a_mean(tmp_path):
     """pLDDT, pTM and i_pTM were averaged before anything saw the parts and no
     re-read reproduces them, so the mean rides on each draw rather than leaving a
     gating column NaN across every finished campaign -- and says that it is one.
-    Everything the stored matrices CAN answer per model is dropped instead, so it
-    gets recomputed from that model's own matrix."""
+    A sibling draw carries no PAE family: model 2 has neither its own matrix to be
+    rescored from nor any claim on the reading taken off model 1."""
     af2 = tmp_path / "AF2"
     af2.mkdir()
     for k in range(1, 6):
@@ -422,3 +423,63 @@ def test_a_file_with_no_folds_in_it_is_not_adopted(tmp_path):
 
     _legacy_file(tmp_path, {"mpnn": {"aa_stats": [{"sequence": SEQ_A}]}})
     assert legacy_complex_folds(str(tmp_path), "af2") is None
+
+
+# ---------------------------------------------------------------------------
+# What may be discarded is what a re-read can reproduce
+# ---------------------------------------------------------------------------
+#
+# The PAE family is dropped from an adopted entry so each model gets rescored
+# from its own stored matrix. That is right only where a matrix exists. The
+# pre-unification AF2 runs wrote one for some sequences and not others, so on
+# EFNB3 this deleted the folder's i_pAE and nothing could put it back: every
+# adopted design read NaN in the column the campaign gates on, and adoption came
+# out strictly worse than the file it adopted from.
+
+
+def _with_models(tmp_path, n=5, pae=False):
+    af2 = tmp_path / "AF2"
+    af2.mkdir()
+    for k in range(1, n + 1):
+        (af2 / f"x_model{k}.pdb").write_text("ATOM")
+        if pae:
+            (af2 / f"x_model{k}.pdb.pae.npz").write_text("")
+    return consensus_entries_from_complex_stats(
+        [_stats(0, pdb="./d/AF2/x_model1.pdb")], [SEQ_A], lambda s: _draws(s, n),
+        str(tmp_path), CONSENSUS_METRIC_SUFFIXES,
+    )[SEQ_A]
+
+
+def test_a_stored_matrix_retires_the_folders_pae_so_each_model_is_rescored(tmp_path):
+    """The case adoption was designed around: every model's matrix is on disk,
+    so every model's PAE family is recomputed from its own and none of the
+    folder's is carried."""
+    entries = _with_models(tmp_path, pae=True)
+    for draw, one in entries.items():
+        assert "i_pAE" not in one, f"{draw} kept a value its own matrix can replace"
+        assert not [k for k in one if "ipSAE" in k]
+        assert missing_pae_cutoffs(one), f"{draw} must be asked to rescore"
+
+
+def test_without_a_matrix_the_folders_pae_survives_on_the_draw_it_was_read_from(tmp_path):
+    """No matrix, so nothing can reproduce it. The value is kept -- but only on
+    model 1, the structure the legacy entry actually pointed at. Unlike pLDDT and
+    pTM this was never a mean over the models, so copying it onto the siblings
+    would invent four measurements that were never made."""
+    entries = _with_models(tmp_path, pae=False)
+    assert entries["model1"]["i_pAE"] == _stats(0)["i_pAE"], (
+        "the one PAE reading that exists must not be discarded"
+    )
+    assert entries["model1"][REDUCED_FROM_MODELS_KEY] == [
+        "binder_pLDDT", "i_pTM", "pTM", "target_pLDDT",
+    ], "and it must not be relabelled as a mean, because it is not one"
+    for draw in ("model2", "model3", "model4", "model5"):
+        assert "i_pAE" not in entries[draw], f"{draw} has no evidence of its own"
+
+
+def test_a_kept_pae_reduces_to_itself_rather_than_to_nan(tmp_path):
+    """End to end with the reducer analyze uses: one draw carrying the reading
+    and four carrying none must come out as that reading, not as NaN."""
+    entries = _with_models(tmp_path, pae=False)
+    per_draw = [m["i_pAE"] for m in entries.values() if "i_pAE" in m]
+    assert reduce_over_draws(per_draw) == _stats(0)["i_pAE"]

@@ -335,6 +335,20 @@ def _sibling_structure(stored: str | None, index: int, sample_root_path: str) ->
     return _resolve_structure(swapped, sample_root_path)
 
 
+def _has_stored_pae(structure_path: str | None) -> bool:
+    """Whether this draw's own PAE matrix is on disk beside its structure.
+
+    Folds made since the store exists write one; the pre-unification AF2 runs
+    wrote them for some sequences and not others. Adoption asks because what it
+    may safely discard is exactly what a re-read can reproduce.
+    """
+    if not structure_path:
+        return False
+    from proteinfoundation.metrics.pae_store import pae_sidecar_path
+
+    return os.path.exists(pae_sidecar_path(structure_path))
+
+
 def consensus_entries_from_complex_stats(
     complex_stats: list[dict],
     sequences: list[str],
@@ -445,12 +459,29 @@ def consensus_entries_from_complex_stats(
             reduced = sorted(k for k in entry if k in _FOLDER_REDUCED_SUFFIXES)
             if reduced and len(draws) > 1:
                 entry[REDUCED_FROM_MODELS_KEY] = reduced
-                # Not per-draw answers, so they must not suppress the per-draw
-                # recomputation that the stored matrices CAN answer exactly.
-                entry.pop(PAE_CUTOFF_KEY, None)
-                for key in list(entry):
-                    if "ipSAE" in key or key in ("i_pAE", "pAE", "min_ipAE"):
-                        del entry[key]
+                # The PAE family is dropped so the per-draw recomputation that
+                # the stored matrices CAN answer exactly is not suppressed -- and
+                # CAN is the load-bearing word. Dropping it unconditionally was
+                # wrong: the pre-unification AF2 runs kept a matrix for only some
+                # of their sequences, so on EFNB3 this deleted the folder's i_pAE
+                # and then nothing could recompute it. Every adopted design read
+                # NaN in the one column the campaign gates on, and the adoption
+                # lost a number the file it adopted from actually held.
+                #
+                # So it is kept when no matrix can replace it -- but only on the
+                # draw the legacy file named. Unlike the confidence scalars, the
+                # PAE family there was never a mean over the models: it was read
+                # off the ONE structure the entry pointed at, which is this index.
+                # Copying it onto the siblings would invent four measurements;
+                # dropping it everywhere threw away the one that exists. Draws
+                # with no evidence for it simply carry no entry for it, which is
+                # what reduce_draws already reads correctly.
+                keep_pae = not _has_stored_pae(entry.get("pdb_path")) and index == 0
+                if not keep_pae:
+                    entry.pop(PAE_CUTOFF_KEY, None)
+                    for key in list(entry):
+                        if "ipSAE" in key or key in ("i_pAE", "pAE", "min_ipAE"):
+                            del entry[key]
             entries.setdefault(seq, {})[str(draw)] = entry
     return entries
 
