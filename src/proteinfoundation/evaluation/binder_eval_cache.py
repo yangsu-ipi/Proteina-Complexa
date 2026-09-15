@@ -245,3 +245,210 @@ def read_binder_eval_cache(
             f"from a different derivation; recomputing them rather than refolding"
         )
     return stats, sequences, derivation_stale
+
+
+# =============================================================================
+# Bridge to the advisory fold cache
+# =============================================================================
+#
+# The complex folds in this file were made by the mechanism that used to be
+# called "primary": one folder, named by folders.complex[0], reached through
+# run_binder_eval. Every OTHER complex folder is reached through
+# consensus_folding.score_binders and caches into consensus_fold_cache_{backend}.
+#
+# Those are two cache shapes for one kind of result, and the second is the better
+# one: keyed per (sequence, seed) rather than per design, carrying its own
+# derivation fingerprint, and able to re-read a kept structure instead of
+# refolding when only the numbers read off it changed. Unifying the two means
+# every complex folder writes the second shape.
+#
+# A unification alone would make every finished campaign's AF2 complexes
+# unreadable -- ~616 designs x 3 sequences x 5 models each, ~42 GPU-hours per
+# campaign, to reproduce structures already on disk. This adopts them instead.
+
+
+def _resolve_structure(stored: str | None, sample_root_path: str) -> str | None:
+    """A structure this design recorded, found from where it is being read now.
+
+    ``complex_pdb_path`` was written relative to the directory the run was
+    launched from -- ``./evaluation_results/<campaign>/<design>/AF2/<file>.pdb``
+    -- which resolves only from that one working directory. Anything reading the
+    cache from anywhere else, this migration included, sees a path that does not
+    exist and concludes the structure is gone.
+
+    So the stored path is treated as a name rather than a location: its last two
+    components are rejoined to the design directory, which is known. That carries
+    no knowledge of which folder wrote it or what its subdirectory is called --
+    only that a folder puts its structures in one place under the design.
+
+    Returns None when nothing is found, which a caller reads as "adopt the fold,
+    leave the metrics read off it to be filled in when the file reappears".
+    """
+    if not stored:
+        return None
+    if os.path.isabs(stored) and os.path.exists(stored):
+        return stored
+    parts = [p for p in stored.replace("\\", "/").split("/") if p not in ("", ".")]
+    for tail in (parts[-2:], parts[-1:]):
+        candidate = os.path.join(sample_root_path, *tail)
+        if os.path.exists(candidate):
+            return candidate
+    return stored if os.path.exists(stored) else None
+
+
+def consensus_entries_from_complex_stats(
+    complex_stats: list[dict],
+    sequences: list[str],
+    seeds_for,
+    sample_root_path: str,
+    metric_suffixes,
+) -> dict[str, dict[int, dict]]:
+    """``{binder_seq: {seed: metrics}}`` for folds recorded in this file's shape.
+
+    *sequences* must be the row's own pairing of sequence to stats entry --
+    ``binder_eval.sequences_for_type``, which reads it off ``aa_stats`` rather
+    than assuming two lists appended separately stayed parallel. Passed in rather
+    than derived here so that rule keeps living in one place.
+
+    Only what the FOLDER reported is carried, filtered to *metric_suffixes* and
+    to values that are actually numbers. Everything read off the structure --
+    buried area, shape complementarity, secondary structure, geometry against the
+    design -- is deliberately left out even where this file happens to hold it:
+    ``score_binders`` re-reads the kept PDB for anything absent, by the same code
+    on every folder's structures, which is cheaper than a second mapping between
+    two sets of names that could disagree.
+
+    The ipSAE cutoffs are the exception, and they are recorded -- for a cutoff
+    the entry actually evidences, meaning all three of its min_/max_/avg_ keys
+    are present. The suffix IS the distance by construction (``ipsae_suffixes``
+    builds the names from the cutoff list), so this is not a guess about history.
+
+    Leaving them absent instead was measurably wrong. The recorded structure is
+    the FIRST of a folder's models while the numbers beside it are the mean over
+    all of them, so an entry that looks un-scored has its whole PAE family
+    recomputed from one model's matrix: over 120 EFNB3 complexes that moved
+    avg_ipSAE by 5% on average and by 0.55 at worst, on a metric that runs 0 to 1
+    and gets thresholded. It would also have made an adopted campaign's ipSAE
+    mean one thing and a freshly folded one's another -- exactly the asymmetry
+    between folders this migration exists to remove. Cutoffs the entry does NOT
+    evidence stay missing and are computed from the stored matrix, which is what
+    lets a later round add a distance for the cost of a re-read.
+
+    ``pLDDT`` -- the whole-complex mean -- is absent from files written before it
+    was emitted, and no structure re-read produces it, so those entries carry
+    target_ and binder_pLDDT and not the complex mean. That is one advisory
+    column reading NaN on adopted designs, against a campaign-scale refold.
+    """
+    from proteinfoundation.metrics.consensus_folding import IPSAE_CUTOFFS, PAE_CUTOFF_KEY
+
+    wanted = set(metric_suffixes)
+    entries: dict[str, dict[int, dict]] = {}
+    for i, stats in enumerate(complex_stats or []):
+        if not isinstance(stats, dict) or i >= len(sequences):
+            continue
+        seq = sequences[i]
+        if not seq:
+            continue
+        metrics: dict = {
+            k: float(v)
+            for k, v in stats.items()
+            if k in wanted and not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+        }
+        if not metrics:
+            # A design whose fold failed: inf and NaN are the absence of a
+            # measurement, and adopting one would retire the refold that would
+            # replace it. Left out, the sequence simply has no entry and folds.
+            continue
+        evidenced = {
+            suffix: float(cutoff)
+            for cutoff, suffix in IPSAE_CUTOFFS
+            if all(f"{kind}ipSAE{suffix}" in metrics for kind in ("min_", "max_", "avg_"))
+        }
+        if evidenced:
+            metrics[PAE_CUTOFF_KEY] = evidenced
+        pdb = _resolve_structure(stats.get("complex_pdb_path"), sample_root_path)
+        if pdb:
+            metrics["pdb_path"] = pdb
+        seeds = seeds_for(seq)
+        if not seeds:
+            continue
+        # The FIRST seed only, never every seed this run wants. One recorded fold
+        # is one draw; filing it under three seeds would report a three-seed mean
+        # over one structure counted three times. A deterministic folder asks for
+        # exactly one seed and is fully adopted; a sampler adopts the draw it has
+        # and folds the rest.
+        entries.setdefault(seq, {})[int(seeds[0])] = metrics
+    return entries
+
+
+def adopt_binder_eval_folds(
+    sample_root_path: str,
+    backend: str,
+    target_seqs: list[str],
+    consensus_cfg: dict,
+    sequence_type_stats: dict,
+    sequences_by_type: dict[str, list[str]],
+    derive_tmol: bool = False,
+) -> int:
+    """Migrate this design's complex folds into the advisory cache. Returns how many.
+
+    A no-op -- and cheap -- once there is an advisory cache for *backend* on this
+    design, which is what makes it safe to call on every design of every run
+    rather than as a one-off script somebody has to remember to run against each
+    campaign. An existing cache is authoritative and is never overwritten: it was
+    written by the folder itself, and this only ever reconstructs.
+
+    *sequences_by_type* maps each sequence type to the sequences its
+    ``complex_stats`` describe, in stats order -- see
+    ``binder_eval.sequences_for_type``.
+
+    Never raises. Failing to adopt costs a refold, which is expensive; failing
+    the evaluation costs the run.
+    """
+    from proteinfoundation.metrics.consensus_folding import (
+        CONSENSUS_METRIC_SUFFIXES,
+        consensus_cache_path,
+        consensus_derivation_fingerprint,
+        consensus_derived_suffixes,
+        consensus_fingerprint,
+        fold_seeds_for,
+        write_consensus_cache,
+    )
+
+    if os.path.exists(consensus_cache_path(sample_root_path, backend)):
+        return 0
+    try:
+        entries: dict[str, dict[int, dict]] = {}
+        for seq_type, payload in (sequence_type_stats or {}).items():
+            adopted = consensus_entries_from_complex_stats(
+                (payload or {}).get("complex_stats") or [],
+                sequences_by_type.get(seq_type) or [],
+                lambda seq: fold_seeds_for(backend, consensus_cfg, target_seqs, seq),
+                sample_root_path,
+                CONSENSUS_METRIC_SUFFIXES,
+            )
+            for seq, by_seed in adopted.items():
+                entries.setdefault(seq, {}).update(by_seed)
+        if not entries:
+            return 0
+        # Stamped with the derivation this run wants even though nothing derived
+        # was adopted. The alternative -- a mismatched stamp -- reads as "these
+        # numbers were read off under a different rule", which would re-derive
+        # every entry unconditionally on every later run. Absent keys are the
+        # right signal instead: score_binders fills in what an entry LACKS from
+        # the kept structure, which is the same path that heals an entry cached
+        # before its PDB existed.
+        derivation = (
+            consensus_derivation_fingerprint(derive_tmol) if consensus_derived_suffixes(derive_tmol) else None
+        )
+        write_consensus_cache(
+            sample_root_path,
+            backend,
+            consensus_fingerprint(backend, consensus_cfg, target_seqs),
+            entries,
+            derivation=derivation,
+        )
+        return sum(len(v) for v in entries.values())
+    except Exception as exc:
+        logger.warning(f"Could not adopt complex folds for {sample_root_path} into the '{backend}' cache: {exc}")
+        return 0

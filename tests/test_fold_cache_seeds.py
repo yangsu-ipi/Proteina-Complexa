@@ -443,9 +443,9 @@ def test_the_advisory_path_inherits_the_seed_count():
 def test_a_pinned_advisory_seed_means_one_fold():
     """A pinned seed names a specific sample; folding it three times would be one
     draw counted three times, and the mean of a value with itself."""
-    src = pathlib.Path("src/proteinfoundation/metrics/consensus_folding.py").read_text()
-    body = src[src.index("def seeds_for(") : src.index("def first_seed_for(")]
-    assert "if pinned is not None:" in body and "return [int(pinned)]" in body
+    from proteinfoundation.metrics.consensus_folding import fold_seeds_for
+
+    assert fold_seeds_for("esmfold2", {"seed": 7, "n_seeds": 3}, ["MKV"], "SEQ") == [7]
 
 
 def test_adding_an_advisory_metric_invalidates_the_advisory_cache(monkeypatch):

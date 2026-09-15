@@ -314,12 +314,16 @@ def test_a_sequence_only_caller_is_refused_by_af2_with_the_reason(tmp_path):
 def test_a_deterministic_complex_folder_gets_one_seed(tmp_path, monkeypatch):
     """Same rule _fold_seeds applies on the monomer side: repeating a seed on a
     deterministic model is one fold counted twice, and its ensemble comes from
-    its parameter sets instead."""
-    import inspect
+    its parameter sets instead.
 
-    from proteinfoundation.metrics import consensus_folding
+    Asked of the rule itself rather than of score_binders' source, now that it is
+    a function both the scorer and the migration that adopts folds into its cache
+    call -- which is what stops the two from keying the same fold differently.
+    """
+    from proteinfoundation.metrics.consensus_folding import fold_seeds_for
 
-    source = inspect.getsource(consensus_folding.score_binders)
-    assert 'if backend == "esmfold2" else 1' in source, (
+    asked = {"n_seeds": 3}
+    assert len(fold_seeds_for("esmfold2", asked, ["MKV"], "SEQ")) == 3, "a sampler wants its draws"
+    assert len(fold_seeds_for("af2", asked, ["MKV"], "SEQ")) == 1, (
         "n_seeds must apply to the sampler, not to every complex folder"
     )

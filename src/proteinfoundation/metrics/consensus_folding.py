@@ -1393,6 +1393,34 @@ def existing_advisory_structure(cache_dir: str, backend: str, binder_seq: str, s
     return legacy if os.path.exists(legacy) else None
 
 
+def fold_seeds_for(backend: str, cfg: dict, target_seqs: list[str], binder_seq: str) -> list[int]:
+    """The seeds one binder is folded at by *backend*, in order.
+
+    Module level rather than a closure inside :func:`score_binders` because a
+    cache is keyed by seed VALUE, so anything that writes an entry -- the scorer,
+    or a migration adopting folds made by another mechanism -- has to agree with
+    it exactly. Two copies of this rule is two ways for the same fold to be
+    filed under two keys, which reads as a miss and refolds.
+
+    A pinned ``cfg.seed`` means exactly one fold, however many are asked for: it
+    names a specific sample, and repeating it would be the same fold counted
+    twice. Otherwise a sampler wants several draws and a deterministic folder
+    wants one, however many a sampler beside it asks for -- the same rule
+    ``_fold_seeds`` applies on the monomer side, for the same reason: its
+    ensemble comes from its parameter sets instead.
+
+    The first seed is the unindexed :func:`deterministic_seed`, so a single-seed
+    entry written before seeds were a list is still found.
+    """
+    from proteinfoundation.metrics.seeding import deterministic_seeds
+
+    pinned = cfg.get("seed")
+    if pinned is not None:
+        return [int(pinned)]
+    n_seeds = max(1, int(cfg.get("n_seeds", cfg.get("n_esmfold2_seeds", 1)))) if backend == "esmfold2" else 1
+    return deterministic_seeds(*target_seqs, binder_seq, count=n_seeds)
+
+
 def score_binders(
     backend: str,
     target_seqs: list[str],
@@ -1431,8 +1459,6 @@ def score_binders(
     if not target_seqs or not binder_seqs:
         return [{} for _ in binder_seqs]
 
-    from proteinfoundation.metrics.seeding import deterministic_seed, deterministic_seeds
-
     fingerprint = consensus_fingerprint(backend, cfg, target_seqs)
     # Only ask about the derivation when something is actually read off the
     # structures. With nothing registered there is no staleness that matters, and
@@ -1440,26 +1466,11 @@ def score_binders(
     wanted_suffixes = consensus_derived_suffixes(derive_tmol)
     derivation = consensus_derivation_fingerprint(derive_tmol) if wanted_suffixes else None
 
-    # Seeds are derived here rather than inside the scorer, so one place decides
-    # what a fold's identity is and the scorer stays a pure function of its
-    # inputs. A pinned cfg.seed means exactly one fold, however many are asked
-    # for: it names a specific sample, and repeating it would be the same fold
-    # counted twice.
-    pinned = cfg.get("seed")
-    # A sampler wants several draws; a deterministic folder wants one, however
-    # many a sampler beside it asks for. Same rule _fold_seeds applies on the
-    # monomer side, for the same reason: repeating a seed on a deterministic
-    # model is one fold counted twice, and its ensemble comes from its parameter
-    # sets instead.
-    n_seeds = max(1, int(cfg.get("n_seeds", cfg.get("n_esmfold2_seeds", 1)))) if backend == "esmfold2" else 1
-
     def seeds_for(seq: str) -> list[int]:
-        if pinned is not None:
-            return [int(pinned)]
-        return deterministic_seeds(*target_seqs, seq, count=n_seeds)
+        return fold_seeds_for(backend, cfg, target_seqs, seq)
 
     def first_seed_for(seq: str) -> int:
-        return int(pinned) if pinned is not None else deterministic_seed(*target_seqs, seq)
+        return seeds_for(seq)[0]
 
     # per binder sequence: {seed: metrics}
     scores: dict[str, dict[int, dict[str, float | str]]] = {}
