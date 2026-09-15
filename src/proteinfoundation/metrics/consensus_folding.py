@@ -76,7 +76,12 @@ import numpy as np
 from loguru import logger
 
 from proteinfoundation.metrics.column_names import rename
-from proteinfoundation.metrics.ensembling import PAE_MAX_BIN, mean_chain_plddt
+from proteinfoundation.metrics.ensembling import (
+    PAE_MAX_BIN,
+    PER_MODEL_STATS_KEY,
+    PLACEMENT_METRICS,
+    mean_chain_plddt,
+)
 from proteinfoundation.metrics.pae_store import save_pae
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN, complex_backend_of
@@ -228,10 +233,15 @@ def _score_esmfold2(
     binder_seq: str,
     cfg: dict,
     out_pdb_path: str | None = None,
-    seed: int = 0,
+    draw: str | int = 0,
     context: ComplexFoldContext | None = None,
+    out_path_for=None,
 ) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
+
+    One draw per call: ESMFold2's draws are seeds, and a seed is an input to a
+    single prediction. *out_path_for* is accepted and unused -- it exists for a
+    folder that answers for several draws at once, which this is not.
 
     Same input shape as the fork's own reference adapter
     (``oracle/backends/local_esmfold2.py``): one ProteinInput per chain, target
@@ -269,6 +279,7 @@ def _score_esmfold2(
     # fold's inputs: the same target and binder always give the same structure,
     # and a cached score therefore equals a recomputed one. cfg may pin a seed
     # instead, e.g. to draw a second independent sample of the same complex.
+    seed = seed_of_draw(draw)
     logger.debug(f"Advisory fold of a {len(binder_seq)}-residue binder (seed {seed})")
     folded = builder.fold(
         model,
@@ -619,8 +630,9 @@ def _score_af2(
     binder_seq: str,
     cfg: dict,
     out_pdb_path: str | None = None,
-    seed: int = 0,
+    draw: str | int = 0,
     context: ComplexFoldContext | None = None,
+    out_path_for=None,
 ) -> dict[str, float]:
     """Fold target+binder with AlphaFold2, through the harness that already does it.
 
@@ -636,10 +648,21 @@ def _score_af2(
     are still worth having side by side; they are not worth gating on one
     threshold. See docs and the per-folder thresholds.
 
-    *seed* is accepted and ignored: ColabDesign's prediction is deterministic
-    given its parameter sets, so repeating a seed would be the same fold counted
-    twice. Its ensemble comes from ``n_af2_models`` instead, which is the same
-    reason _fold_seeds gives a deterministic monomer folder one seed.
+    Answers for EVERY draw in one call, because that is what one call does:
+    ColabDesign predicts with each of its parameter sets and the harness returns
+    all of them. AF2's draws are those parameter sets -- its prediction is
+    deterministic given one, which is why it takes a single seed however many a
+    sampler beside it asks for.
+
+    Those per-model numbers used to be averaged by ``average_af2_stats`` before
+    anything outside the harness saw them, and only the first model's structure
+    was named. So a metric read back off "the" structure was one model's while
+    the numbers beside it were five models' mean -- measured at up to 0.55 on
+    avg_ipSAE over 120 EFNB3 complexes. Each model is its own entry now, with its
+    own structure, and the reduction happens once at the end over things that
+    were all recorded.
+
+    *draw* names the model the caller asked about; the return covers all of them.
     """
     if context is None or not context.design_pdb or not context.target_pdb:
         raise ValueError(
@@ -650,7 +673,8 @@ def _score_af2(
 
     from proteinfoundation.utils.colabdesign_utils import get_af2_advanced_settings, run_af_eval
 
-    settings = get_af2_advanced_settings(num_af2_models=int(cfg.get("n_af2_models", 1) or 1))
+    n_models = n_af2_models_in(cfg)
+    settings = get_af2_advanced_settings(num_af2_models=n_models)
     stats, paths = run_af_eval(
         trajectory_pdb=context.design_pdb,
         binder_sequences=[{"seq": binder_seq}],
@@ -664,18 +688,57 @@ def _score_af2(
     )
     if not stats:
         return {}
-    metrics = {k: float(v) for k, v in stats[0].items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
-    produced = (paths or [None])[0]
-    if out_pdb_path and produced and os.path.exists(produced):
-        # The advisory store owns where a kept structure lives, so the harness's
-        # own output is copied to the path this caller asked for rather than the
-        # caller being told to look somewhere else.
-        os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
-        shutil.copy(produced, out_pdb_path)
-        metrics["pdb_path"] = out_pdb_path
-    elif produced:
-        metrics["pdb_path"] = produced
-    return metrics
+    # run_af_eval envelopes each sequence's stats as {"seq_N": stats}. Unwrapped
+    # here because it was NOT: the metric filter below ran over the envelope, so
+    # every key missed CONSENSUS_METRIC_SUFFIXES and this backend returned a
+    # pdb_path and no numbers at all. It went unnoticed because af2 has only ever
+    # been reached as folders.complex[0], which does not come through here -- the
+    # first thing routing it through score_binders would have hit.
+    envelope = stats[0] if isinstance(stats[0], dict) else {}
+    inner = [v for k, v in envelope.items() if k.startswith("seq_") and isinstance(v, dict)]
+    payload = inner[0] if len(inner) == 1 else envelope
+    # What each parameter set said, kept apart. The harness rides them along
+    # beside its own mean for exactly this; a harness too old to do so leaves the
+    # key absent and this degrades to the single reduced entry it used to return.
+    per_model = payload.get(PER_MODEL_STATS_KEY)
+    model_paths = payload.get("complex_pdb_paths") or paths or []
+    if not isinstance(per_model, list) or not per_model:
+        metrics = {k: float(v) for k, v in payload.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
+        produced = (model_paths or [None])[0]
+        if produced:
+            metrics["pdb_path"] = _place_structure(produced, out_pdb_path)
+        return metrics
+
+    draws: dict[str, dict[str, float]] = {}
+    for index, model_stats in enumerate(per_model):
+        draw_id = f"model{index + 1}"
+        metrics = {k: float(v) for k, v in model_stats.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
+        if not metrics:
+            continue
+        produced = model_paths[index] if index < len(model_paths) else None
+        if produced:
+            # Each model's OWN structure at its own path. Pointing several draws
+            # at one file is what made a per-draw derivation read the same model
+            # five times and call it an ensemble.
+            wanted = out_path_for(draw_id) if out_path_for else (out_pdb_path if draw_id == str(draw) else None)
+            metrics["pdb_path"] = _place_structure(produced, wanted)
+        draws[draw_id] = metrics
+    return {"draws": draws}
+
+
+def _place_structure(produced: str, wanted: str | None) -> str:
+    """Put a harness-produced structure where the advisory store wants it.
+
+    The store owns where a kept structure lives, so the harness's own output is
+    copied to the path the caller asked for rather than the caller being told to
+    look somewhere else. Without a requested path the harness's own is reported,
+    which is what a run with keep_folding_outputs off gets.
+    """
+    if not (wanted and os.path.exists(produced)):
+        return produced
+    os.makedirs(os.path.dirname(wanted), exist_ok=True)
+    shutil.copy(produced, wanted)
+    return wanted
 
 
 CONSENSUS_BACKENDS: dict[str, Callable[[list[str], str, dict], dict[str, float]]] = {
@@ -970,7 +1033,10 @@ def consensus_fingerprint(backend: str, cfg: dict, target_seqs: list[str]) -> st
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-CONSENSUS_CACHE_SCHEMA = 2  # 1 held one fold per binder; 2 holds one per (binder, seed)
+# 1 held one fold per binder; 2 one per (binder, seed); 3 one per (binder, DRAW),
+# where a draw is one prediction however the backend repeats itself -- a seed for
+# a sampler, a parameter set for AF2. See CONSENSUS_DRAW_AXIS.
+CONSENSUS_CACHE_SCHEMA = 3
 
 # Geometry keys, mapped from what calculate_prot_prot_binder_rmsd returns to the
 # suffix the primary backend's columns carry. Its ``complex_scRMSD_ca`` lands in
@@ -1264,19 +1330,33 @@ def read_consensus_cache(
                 f"re-deriving from the kept structures rather than refolding"
             )
         raw = cached.get("scores") or {}
-        if cached.get("schema") == CONSENSUS_CACHE_SCHEMA:
+        schema = cached.get("schema")
+        if schema == CONSENSUS_CACHE_SCHEMA:
             return {
-                seq: {int(k): v for k, v in by_seed.items() if isinstance(v, dict)}
+                seq: {str(k): v for k, v in by_draw.items() if isinstance(v, dict)}
+                for seq, by_draw in raw.items()
+                if isinstance(by_draw, dict)
+            }, stale
+        if schema == 2:
+            # Schema 2 keyed by bare seed integer, which is the seed axis of the
+            # draw key this schema uses. Renaming it is the whole migration: the
+            # structures keep the names advisory_structure_path already gave
+            # them, so nothing on disk moves and nothing refolds.
+            out2 = {
+                seq: {f"seed{int(k)}": v for k, v in by_seed.items() if isinstance(v, dict)}
                 for seq, by_seed in raw.items()
                 if isinstance(by_seed, dict)
-            }, stale
-        out: dict[str, dict[int, dict]] = {}
+            }
+            if out2:
+                logger.info(f"Adopted {len(out2)} schema-2 advisory entries at {path} onto the draw axis")
+            return out2, stale
+        out: dict[str, dict[str, dict]] = {}
         for seq, metrics in raw.items():
             if not isinstance(metrics, dict):
                 continue
             if seed_for is None:
                 continue
-            out[seq] = {int(seed_for(seq)): metrics}
+            out[seq] = {f"seed{int(seed_for(seq))}": metrics}
         if out:
             logger.info(f"Adopted {len(out)} schema-1 advisory entries at {path} under their derived seeds")
         return out, stale
@@ -1305,8 +1385,8 @@ def write_consensus_cache(
                 merged = {k: dict(v) for k, v in (existing.get("scores") or {}).items() if isinstance(v, dict)}
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         merged = {}
-    for seq, by_seed in scores.items():
-        merged.setdefault(seq, {}).update({str(seed): metrics for seed, metrics in by_seed.items()})
+    for seq, by_draw in scores.items():
+        merged.setdefault(seq, {}).update({str(draw): metrics for draw, metrics in by_draw.items()})
     try:
         # Merged on the fold fingerprint alone, then stamped with the current
         # derivation: entries that could not be re-derived (no kept structure)
@@ -1331,19 +1411,40 @@ def write_consensus_cache(
 # =============================================================================
 
 
-def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, float | str]:
-    """Average a binder's metrics across its seeds.
+# The advisory names of the metrics that reduce by worst case rather than by
+# mean, mapped from the primary side's PLACEMENT_METRICS through the same table
+# that renames them. One definition of "this metric is about placement", not two
+# lists that agree only by inspection -- the primary side calls it
+# complex_scRMSD_ca and the advisory slot calls it scRMSD_ca.
+CONSENSUS_PLACEMENT_SUFFIXES = frozenset(
+    suffix for key, suffix in CONSENSUS_RMSD_SUFFIXES.items() if key in PLACEMENT_METRICS
+)
 
-    Seeds are exchangeable draws from a sampler -- seed k of one input has no
-    correspondence to seed k of another -- so the only meaningful reduction is to
-    pool them. Non-numeric entries (``pdb_path``, the SASA engine and radii) are
-    taken from the first seed rather than averaged; the structures differ per
-    seed, and one of them has to be the one a reader is pointed at, while the
-    engine and radii are identical across seeds by construction.
+
+def reduce_over_draws(by_draw: dict[str, dict[str, float | str]]) -> dict[str, float | str]:
+    """Pool a binder's metrics across the draws that produced them.
+
+    Draws are exchangeable repeat predictions -- draw k of one input has no
+    correspondence to draw k of another -- so pooling is the only meaningful
+    reduction. Non-numeric entries (``pdb_path``, the SASA engine and radii) are
+    taken from the first draw rather than averaged; the structures differ per
+    draw, and one of them has to be the one a reader is pointed at, while the
+    engine and radii are identical across draws by construction.
+
+    Placement reduces by worst case, by the rule and for the reason
+    reduce_rmsd_over_models gives: every draw has to agree the binder is where it
+    belongs, and a mean pulls a misplaced design toward the cutoff. That rule
+    used to apply only to AF2's models, because only AF2 had more than one
+    structure per prediction in reach. It now applies to every draw of every
+    folder, which is a real change to ESMFold2's multi-seed placement columns --
+    strictly harder to satisfy, and measurable against the baselines.
+
+    Note what does NOT belong here: this is a reduction over repeat predictions
+    of ONE sequence. Choosing among sequences is analyze's, and stays there.
     """
-    if not by_seed:
+    if not by_draw:
         return {}
-    ordered = [by_seed[s] for s in sorted(by_seed)]
+    ordered = [by_draw[s] for s in sorted(by_draw)]
     out: dict[str, float | str] = {}
     for key in ordered[0]:
         values = [m[key] for m in ordered if key in m]
@@ -1351,46 +1452,115 @@ def mean_over_seeds(by_seed: dict[int, dict[str, float | str]]) -> dict[str, flo
         # would report one draw's secondary structure beside pLDDTs that are
         # means of three, and nothing in the row would say so.
         lists = [v for v in values if isinstance(v, (list, tuple))]
-        if lists and len({len(v) for v in lists}) == 1:
+        numeric_lists = all(
+            isinstance(x, (int, float)) and not isinstance(x, bool) for v in lists for x in v
+        )
+        if lists and numeric_lists and len({len(v) for v in lists}) == 1:
             out[key] = [sum(col) / len(col) for col in zip(*lists, strict=True)]
             continue
+        if lists:
+            # A list that is not a vector of numbers is provenance, not a
+            # measurement -- which keys an adopted entry carries as the folder's
+            # own reduction, say. Identical on every draw by construction, so the
+            # first one answers; averaging it tried to add strings together.
+            out[key] = values[0]
+            continue
         numeric = [float(v) for v in values if isinstance(v, (int, float)) and v == v]
-        out[key] = sum(numeric) / len(numeric) if numeric else values[0]
+        if not numeric:
+            out[key] = values[0]
+        elif key in CONSENSUS_PLACEMENT_SUFFIXES:
+            out[key] = max(numeric)
+        else:
+            out[key] = sum(numeric) / len(numeric)
     # Same name the primary side uses (ensembling.average_interface_rows): how
     # many predictions were reduced into this value. It was n_seeds here and
-    # n_interface_models there, and only the latter ever became a column.
+    # n_interface_models there, and only the latter ever became a column. With
+    # AF2's models on the same axis it finally counts the same thing for both.
     out["n_predictions"] = float(len(ordered))
     return out
 
 
-def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str, seed: int | None = None) -> str:
-    """Where a backend's folded complex for this binder and seed goes.
+mean_over_seeds = reduce_over_draws  # pre-draw-axis name
+
+
+def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str, draw: str | None = None) -> str:
+    """Where a backend's folded complex for this binder and draw goes.
 
     Content-addressed on the binder sequence, so the path a cache entry records
-    stays valid across runs and two sequences never collide. The seed is part of
-    the name because each seed folds a different structure; without it, seeds
+    stays valid across runs and two sequences never collide. The draw is part of
+    the name because each draw IS a different structure; without it, draws
     overwrite one another and the last one silently answers for all.
 
-    ``seed=None`` gives the pre-seed name, which is where a structure folded before
-    seeds existed still lives -- see ``existing_advisory_structure``.
+    ``draw=None`` gives the pre-draw name, which is where a structure folded before
+    any of this existed still lives -- see ``existing_advisory_structure``. Draw
+    ids spell the seed axis ``seed{n}``, which is exactly the name schema 2 wrote,
+    so migrating the cache key moves no file.
     """
     digest = hashlib.sha256(binder_seq.encode("utf-8")).hexdigest()[:12]
-    name = f"{digest}.pdb" if seed is None else f"{digest}_seed{seed}.pdb"
+    name = f"{digest}.pdb" if draw is None else f"{digest}_{draw}.pdb"
     return os.path.join(cache_dir, f"{backend}_complex", name)
 
 
-def existing_advisory_structure(cache_dir: str, backend: str, binder_seq: str, seed: int) -> str | None:
-    """An already-folded structure for this binder and seed, wherever it lives.
+def existing_advisory_structure(cache_dir: str, backend: str, binder_seq: str, draw: str) -> str | None:
+    """An already-folded structure for this binder and draw, wherever it lives.
 
-    Checks the seeded name, then the pre-seed one: a structure folded before seeds
-    existed was produced by the derivation's first seed, so it answers for that
-    seed and should not be refolded just because the naming changed.
+    Checks the draw name, then the pre-draw one: a structure folded before draws
+    existed was produced by the derivation's first one, so it answers for that
+    draw and should not be refolded just because the naming changed.
     """
-    seeded = advisory_structure_path(cache_dir, backend, binder_seq, seed)
-    if os.path.exists(seeded):
-        return seeded
+    drawn = advisory_structure_path(cache_dir, backend, binder_seq, draw)
+    if os.path.exists(drawn):
+        return drawn
     legacy = advisory_structure_path(cache_dir, backend, binder_seq, None)
     return legacy if os.path.exists(legacy) else None
+
+
+# How a backend repeats itself when predicting one complex.
+#
+# A draw is one prediction. ESMFold2's draws differ by the seed it sampled at;
+# AF2's differ by which of its parameter sets produced them, which is why
+# fold_seeds_for gives it exactly one seed however many a sampler beside it asks
+# for. Those are the same KIND of thing -- repeat measurements of one complex
+# whose disagreement is information about how confident the prediction really is
+# -- and the only reason they were treated differently is that one of them used
+# to be averaged inside the folding harness before anything else could see it.
+#
+# Cached identically now: one entry per draw, each with its own structure, each
+# with its own numbers read off that structure. That is what lets the reduction
+# be a question anyone downstream can re-ask, and it is what stops a metric read
+# off "the" structure from silently meaning the first model of five.
+CONSENSUS_DRAW_AXIS: dict[str, str] = {"esmfold2": "seed", "af2": "model"}
+
+
+def seed_of_draw(draw: str | int) -> int:
+    """The sampler seed a draw id names, for a backend whose axis is the seed.
+
+    Decoded rather than passed alongside, so the cache key stays the single
+    statement of what produced an entry. A bare int is accepted because schema 2
+    entries and direct callers still speak in seeds.
+    """
+    if isinstance(draw, int):
+        return draw
+    text = str(draw)
+    return int(text[len("seed"):]) if text.startswith("seed") else int(text)
+
+
+def n_af2_models_in(cfg: dict) -> int:
+    """How many parameter sets AF2 predicts each complex with."""
+    return max(1, int(cfg.get("n_af2_models", 1) or 1))
+
+
+def draw_ids_for(backend: str, cfg: dict, target_seqs: list[str], binder_seq: str) -> list[str]:
+    """The draws *backend* makes for this binder, as cache keys, in order.
+
+    Strings rather than the bare seed integers schema 2 used, because the key has
+    to say what KIND of repeat it identifies: seed 3 and model 3 are not the same
+    prediction, and an int cannot tell them apart. ``seed{n}`` reproduces the
+    structure filenames schema 2 already wrote, so no structure on disk moves.
+    """
+    if CONSENSUS_DRAW_AXIS.get(backend, "seed") == "model":
+        return [f"model{k}" for k in range(1, n_af2_models_in(cfg) + 1)]
+    return [f"seed{s}" for s in fold_seeds_for(backend, cfg, target_seqs, binder_seq)]
 
 
 def fold_seeds_for(backend: str, cfg: dict, target_seqs: list[str], binder_seq: str) -> list[int]:
@@ -1466,14 +1636,17 @@ def score_binders(
     wanted_suffixes = consensus_derived_suffixes(derive_tmol)
     derivation = consensus_derivation_fingerprint(derive_tmol) if wanted_suffixes else None
 
-    def seeds_for(seq: str) -> list[int]:
-        return fold_seeds_for(backend, cfg, target_seqs, seq)
+    def draws_for(seq: str) -> list[str]:
+        return draw_ids_for(backend, cfg, target_seqs, seq)
 
     def first_seed_for(seq: str) -> int:
-        return seeds_for(seq)[0]
+        # Schema 1 adoption only: it keyed by binder alone, and the seed that
+        # must have produced such an entry is recoverable. Draw-aware callers
+        # use draws_for.
+        return fold_seeds_for(backend, cfg, target_seqs, seq)[0]
 
-    # per binder sequence: {seed: metrics}
-    scores: dict[str, dict[int, dict[str, float | str]]] = {}
+    # per binder sequence: {draw id: metrics}
+    scores: dict[str, dict[str, dict[str, float | str]]] = {}
     derivation_stale = False
     if cache_dir and reuse_cache:
         scores, derivation_stale = read_consensus_cache(
@@ -1497,19 +1670,23 @@ def score_binders(
         between a column being there and a campaign having to be evaluated twice
         to populate it".
         """
-        changed: dict[str, dict[int, dict[str, float | str]]] = {}
+        changed: dict[str, dict[str, dict[str, float | str]]] = {}
         failed = 0
         # Entries whose PAE family the stored matrix could not refresh. Only
         # interesting when the derivation moved: their folder-reported values
         # then answer the question the cutoffs used to ask, and no file on disk
         # can produce the new answer without predicting the complex again.
         unrefreshable_pae = 0
-        for seq, by_seed in subject.items():
-            for seed, metrics in by_seed.items():
+        for seq, by_draw in subject.items():
+            for draw, metrics in by_draw.items():
                 complete = all(k in metrics for k in wanted_suffixes) and not missing_pae_cutoffs(metrics)
                 if not stale and complete:
                     continue
-                pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, seed)
+                # This draw's own structure, never "the" structure for the
+                # sequence. That distinction is the whole point of the axis: a
+                # PAE family re-read off one model while the numbers beside it
+                # were a mean over five moved avg_ipSAE by up to 0.55 on EFNB3.
+                pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, draw)
                 if not (isinstance(pdb, str) and os.path.exists(pdb)):
                     continue
                 try:
@@ -1545,7 +1722,7 @@ def score_binders(
                     usable[PAE_CUTOFF_KEY] = derived[PAE_CUTOFF_KEY]
                 if usable:
                     metrics.update(usable)
-                    changed.setdefault(seq, {})[seed] = metrics
+                    changed.setdefault(seq, {})[draw] = metrics
         return changed, failed, unrefreshable_pae
 
     if scores and cache_dir:
@@ -1554,7 +1731,7 @@ def score_binders(
             write_consensus_cache(cache_dir, backend, fingerprint, rederived, derivation=derivation)
             logger.info(
                 f"Advisory backend '{backend}' re-derived metrics for "
-                f"{sum(len(v) for v in rederived.values())} (sequence, seed) structures without refolding"
+                f"{sum(len(v) for v in rederived.values())} (sequence, draw) structures without refolding"
             )
         if failed:
             logger.warning(f"Advisory re-derivation failed for {failed} structures; their columns stay absent")
@@ -1572,51 +1749,85 @@ def score_binders(
     # request was for a file, and the cache answered about a number. Refold when
     # the structure is wanted and absent, which also repairs an entry whose PDB
     # was deleted since.
-    def _needs_structure(seq: str, seed: int) -> bool:
+    def _needs_structure(seq: str, draw: str) -> bool:
         if not (cache_dir and keep_structures):
             return False
-        return existing_advisory_structure(cache_dir, backend, seq, seed) is None
+        return existing_advisory_structure(cache_dir, backend, seq, draw) is None
 
-    # One unit of work is a (sequence, seed) pair, so adding a seed folds only
+    # One unit of work is a (sequence, draw) pair, so adding a draw folds only
     # what is new rather than everything for that sequence.
     pending = [
-        (seq, seed)
+        (seq, draw)
         for seq in dict.fromkeys(binder_seqs)
         if seq
-        for seed in seeds_for(seq)
-        if seed not in scores.get(seq, {}) or _needs_structure(seq, seed)
+        for draw in draws_for(seq)
+        if draw not in scores.get(seq, {}) or _needs_structure(seq, draw)
     ]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
-        fresh: dict[str, dict[int, dict[str, float | str]]] = {}
-        for seq, seed in pending:
-            out_pdb = (
-                advisory_structure_path(cache_dir, backend, seq, seed) if (cache_dir and keep_structures) else None
-            )
-            try:
-                metrics = scorer(target_seqs, seq, cfg, out_pdb, seed, context)
-            except AdvisoryStructureWriteError:
-                # Systematic, not per-design: the next binder writes to the same
-                # kind of path and fails the same way. Tolerating it here is what
-                # made an unwriteable structure look like a survivable hiccup.
-                raise
-            except Exception as exc:
-                logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
-                continue
+        fresh: dict[str, dict[str, dict[str, float | str]]] = {}
+
+        def _keep(metrics: dict) -> dict:
             usable = {k: float(v) for k, v in metrics.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
             if any(k.endswith("ipSAE") or "ipSAE_" in k for k in usable):
                 # Which distances the folder just scored at, recorded the same
                 # way a re-derivation records them -- so a later round asking for
                 # one of these reuses it instead of reading the matrix back.
                 usable[PAE_CUTOFF_KEY] = {suffix: float(cutoff) for cutoff, suffix in IPSAE_CUTOFFS}
-            if usable:
+            if usable and metrics.get("pdb_path"):
                 # pdb_path rides along in the same entry; it is not a metric, so
                 # column emission filters on CONSENSUS_METRIC_SUFFIXES and picks
                 # it up explicitly. Entries written before structures were kept
                 # simply lack the key.
-                if metrics.get("pdb_path"):
-                    usable["pdb_path"] = metrics["pdb_path"]
-                fresh.setdefault(seq, {})[seed] = usable
+                usable["pdb_path"] = metrics["pdb_path"]
+            return usable
+
+        # Grouped by sequence, because a folder may answer for several draws in
+        # one call: AF2 predicts with every parameter set per invocation, so
+        # asking it once per draw would do five times the work to keep four
+        # answers it already had. A scorer says so by returning {"draws": {...}};
+        # one that returns a flat dict answered for the draw it was asked about.
+        by_sequence: dict[str, list[str]] = {}
+        for seq, draw in pending:
+            by_sequence.setdefault(seq, []).append(draw)
+        for seq, wanted_draws in by_sequence.items():
+            remaining = list(wanted_draws)
+            while remaining:
+                draw = remaining.pop(0)
+                out_pdb = (
+                    advisory_structure_path(cache_dir, backend, seq, draw)
+                    if (cache_dir and keep_structures)
+                    else None
+                )
+
+                def out_path_for(other: str, _seq: str = seq) -> str | None:
+                    """Where a sibling draw of this same binder should be written.
+
+                    A multi-draw folder needs one path per structure it produces,
+                    or four of its five land nowhere and _needs_structure asks for
+                    them again on every run -- the indefinite-refold failure
+                    AdvisoryStructureWriteError exists to make loud.
+                    """
+                    if not (cache_dir and keep_structures):
+                        return None
+                    return advisory_structure_path(cache_dir, backend, _seq, other)
+
+                try:
+                    produced = scorer(target_seqs, seq, cfg, out_pdb, draw, context, out_path_for)
+                except AdvisoryStructureWriteError:
+                    # Systematic, not per-design: the next binder writes to the same
+                    # kind of path and fails the same way. Tolerating it here is what
+                    # made an unwriteable structure look like a survivable hiccup.
+                    raise
+                except Exception as exc:
+                    logger.warning(f"Advisory backend '{backend}' failed on a {len(seq)}-residue binder: {exc}")
+                    continue
+                answered = produced.get("draws") if isinstance(produced.get("draws"), dict) else {draw: produced}
+                for answered_draw, metrics in answered.items():
+                    usable = _keep(metrics)
+                    if usable:
+                        fresh.setdefault(seq, {})[str(answered_draw)] = usable
+                remaining = [d for d in remaining if d not in answered]
         # Read off the structures these folds just wrote, before they are cached
         # or returned. The scorer reports what the FOLDER knows -- pTM, PAE, the
         # ipSAE family -- and `usable` above keeps only those; everything read off
@@ -1627,11 +1838,11 @@ def score_binders(
         # fill columns whose structures were already on disk the first time.
         if cache_dir:
             _derive_into_scores(fresh, stale=False)
-        for seq, by_seed in fresh.items():
-            scores.setdefault(seq, {}).update(by_seed)
+        for seq, by_draw in fresh.items():
+            scores.setdefault(seq, {}).update(by_draw)
         if cache_dir and fresh:
             write_consensus_cache(cache_dir, backend, fingerprint, fresh, derivation=derivation)
         folded = sum(len(v) for v in fresh.values())
-        logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, seed) folds")
+        logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, draw) folds")
 
-    return [mean_over_seeds(scores.get(seq, {})) for seq in binder_seqs]
+    return [reduce_over_draws(scores.get(seq, {})) for seq in binder_seqs]

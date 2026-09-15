@@ -43,6 +43,7 @@ AF2_SAVE_LOCATION = "AF2"
 
 
 from proteinfoundation.metrics.ensembling import (
+    PER_MODEL_STATS_KEY,
     af2_stats_from_metrics,
     average_af2_stats,
     mean_chain_plddt,
@@ -343,4 +344,9 @@ def predict_binder_complex(
     stats = average_af2_stats(per_model_stats)
     stats["complex_pdb_path"] = complex_pdb_paths[0]
     stats["complex_pdb_paths"] = complex_pdb_paths
+    # Beside the mean, not instead of it. A caller that files each model as its
+    # own prediction needs what each model actually said; averaging here and
+    # discarding the parts left "the" structure meaning the first model while the
+    # numbers beside it meant all five.
+    stats[PER_MODEL_STATS_KEY] = per_model_stats
     return stats

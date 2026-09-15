@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from typing import Any
 
 from loguru import logger
@@ -296,14 +297,58 @@ def _resolve_structure(stored: str | None, sample_root_path: str) -> str | None:
     return stored if os.path.exists(stored) else None
 
 
+# Which keys in an adopted entry are the FOLDER'S reduction over its models
+# rather than this draw's own measurement.
+#
+# The legacy file recorded one mean per sequence and threw the per-model
+# confidence values away, so pLDDT, pTM and i_pTM cannot be recovered per model
+# by any amount of re-reading -- the matrices on disk hold expected error in
+# Angstroms, not the logits pTM comes from. The mean is still the right number
+# for the sequence, and dropping it would put NaN in a gating column across every
+# finished campaign, so it is carried on each draw and labelled as what it is.
+# Everything not listed here was measured from that draw's own structure.
+REDUCED_FROM_MODELS_KEY = "reduced_over_models"
+
+
+# The confidence scalars a folder reports and no structure re-read reproduces.
+# Everything else in an adopted entry is recomputed per draw.
+_FOLDER_REDUCED_SUFFIXES = ("pLDDT", "target_pLDDT", "binder_pLDDT", "pTM", "i_pTM")
+
+
+def _sibling_structure(stored: str | None, index: int, sample_root_path: str) -> str | None:
+    """The *index*-th model's structure, given the path the file recorded.
+
+    Only the first model's path was ever stored, and the others sit beside it
+    under the name the folding harness gave them -- ``..._model1.pdb`` through
+    ``..._model5.pdb``, constructed in colabdesign_utils. Substituting the model
+    number is therefore reading the harness's own naming, not inventing one; a
+    path that does not carry it resolves only for index 0, so nothing is guessed
+    into existence.
+    """
+    if not stored:
+        return None
+    if index == 0:
+        return _resolve_structure(stored, sample_root_path)
+    swapped, n = re.subn(r"_model\d+\.pdb$", f"_model{index + 1}.pdb", stored)
+    if not n:
+        return None
+    return _resolve_structure(swapped, sample_root_path)
+
+
 def consensus_entries_from_complex_stats(
     complex_stats: list[dict],
     sequences: list[str],
-    seeds_for,
+    draws_for,
     sample_root_path: str,
     metric_suffixes,
-) -> dict[str, dict[int, dict]]:
+) -> dict[str, dict[str, dict]]:
     """``{binder_seq: {seed: metrics}}`` for folds recorded in this file's shape.
+
+    One entry per DRAW, where AF2's draws are its parameter sets. The legacy file
+    holds one mean per sequence and names only the first model's structure, but
+    every model's structure and PAE matrix is still on disk beside it -- so the
+    PAE family, and everything else read off a structure, is adopted per model
+    exactly rather than reconstructed from one model standing in for five.
 
     *sequences* must be the row's own pairing of sequence to stats entry --
     ``binder_eval.sequences_for_type``, which reads it off ``aa_stats`` rather
@@ -375,15 +420,38 @@ def consensus_entries_from_complex_stats(
         pdb = _resolve_structure(stats.get("complex_pdb_path"), sample_root_path)
         if pdb:
             metrics["pdb_path"] = pdb
-        seeds = seeds_for(seq)
-        if not seeds:
+        draws = draws_for(seq)
+        if not draws:
             continue
-        # The FIRST seed only, never every seed this run wants. One recorded fold
-        # is one draw; filing it under three seeds would report a three-seed mean
-        # over one structure counted three times. A deterministic folder asks for
-        # exactly one seed and is fully adopted; a sampler adopts the draw it has
-        # and folds the rest.
-        entries.setdefault(seq, {})[int(seeds[0])] = metrics
+        stored = stats.get("complex_pdb_path")
+        for index, draw in enumerate(draws):
+            # This draw's OWN structure. The legacy file names only the first,
+            # and the rest sit beside it under the name the folder gave them, so
+            # the first is asked to produce its siblings; a draw whose structure
+            # cannot be found is skipped rather than pointed at another model's.
+            own = _sibling_structure(stored, index, sample_root_path)
+            if own is None and index > 0:
+                continue
+            entry = dict(metrics)
+            if own:
+                entry["pdb_path"] = own
+            elif "pdb_path" in entry:
+                del entry["pdb_path"]
+            # Say which of these numbers are the folder's mean over its models
+            # rather than this draw's own. Only the confidence scalars are: the
+            # PAE family and everything read off a structure get recomputed from
+            # this draw's own files, which is the whole point of adopting per
+            # model instead of adopting one entry five times.
+            reduced = sorted(k for k in entry if k in _FOLDER_REDUCED_SUFFIXES)
+            if reduced and len(draws) > 1:
+                entry[REDUCED_FROM_MODELS_KEY] = reduced
+                # Not per-draw answers, so they must not suppress the per-draw
+                # recomputation that the stored matrices CAN answer exactly.
+                entry.pop(PAE_CUTOFF_KEY, None)
+                for key in list(entry):
+                    if "ipSAE" in key or key in ("i_pAE", "pAE", "min_ipAE"):
+                        del entry[key]
+            entries.setdefault(seq, {})[str(draw)] = entry
     return entries
 
 
@@ -406,7 +474,8 @@ def adopt_binder_eval_folds(
 
     *sequences_by_type* maps each sequence type to the sequences its
     ``complex_stats`` describe, in stats order -- see
-    ``binder_eval.sequences_for_type``.
+    ``binder_eval.sequences_for_type``. Returns the number of (sequence, draw)
+    entries written, which for AF2 is one per parameter set.
 
     Never raises. Failing to adopt costs a refold, which is expensive; failing
     the evaluation costs the run.
@@ -417,19 +486,19 @@ def adopt_binder_eval_folds(
         consensus_derivation_fingerprint,
         consensus_derived_suffixes,
         consensus_fingerprint,
-        fold_seeds_for,
+        draw_ids_for,
         write_consensus_cache,
     )
 
     if os.path.exists(consensus_cache_path(sample_root_path, backend)):
         return 0
     try:
-        entries: dict[str, dict[int, dict]] = {}
+        entries: dict[str, dict[str, dict]] = {}
         for seq_type, payload in (sequence_type_stats or {}).items():
             adopted = consensus_entries_from_complex_stats(
                 (payload or {}).get("complex_stats") or [],
                 sequences_by_type.get(seq_type) or [],
-                lambda seq: fold_seeds_for(backend, consensus_cfg, target_seqs, seq),
+                lambda seq: draw_ids_for(backend, consensus_cfg, target_seqs, seq),
                 sample_root_path,
                 CONSENSUS_METRIC_SUFFIXES,
             )

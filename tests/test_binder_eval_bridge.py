@@ -22,17 +22,18 @@ import math
 import pathlib
 
 from proteinfoundation.evaluation.binder_eval_cache import (
+    REDUCED_FROM_MODELS_KEY,
     _resolve_structure,
     adopt_binder_eval_folds,
     consensus_entries_from_complex_stats,
 )
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
+    PAE_CUTOFF_KEY,
     consensus_cache_path,
     consensus_derivation_fingerprint,
     consensus_fingerprint,
-    fold_seeds_for,
-    PAE_CUTOFF_KEY,
+    draw_ids_for,
     missing_pae_cutoffs,
     read_consensus_cache,
 )
@@ -59,8 +60,11 @@ def _stats(seq_index: int, pdb: str | None = None, **over) -> dict:
     return entry
 
 
-def _seeds(seq):
-    return fold_seeds_for("af2", {}, TARGET, seq)
+def _draws(seq, n_models: int = 1):
+    return draw_ids_for("af2", {"n_af2_models": n_models}, TARGET, seq)
+
+
+_seeds = _draws
 
 
 # ---------------------------------------------------------------------------
@@ -113,22 +117,72 @@ def test_entries_are_keyed_by_the_sequence_the_stats_describe(tmp_path):
     assert entries[SEQ_A] != entries[SEQ_B], "two sequences must not share one fold's numbers"
 
 
-def test_only_the_first_seed_is_adopted(tmp_path):
-    """One recorded fold is one draw. Filing it under every seed a run wants
-    would report a three-seed mean over one structure counted three times."""
+def test_a_draw_whose_structure_is_missing_is_not_pointed_at_another_models(tmp_path):
+    """Five draws are only adoptable where five structures are. A draw with no
+    structure of its own must be left to fold rather than handed model 1's --
+    which is the collapse this axis exists to end, rebuilt one level down."""
     entries = consensus_entries_from_complex_stats(
-        [_stats(0)], [SEQ_A], lambda s: [11, 22, 33], str(tmp_path), CONSENSUS_METRIC_SUFFIXES
+        [_stats(0, pdb="./d/AF2/x_model1.pdb")], [SEQ_A], lambda s: _draws(s, 5),
+        str(tmp_path), CONSENSUS_METRIC_SUFFIXES,
     )
-    assert list(entries[SEQ_A]) == [11]
+    assert list(entries[SEQ_A]) == ["model1"], "no structures on disk, so only the named one"
 
 
-def test_the_adopted_seed_is_the_one_score_binders_would_look_under(tmp_path):
-    """The whole point of adoption. A seed derived even slightly differently
-    files the fold where nothing looks for it, and the refold happens anyway."""
+def test_every_model_with_a_structure_becomes_its_own_draw(tmp_path):
+    """The recorded path names model 1; the rest sit beside it under the harness's
+    own naming. Each gets its own entry pointing at its own file."""
+    af2 = tmp_path / "AF2"
+    af2.mkdir()
+    for k in range(1, 6):
+        (af2 / f"x_model{k}.pdb").write_text("ATOM")
     entries = consensus_entries_from_complex_stats(
-        [_stats(0)], [SEQ_A], _seeds, str(tmp_path), CONSENSUS_METRIC_SUFFIXES
+        [_stats(0, pdb="./d/AF2/x_model1.pdb")], [SEQ_A], lambda s: _draws(s, 5),
+        str(tmp_path), CONSENSUS_METRIC_SUFFIXES,
     )
-    assert list(entries[SEQ_A]) == [fold_seeds_for("af2", {}, TARGET, SEQ_A)[0]]
+    assert list(entries[SEQ_A]) == [f"model{k}" for k in range(1, 6)]
+    paths = {d: m["pdb_path"] for d, m in entries[SEQ_A].items()}
+    assert len(set(paths.values())) == 5, "five draws must not share one structure"
+    assert paths["model3"] == str(af2 / "x_model3.pdb")
+
+
+def test_the_folders_mean_is_carried_but_labelled_as_a_mean(tmp_path):
+    """pLDDT, pTM and i_pTM were averaged before anything saw the parts and no
+    re-read reproduces them, so the mean rides on each draw rather than leaving a
+    gating column NaN across every finished campaign -- and says that it is one.
+    Everything the stored matrices CAN answer per model is dropped instead, so it
+    gets recomputed from that model's own matrix."""
+    af2 = tmp_path / "AF2"
+    af2.mkdir()
+    for k in range(1, 6):
+        (af2 / f"x_model{k}.pdb").write_text("ATOM")
+    entries = consensus_entries_from_complex_stats(
+        [_stats(0, pdb="./d/AF2/x_model1.pdb")], [SEQ_A], lambda s: _draws(s, 5),
+        str(tmp_path), CONSENSUS_METRIC_SUFFIXES,
+    )
+    one = entries[SEQ_A]["model2"]
+    assert one[REDUCED_FROM_MODELS_KEY] == ["binder_pLDDT", "i_pTM", "pTM", "target_pLDDT"]
+    assert not [k for k in one if "ipSAE" in k], "per-model ipSAE is recoverable, so the mean must not stand in"
+    assert missing_pae_cutoffs(one), "and the recomputation must be asked for"
+
+
+def test_a_single_model_campaign_keeps_its_numbers_unlabelled(tmp_path):
+    """With one model there is no reduction to disown: the entry's numbers ARE
+    that draw's, cutoffs included."""
+    entries = consensus_entries_from_complex_stats(
+        [_stats(0)], [SEQ_A], lambda s: _draws(s, 1), str(tmp_path), CONSENSUS_METRIC_SUFFIXES
+    )
+    one = entries[SEQ_A]["model1"]
+    assert REDUCED_FROM_MODELS_KEY not in one
+    assert not missing_pae_cutoffs(one)
+
+
+def test_the_adopted_draw_is_the_one_score_binders_would_look_under(tmp_path):
+    """The whole point of adoption. A key derived even slightly differently files
+    the fold where nothing looks for it, and the refold happens anyway."""
+    entries = consensus_entries_from_complex_stats(
+        [_stats(0)], [SEQ_A], _draws, str(tmp_path), CONSENSUS_METRIC_SUFFIXES
+    )
+    assert list(entries[SEQ_A]) == draw_ids_for("af2", {}, TARGET, SEQ_A)
 
 
 def test_a_failed_fold_is_not_adopted(tmp_path):
@@ -232,8 +286,8 @@ def test_an_adopted_cache_reads_back_under_the_fingerprint_score_binders_compute
     )
     assert sorted(scores) == sorted([SEQ_A, SEQ_B, "MSELFSEQ"])
     assert not stale, "an adopted entry is not stale -- it is incomplete, which heals per key"
-    assert list(scores[SEQ_A]) == [fold_seeds_for("af2", {}, TARGET, SEQ_A)[0]]
-    assert math.isfinite(scores[SEQ_A][fold_seeds_for("af2", {}, TARGET, SEQ_A)[0]]["i_pTM"])
+    assert list(scores[SEQ_A]) == draw_ids_for("af2", {}, TARGET, SEQ_A)
+    assert math.isfinite(scores[SEQ_A]["model1"]["i_pTM"])
 
 
 def test_adoption_never_overwrites_a_cache_the_folder_itself_wrote(tmp_path):
@@ -286,6 +340,6 @@ def test_the_seed_rule_has_exactly_one_definition():
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     body = ast.dump(fns["score_binders"])
     assert "deterministic_seeds" not in body and "deterministic_seed" not in body, (
-        "score_binders derives its own seeds again; the bridge would key differently"
+        "score_binders derives its own draw keys again; the bridge would key differently"
     )
-    assert "fold_seeds_for" in body
+    assert "draw_ids_for" in body

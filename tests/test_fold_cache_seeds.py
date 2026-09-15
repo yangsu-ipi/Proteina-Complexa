@@ -165,24 +165,26 @@ from proteinfoundation.metrics.consensus_folding import (
 )
 
 
-def test_advisory_folds_are_kept_per_binder_and_seed(tmp_path):
+def test_advisory_folds_are_kept_per_binder_and_draw(tmp_path):
     fp = "fp"
-    write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {11: {"pLDDT": 0.8}, 22: {"pLDDT": 0.9}}})
+    write_consensus_cache(
+        str(tmp_path), "esmfold2", fp, {"AAAA": {"seed11": {"pLDDT": 0.8}, "seed22": {"pLDDT": 0.9}}}
+    )
     got, stale = read_consensus_cache(str(tmp_path), "esmfold2", fp)
-    assert got == {"AAAA": {11: {"pLDDT": 0.8}, 22: {"pLDDT": 0.9}}}
+    assert got == {"AAAA": {"seed11": {"pLDDT": 0.8}, "seed22": {"pLDDT": 0.9}}}
     assert stale is False, "no derivation asked about, so nothing to be stale against"
 
 
 def test_adding_a_seed_keeps_the_others(tmp_path):
     """The requirement: three seeds then five folds two, not five."""
     fp = "fp"
-    write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {11: {"pLDDT": 0.8}}})
-    write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {22: {"pLDDT": 0.9}}})
-    assert set(read_consensus_cache(str(tmp_path), "esmfold2", fp)[0]["AAAA"]) == {11, 22}
+    write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {"seed11": {"pLDDT": 0.8}}})
+    write_consensus_cache(str(tmp_path), "esmfold2", fp, {"AAAA": {"seed22": {"pLDDT": 0.9}}})
+    assert set(read_consensus_cache(str(tmp_path), "esmfold2", fp)[0]["AAAA"]) == {"seed11", "seed22"}
 
 
 def test_a_different_scorer_discards_the_advisory_cache(tmp_path):
-    write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {11: {"pLDDT": 0.8}}})
+    write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {"seed11": {"pLDDT": 0.8}}})
     assert read_consensus_cache(str(tmp_path), "esmfold2", "new") == ({}, False)
 
 
@@ -199,7 +201,7 @@ def test_schema_1_advisory_entries_are_adopted_under_their_derived_seed(tmp_path
     path.write_text(json.dumps({"fingerprint": "fp", "scores": {"AAAA": {"pLDDT": 0.77}}}))
 
     adopted, _ = read_consensus_cache(str(tmp_path), "esmfold2", "fp", seed_for=lambda seq: 99)
-    assert adopted == {"AAAA": {99: {"pLDDT": 0.77}}}
+    assert adopted == {"AAAA": {"seed99": {"pLDDT": 0.77}}}
     # Without a way to recover the seed, an unlabelled fold is not guessed at.
     assert read_consensus_cache(str(tmp_path), "esmfold2", "fp") == ({}, False)
 
@@ -209,23 +211,23 @@ def test_a_structure_folded_before_seeds_existed_is_still_found(tmp_path):
     legacy = pathlib.Path(advisory_structure_path(str(tmp_path), "esmfold2", "AAAA", None))
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("ATOM\n")
-    assert existing_advisory_structure(str(tmp_path), "esmfold2", "AAAA", 7) == str(legacy)
+    assert existing_advisory_structure(str(tmp_path), "esmfold2", "AAAA", "seed7") == str(legacy)
 
-    seeded = pathlib.Path(advisory_structure_path(str(tmp_path), "esmfold2", "AAAA", 7))
+    seeded = pathlib.Path(advisory_structure_path(str(tmp_path), "esmfold2", "AAAA", "seed7"))
     seeded.write_text("ATOM\n")
-    assert existing_advisory_structure(str(tmp_path), "esmfold2", "AAAA", 7) == str(seeded), "seeded wins"
+    assert existing_advisory_structure(str(tmp_path), "esmfold2", "AAAA", "seed7") == str(seeded), "drawn wins"
 
 
 def test_seeds_do_not_overwrite_each_others_structures():
-    a = advisory_structure_path("/c", "esmfold2", "AAAA", 1)
-    b = advisory_structure_path("/c", "esmfold2", "AAAA", 2)
+    a = advisory_structure_path("/c", "esmfold2", "AAAA", "seed1")
+    b = advisory_structure_path("/c", "esmfold2", "AAAA", "seed2")
     assert a != b, "one path per seed, or the last fold answers for all of them"
 
 
 def test_metrics_are_pooled_over_seeds_and_paths_are_not():
     """Seeds are exchangeable draws, so pooling is the only meaningful reduction.
     A path is not a number: one structure has to be the one a reader is sent to."""
-    pooled = mean_over_seeds({1: {"pLDDT": 0.8, "pdb_path": "/a"}, 3: {"pLDDT": 0.9, "pdb_path": "/b"}})
+    pooled = mean_over_seeds({"seed1": {"pLDDT": 0.8, "pdb_path": "/a"}, "seed3": {"pLDDT": 0.9, "pdb_path": "/b"}})
     assert pooled["pLDDT"] == pytest.approx(0.85)
     assert pooled["pdb_path"] == "/a", "lowest seed, deterministically"
     assert pooled["n_predictions"] == 2.0
@@ -630,9 +632,9 @@ def test_a_stale_derivation_keeps_the_scores_rather_than_discarding_them(tmp_pat
     the folder's own metrics are still good."""
     from proteinfoundation.metrics.consensus_folding import read_consensus_cache, write_consensus_cache
 
-    write_consensus_cache(str(tmp_path), "esmfold2", "fp", {"AAAA": {11: {"pLDDT": 0.8}}}, derivation="d1")
+    write_consensus_cache(str(tmp_path), "esmfold2", "fp", {"AAAA": {"seed11": {"pLDDT": 0.8}}}, derivation="d1")
     scores, stale = read_consensus_cache(str(tmp_path), "esmfold2", "fp", derivation="d2")
-    assert scores == {"AAAA": {11: {"pLDDT": 0.8}}}, "kept, not discarded"
+    assert scores == {"AAAA": {"seed11": {"pLDDT": 0.8}}}, "kept, not discarded"
     assert stale is True
 
     scores, stale = read_consensus_cache(str(tmp_path), "esmfold2", "fp", derivation="d1")
@@ -644,7 +646,7 @@ def test_a_changed_scorer_still_wins_over_derivation(tmp_path):
     the ones this run asked for, so there is nothing to re-derive from."""
     from proteinfoundation.metrics.consensus_folding import read_consensus_cache, write_consensus_cache
 
-    write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {11: {"pLDDT": 0.8}}}, derivation="d1")
+    write_consensus_cache(str(tmp_path), "esmfold2", "old", {"AAAA": {"seed11": {"pLDDT": 0.8}}}, derivation="d1")
     assert read_consensus_cache(str(tmp_path), "esmfold2", "new", derivation="d1") == ({}, False)
 
 

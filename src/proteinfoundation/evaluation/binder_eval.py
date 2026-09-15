@@ -63,8 +63,8 @@ from proteinfoundation.evaluation.utils import maybe_tqdm, parse_cfg_for_table, 
 from proteinfoundation.metrics.binder_metrics import complex_mpnn_chains, run_binder_eval
 from proteinfoundation.metrics.column_names import backend_for_folding_method, folder_family, rename
 from proteinfoundation.metrics.consensus_folding import (
-    CONSENSUS_PROVENANCE_SUFFIXES,
     CONSENSUS_METRIC_SUFFIXES,
+    CONSENSUS_PROVENANCE_SUFFIXES,
     ComplexFoldContext,
     advisory_column,
     available_backends,
@@ -787,6 +787,12 @@ def compute_binder_metrics(
     # wins if a config sets it, since the complex fold is several times the cost
     # of a monomer one and is the sensible place to want a different count.
     consensus_cfg.setdefault("n_seeds", n_esmfold2_seeds)
+    # AF2's draw count, for the same reason and read from the same place. Its
+    # draws are parameter sets rather than seeds, so metric.n_af2_models is what
+    # says how many predictions one complex gets; without this default it would
+    # fall to 1 here and an af2 fold reached through score_binders would be a
+    # one-model ensemble beside a five-model one from the same campaign.
+    consensus_cfg.setdefault("n_af2_models", n_af2_models)
     reuse_cached_consensus = cfg_metric.get("reuse_cached_consensus", True)
     # The force field, on the advisory structures too, when the run computes it on
     # the primary backend's refolds. Read from the same two config keys rather

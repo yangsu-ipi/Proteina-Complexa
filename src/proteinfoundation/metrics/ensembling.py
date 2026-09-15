@@ -181,6 +181,17 @@ def reduce_rmsd_over_models(per_model: list[dict]) -> dict:
     return reduced
 
 
+# Where a folder's per-model statistics ride along beside its own reduction.
+#
+# The reduction (average_af2_stats) stays where it was because the primary
+# refolding path consumes it and its numbers must not move. What is new is that
+# the per-model values survive the call at all: they used to be averaged inside
+# predict_binder_complex and dropped, which is why anything downstream that
+# wanted one model's number had to re-read one model's structure and got an
+# ensemble-of-one wearing an ensemble's clothes.
+PER_MODEL_STATS_KEY = "complex_model_stats"
+
+
 def pop_per_model_paths(complex_statistics: list, seq_num: int) -> list[str] | None:
     """The per-model structure paths for one sequence, removed as they are read.
 
