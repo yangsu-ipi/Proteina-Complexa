@@ -511,3 +511,107 @@ def test_place_structure_carries_the_sidecars(tmp_path):
 
     assert placed == str(wanted)
     assert load_pae(placed) is not None, "_place_structure dropped the matrix it was copying past"
+
+
+def test_the_matrix_survives_keep_folding_outputs_being_off():
+    """The two artefacts are not the same trade. Everything read off a structure
+    is stable once computed, so discarding the structure costs a refold only to
+    someone who wants to look at it. The PAE family is folder-reported: a later
+    ipSAE cutoff has no source but the matrix, or predicting the complex again.
+    So the matrix must not ride on the structure's retention flag."""
+    import inspect
+
+    from proteinfoundation.metrics import consensus_folding
+
+    source = inspect.getsource(consensus_folding._score_esmfold2)
+    anchor_at = source.index("anchor = out_pdb_path or pae_path")
+    structure_at = source.index("if out_pdb_path:")
+    assert anchor_at < structure_at, (
+        "save_pae must be reached on a path that does not require out_pdb_path; "
+        "inside `if out_pdb_path:` is what tied the matrix to keep_folding_outputs"
+    )
+
+    # The caller must offer a name even when it is keeping no structures.
+    caller = inspect.getsource(consensus_folding.score_binders)
+    assert "out_pdb = anchor if keep_structures else None" in caller
+    assert "pae_path=anchor" in caller, "the anchor never reaches the folder"
+
+
+def test_a_stored_matrix_is_read_back_with_no_structure_beside_it(tmp_path):
+    """Storing the matrix without a structure is pointless if the reader still
+    demands the structure. The PAE family is not read off the structure -- it is
+    read off the matrix beside the structure's name."""
+    from proteinfoundation.metrics.consensus_folding import pae_family_from_store
+
+    anchor = tmp_path / "esmfold2_complex" / "abc123_seed7.pdb"
+    anchor.parent.mkdir(parents=True)
+    pae = realistic_pae(target_len=30, binder_len=12)
+    save_pae(str(anchor), pae, chain_lengths=[30, 12], backend="esmfold2", seed=7)
+    assert not anchor.exists(), "this test is meaningless if a structure is present"
+
+    family = pae_family_from_store(str(anchor), n_target_chains=1)
+    assert family, "no structure must not mean no PAE family"
+    assert "i_pAE" in family and family["i_pAE"] == family["i_pAE"]
+
+
+def test_the_cache_keeps_folder_values_when_only_a_structure_is_missing(tmp_path):
+    """Adoption discards the folder-reported PAE columns only when a stored
+    matrix can reproduce them. An entry from a run that kept no structures has
+    the matrix and no pdb_path, so asking about pdb_path alone would throw away
+    values nothing could replace."""
+    from proteinfoundation.evaluation.binder_eval_cache import _has_stored_pae
+
+    anchor = tmp_path / "esmfold2_complex" / "deadbeef_seed1.pdb"
+    anchor.parent.mkdir(parents=True)
+    save_pae(str(anchor), realistic_pae(target_len=9, binder_len=4), chain_lengths=[9, 4], backend="esmfold2")
+
+    assert _has_stored_pae(str(anchor)) is True, "the matrix is there; the structure never was"
+    assert _has_stored_pae(None) is False
+    assert _has_stored_pae(str(tmp_path / "never_folded.pdb")) is False
+
+
+def test_a_new_cutoff_is_answered_from_the_matrix_with_no_structure_kept(tmp_path, monkeypatch):
+    """The whole point, end to end. A run that kept no structures still has the
+    matrix, so widening the ipSAE request must cost a re-read of that file and
+    not a refold. Before this, the derivation demanded a structure and skipped
+    the entry, so the only way to answer was to predict the complex again."""
+    from proteinfoundation.metrics import consensus_folding as cf
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    calls = []
+
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, pae_path=None, **_):
+        calls.append(draw)
+        # A folder that keeps no structure still stores its matrix, under the
+        # name the structure would have had.
+        save_pae(
+            pae_path,
+            realistic_pae(target_len=len(target_seqs[0]), binder_len=len(seq)),
+            chain_lengths=[len(target_seqs[0]), len(seq)],
+            backend="esmfold2",
+        )
+        return {"i_pTM": 0.5, "pTM": 0.6, "pae_path": pae_path}
+
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", scorer)
+
+    first = cf.score_binders(
+        "esmfold2", target, [binder], cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=False
+    )
+    assert len(calls) == 1, "the first pass has to fold once"
+    assert first and first[0], "the fold produced no metrics"
+    assert not list(cache.glob("**/*.pdb")), "keep_structures=False must keep no structures"
+    assert list(cache.glob("**/*.pae.npz")), "the matrix must survive keep_structures=False"
+
+    # Second pass: the cache answers, and the PAE family comes off the matrix.
+    second = cf.score_binders(
+        "esmfold2", target, [binder], cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=False
+    )
+    assert len(calls) == 1, "a stored matrix must not be re-earned by folding again"
+    # Presence first: `x == x` alone passes when the key is absent, because
+    # None == None. Absent is exactly the failure this test exists to catch.
+    reread = second[0].get("i_pAE")
+    assert isinstance(reread, float) and reread == reread, (
+        f"i_pAE came back {reread!r}; the PAE family was not read off the stored matrix"
+    )

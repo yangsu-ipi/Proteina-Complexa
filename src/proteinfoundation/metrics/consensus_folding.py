@@ -249,12 +249,18 @@ def _score_esmfold2(
     draw: str | int = 0,
     context: ComplexFoldContext | None = None,
     out_path_for=None,
+    pae_path: str | None = None,
 ) -> dict[str, float]:
     """Fold target+binder with ESMFold2 and reduce to interface metrics.
 
     One draw per call: ESMFold2's draws are seeds, and a seed is an input to a
     single prediction. *out_path_for* is accepted and unused -- it exists for a
     folder that answers for several draws at once, which this is not.
+
+    *pae_path* is where the matrix goes when the structure is not being kept.
+    This folder writes its own structure, so unlike the harness-backed folders
+    below it has no output of its own for a sidecar to sit beside; without the
+    name, keep_folding_outputs off would discard the matrix too.
 
     Same input shape as the fork's own reference adapter
     (``oracle/backends/local_esmfold2.py``): one ProteinInput per chain, target
@@ -337,6 +343,36 @@ def _score_esmfold2(
     # arbitrary-but-stated choice beats a flattering one.
     best = 0
 
+    # The matrix every PAE-family column here is computed from, beside the name
+    # the structure has whether or not the structure is kept. Chain lengths in
+    # the order they were written -- targets first, binder last -- so a reader
+    # can split the interface block without opening the PDB.
+    #
+    # Stored independently of keep_folding_outputs, because the two artefacts are
+    # not the same trade. Everything read OFF a structure -- RMSD, interface,
+    # geometry -- is stable once computed, so discarding the structure costs a
+    # refold only to someone who wants to look at it again. The PAE family is
+    # folder-reported: nothing on disk reconstructs it, and a later ipSAE cutoff
+    # has no answer but predicting the complex again. Letting the small
+    # irreplaceable thing ride on the large reproducible one is backwards, and is
+    # the same inversion drop_structures_keeping_sidecars was written to undo.
+    anchor = out_pdb_path or pae_path
+    if anchor and save_pae(
+        anchor,
+        getattr(results[best], "pae", None),
+        chain_lengths=[len(x) for x in target_seqs] + [len(binder_seq)],
+        backend="esmfold2",
+        # Resolved the same way the fold resolved it, not read off a cfg key the
+        # campaigns do not set: consensus_cfg carries model_id only when someone
+        # overrides the checkpoint, so this recorded an empty string on every
+        # real run -- a stored matrix that could not say which model produced it.
+        model=_esmfold2_model_id(cfg),
+        seed=seed,
+    ):
+        # The anchor, not the sidecar's own path: every reader addresses the
+        # matrix the way save_pae wrote it, through pae_sidecar_path.
+        scored[best]["pae_path"] = anchor
+
     if out_pdb_path:
         # Write the sample the metrics describe, so a disagreement with the
         # primary backend can be looked at rather than only read as numbers.
@@ -345,23 +381,6 @@ def _score_esmfold2(
             os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
             results[best].complex.to_protein_complex().to_pdb(out_pdb_path)
             scored[best]["pdb_path"] = out_pdb_path
-            # The matrix every PAE-family column here is computed from, beside the
-            # structure it describes. Chain lengths in the order they were written
-            # -- targets first, binder last -- so a reader can split the interface
-            # block without opening the PDB.
-            save_pae(
-                out_pdb_path,
-                getattr(results[best], "pae", None),
-                chain_lengths=[len(x) for x in target_seqs] + [len(binder_seq)],
-                backend="esmfold2",
-                # Resolved the same way the fold resolved it, not read off a cfg
-                # key the campaigns do not set: consensus_cfg carries model_id
-                # only when someone overrides the checkpoint, so this recorded an
-                # empty string on every real run -- a stored matrix that could not
-                # say which model produced it.
-                model=_esmfold2_model_id(cfg),
-                seed=seed,
-            )
         except Exception as exc:
             # Not a warning. keep_folding_outputs asked for this file, and a
             # missing structure is what triggers the refold -- so swallowing the
@@ -646,8 +665,14 @@ def _score_af2(
     draw: str | int = 0,
     context: ComplexFoldContext | None = None,
     out_path_for=None,
+    pae_path: str | None = None,
 ) -> dict[str, float]:
     """Fold target+binder with AlphaFold2, through the harness that already does it.
+
+    *pae_path* is accepted and unused: this folder's harness writes a structure
+    of its own and save_pae puts the matrix beside it, which _place_structure
+    then carries to wherever the store keeps it. A folder with no output of its
+    own needs the name instead -- see _score_esmfold2.
 
     This is the same ColabDesign call the gated complex refold makes; registering
     it here is what removes the primary/advisory distinction as a matter of
@@ -781,8 +806,14 @@ def _score_rf3(
     draw: str | int = 0,
     context: ComplexFoldContext | None = None,
     out_path_for=None,
+    pae_path: str | None = None,
 ) -> dict[str, float]:
     """Fold target+binder with RF3, through the harness that already does it.
+
+    *pae_path* is accepted and unused: this folder's harness writes a structure
+    of its own and save_pae puts the matrix beside it, which _place_structure
+    then carries to wherever the store keeps it. A folder with no output of its
+    own needs the name instead -- see _score_esmfold2.
 
     The third complex folder, and the last one that could only be reached through
     the gated path. Registering it here is what makes "every complex folder is
@@ -1908,24 +1939,41 @@ def score_binders(
                 # PAE family re-read off one model while the numbers beside it
                 # were a mean over five moved avg_ipSAE by up to 0.55 on EFNB3.
                 pdb = metrics.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, draw)
-                if not (isinstance(pdb, str) and os.path.exists(pdb)):
-                    continue
-                try:
-                    derived = derive_from_structure(
-                        pdb,
-                        len(target_seqs),
-                        reference_pdb_path,
-                        include_tmol=derive_tmol,
-                        # A moved derivation fingerprint means the numbers
-                        # themselves changed meaning, so nothing may be reused;
-                        # otherwise only what is genuinely absent is computed,
-                        # which is what makes adding a cutoff cost a millisecond
-                        # rather than a re-read of the structure.
-                        have={} if stale else metrics,
-                    )
-                except Exception as exc:
-                    failed += 1
-                    logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")
+                anchor = (
+                    metrics.get("pae_path")
+                    or pdb
+                    or (advisory_structure_path(cache_dir, backend, seq, draw) if cache_dir else None)
+                )
+                if isinstance(pdb, str) and os.path.exists(pdb):
+                    try:
+                        derived = derive_from_structure(
+                            pdb,
+                            len(target_seqs),
+                            reference_pdb_path,
+                            include_tmol=derive_tmol,
+                            # A moved derivation fingerprint means the numbers
+                            # themselves changed meaning, so nothing may be reused;
+                            # otherwise only what is genuinely absent is computed,
+                            # which is what makes adding a cutoff cost a millisecond
+                            # rather than a re-read of the structure.
+                            have={} if stale else metrics,
+                        )
+                    except Exception as exc:
+                        failed += 1
+                        logger.warning(f"Could not re-derive advisory metrics from {pdb}: {exc}")
+                        continue
+                elif isinstance(anchor, str):
+                    # No structure, so everything read off one is out of reach --
+                    # but the PAE family is not read off the structure. It is read
+                    # off the matrix stored beside the structure's NAME, and it is
+                    # the one family whose only other source is folding again.
+                    # Skipping the whole entry here is what made a run with
+                    # keep_folding_outputs off unable to answer a new ipSAE cutoff
+                    # even with the matrix sitting on disk.
+                    derived = pae_family_from_store(anchor, len(target_seqs), have={} if stale else metrics)
+                    if not derived:
+                        continue
+                else:
                     continue
                 # Lists (the packed eight-state counts) and the engine/radii
                 # strings pass through; float() on either would raise inside the
@@ -2001,6 +2049,11 @@ def score_binders(
                 # it up explicitly. Entries written before structures were kept
                 # simply lack the key.
                 usable["pdb_path"] = metrics["pdb_path"]
+            if usable and metrics.get("pae_path"):
+                # Recorded separately because it outlives pdb_path: a run with
+                # keep_folding_outputs off stores the matrix and no structure, so
+                # an entry can carry this key and not the one above.
+                usable["pae_path"] = metrics["pae_path"]
             return usable
 
         # Grouped by sequence, because a folder may answer for several draws in
@@ -2015,11 +2068,14 @@ def score_binders(
             remaining = list(wanted_draws)
             while remaining:
                 draw = remaining.pop(0)
-                out_pdb = (
-                    advisory_structure_path(cache_dir, backend, seq, draw)
-                    if (cache_dir and keep_structures)
-                    else None
-                )
+                # One name, two decisions. The path is content-addressed on the
+                # binder sequence, so it needs no file to exist -- which is what
+                # lets the matrix be stored under the name the structure WOULD
+                # have, whether or not the structure is kept. A campaign that
+                # later turns keep_folding_outputs back on finds its matrices
+                # already sitting where the structures are about to land.
+                anchor = advisory_structure_path(cache_dir, backend, seq, draw) if cache_dir else None
+                out_pdb = anchor if keep_structures else None
 
                 def out_path_for(other: str, _seq: str = seq) -> str | None:
                     """Where a sibling draw of this same binder should be written.
@@ -2034,7 +2090,9 @@ def score_binders(
                     return advisory_structure_path(cache_dir, backend, _seq, other)
 
                 try:
-                    produced = scorer(target_seqs, seq, cfg, out_pdb, draw, context, out_path_for)
+                    produced = scorer(
+                        target_seqs, seq, cfg, out_pdb, draw, context, out_path_for, pae_path=anchor
+                    )
                 except AdvisoryStructureWriteError:
                     # Systematic, not per-design: the next binder writes to the same
                     # kind of path and fails the same way. Tolerating it here is what

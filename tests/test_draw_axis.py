@@ -113,7 +113,7 @@ def test_the_schema_is_stamped_so_a_later_reader_knows_what_it_holds(tmp_path):
 
 
 def _multi_draw_backend(calls, n=5):
-    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None):
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, **_):
         calls.append(draw)
         return {"draws": {f"model{k}": {"i_pTM": 0.1 * k, "pTM": 0.5} for k in range(1, n + 1)}}
 
@@ -155,7 +155,7 @@ def test_a_second_run_folds_nothing(tmp_path, monkeypatch):
 def test_a_single_draw_backend_still_answers_flatly(tmp_path, monkeypatch):
     """ESMFold2 folds one seed per call and returns a plain dict. The unpacking
     must not require every backend to speak in draws."""
-    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None):
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, **_):
         return {"i_pTM": 0.4}
 
     monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", scorer)
@@ -170,7 +170,7 @@ def test_each_draw_gets_its_own_structure_path(tmp_path, monkeypatch):
     folder is handed a path per draw so all of its structures land."""
     seen = {}
 
-    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None):
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, **_):
         for k in range(1, 4):
             seen[f"model{k}"] = out_path_for(f"model{k}")
         return {"draws": {f"model{k}": {"i_pTM": 0.1} for k in range(1, 4)}}

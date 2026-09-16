@@ -150,7 +150,7 @@ def _stub_backend(calls):
     # Takes `draw`: score_binders derives the draws a backend makes and passes
     # one per fold, so a backend is a pure function of
     # (target, binder, cfg, out_pdb, draw).
-    def scorer(target_seqs, seq, cfg, out_pdb, draw=0, context=None, out_path_for=None):
+    def scorer(target_seqs, seq, cfg, out_pdb, draw=0, context=None, out_path_for=None, **_):
         calls.append((seq, out_pdb, draw))
         if out_pdb:
             os.makedirs(os.path.dirname(out_pdb), exist_ok=True)

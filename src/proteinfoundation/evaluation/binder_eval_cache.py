@@ -476,7 +476,11 @@ def consensus_entries_from_complex_stats(
                 # dropping it everywhere threw away the one that exists. Draws
                 # with no evidence for it simply carry no entry for it, which is
                 # what reduce_draws already reads correctly.
-                keep_pae = not _has_stored_pae(entry.get("pdb_path")) and index == 0
+                # pae_path first: an entry from a run that kept no structures has
+                # the matrix and no pdb_path, and asking only about the structure
+                # would discard folder-reported values a re-read could replace.
+                anchor = entry.get("pae_path") or entry.get("pdb_path")
+                keep_pae = not _has_stored_pae(anchor) and index == 0
                 if not keep_pae:
                     entry.pop(PAE_CUTOFF_KEY, None)
                     for key in list(entry):
