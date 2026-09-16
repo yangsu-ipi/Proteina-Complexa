@@ -48,6 +48,10 @@ import numpy as np
 from loguru import logger
 
 PAE_STORE_SUFFIX = ".pae.npz"
+# Set on a cache entry whose fold produced no matrix, so a missing matrix does
+# not ask for that fold again on every run for the rest of the campaign. A
+# folder that reports no PAE is a property of the folder, not a gap to retry.
+PAE_UNAVAILABLE_KEY = "pae_unavailable"
 # The folder-reported confidences, kept for the same reason the matrices are:
 # small, and not recoverable without folding again.
 CONFIDENCE_KEPT_SUFFIX = ".confidence.json"
@@ -186,6 +190,18 @@ def drop_structures_keeping_sidecars(directory: str) -> tuple[int, int]:
             except OSError as exc:
                 logger.warning(f"Could not remove {path}: {exc}")
     return removed, kept
+
+
+def has_stored_pae(structure_path: str | None) -> bool:
+    """Whether the matrix for one structure is on disk.
+
+    The question a fold trigger asks. A structure can be re-read for everything
+    derived from it; the PAE family can only be re-read from this file, so an
+    entry without one answers the cutoffs it was folded at and nothing else.
+    """
+    if not structure_path:
+        return False
+    return os.path.exists(pae_sidecar_path(structure_path))
 
 
 def carry_sidecars(produced: str, wanted: str) -> int:

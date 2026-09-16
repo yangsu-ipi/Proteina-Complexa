@@ -342,11 +342,9 @@ def _has_stored_pae(structure_path: str | None) -> bool:
     wrote them for some sequences and not others. Adoption asks because what it
     may safely discard is exactly what a re-read can reproduce.
     """
-    if not structure_path:
-        return False
-    from proteinfoundation.metrics.pae_store import pae_sidecar_path
+    from proteinfoundation.metrics.pae_store import has_stored_pae
 
-    return os.path.exists(pae_sidecar_path(structure_path))
+    return has_stored_pae(structure_path)
 
 
 def consensus_entries_from_complex_stats(

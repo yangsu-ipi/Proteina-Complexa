@@ -82,7 +82,12 @@ from proteinfoundation.metrics.ensembling import (
     PLACEMENT_METRICS,
     mean_chain_plddt,
 )
-from proteinfoundation.metrics.pae_store import carry_sidecars, save_pae
+from proteinfoundation.metrics.pae_store import (
+    PAE_UNAVAILABLE_KEY,
+    carry_sidecars,
+    has_stored_pae,
+    save_pae,
+)
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN, complex_backend_of
 
@@ -2023,6 +2028,28 @@ def score_binders(
             return False
         return existing_advisory_structure(cache_dir, backend, seq, draw) is None
 
+    # The same argument as the structure, one step stronger. A structure that is
+    # absent can be refolded to answer a question about it; everything ALREADY
+    # read off it is cached and stays correct, so losing it costs only a future
+    # look. The PAE matrix is the opposite: the family computed from it is the
+    # one set of columns no file on disk can recompute, so an entry without its
+    # matrix is frozen at the cutoffs it happened to be folded at. Asking for a
+    # cutoff it does not carry has exactly one answer, and it is this fold.
+    def _needs_matrix(seq: str, draw: str) -> bool:
+        if not cache_dir:
+            return False
+        entry = scores.get(seq, {}).get(draw) or {}
+        if entry.get(PAE_UNAVAILABLE_KEY):
+            # This folder already answered without one. Folding again will not
+            # produce what the folder does not report, and re-asking every run is
+            # the indefinite refold AdvisoryStructureWriteError exists to prevent.
+            return False
+        if has_stored_pae(entry.get("pae_path") or entry.get("pdb_path")):
+            return False
+        # The entry may predate pae_path and point nowhere, while the matrix sits
+        # under the canonical name for this draw.
+        return not has_stored_pae(advisory_structure_path(cache_dir, backend, seq, draw))
+
     # One unit of work is a (sequence, draw) pair, so adding a draw folds only
     # what is new rather than everything for that sequence.
     pending = [
@@ -2030,11 +2057,15 @@ def score_binders(
         for seq in dict.fromkeys(binder_seqs)
         if seq
         for draw in draws_for(seq)
-        if draw not in scores.get(seq, {}) or _needs_structure(seq, draw)
+        if draw not in scores.get(seq, {}) or _needs_structure(seq, draw) or _needs_matrix(seq, draw)
     ]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
         fresh: dict[str, dict[str, dict[str, float | str]]] = {}
+        # Folds that produced no PAE matrix. Reported rather than silent: it is
+        # the difference between "this campaign can be rescored at a new cutoff"
+        # and "this campaign can only be refolded".
+        matrixless = 0
 
         def _keep(metrics: dict) -> dict:
             usable = {k: float(v) for k, v in metrics.items() if k in CONSENSUS_METRIC_SUFFIXES and v == v}
@@ -2105,6 +2136,16 @@ def score_binders(
                 for answered_draw, metrics in answered.items():
                     usable = _keep(metrics)
                     if usable:
+                        if not has_stored_pae(usable.get("pae_path") or usable.get("pdb_path")):
+                            # Folded, and still no matrix. Recording it is what
+                            # keeps a missing matrix from asking for this same
+                            # fold on every future run: the trigger reads this
+                            # key and stops. Counted and reported below, because
+                            # a folder that reports no PAE means this campaign
+                            # cannot answer a new ipSAE cutoff without changing
+                            # folders, and that should not be discovered later.
+                            usable[PAE_UNAVAILABLE_KEY] = True
+                            matrixless += 1
                         fresh.setdefault(seq, {})[str(answered_draw)] = usable
                 remaining = [d for d in remaining if d not in answered]
         # Read off the structures these folds just wrote, before they are cached
@@ -2123,6 +2164,13 @@ def score_binders(
             write_consensus_cache(cache_dir, backend, fingerprint, fresh, derivation=derivation)
         folded = sum(len(v) for v in fresh.values())
         logger.info(f"Advisory backend '{backend}' scored {folded}/{len(pending)} (sequence, draw) folds")
+        if matrixless:
+            logger.warning(
+                f"{matrixless} of those folds stored no PAE matrix, so their ipSAE columns are fixed at "
+                f"the cutoffs they were folded at and a later cutoff cannot be answered by re-reading. "
+                f"They are marked so a missing matrix does not request them again every run; if backend "
+                f"'{backend}' is expected to report PAE, this is a fault in the fold, not in the store."
+            )
 
     shape = reduce_over_draws if reduce else draws_by_metric
     return [shape(scores.get(seq, {})) for seq in binder_seqs]

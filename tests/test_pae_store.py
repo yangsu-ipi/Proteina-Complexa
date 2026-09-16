@@ -615,3 +615,82 @@ def test_a_new_cutoff_is_answered_from_the_matrix_with_no_structure_kept(tmp_pat
     assert isinstance(reread, float) and reread == reread, (
         f"i_pAE came back {reread!r}; the PAE family was not read off the stored matrix"
     )
+
+
+def _matrix_trigger_scorer(calls, store_matrix=True):
+    """A folder that records every call and optionally stores its matrix."""
+
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, pae_path=None, **_):
+        calls.append((seq, draw))
+        if store_matrix:
+            save_pae(
+                pae_path,
+                realistic_pae(target_len=len(target_seqs[0]), binder_len=len(seq)),
+                chain_lengths=[len(target_seqs[0]), len(seq)],
+                backend="esmfold2",
+            )
+        return {"i_pTM": 0.5, "pTM": 0.6, "pae_path": pae_path}
+
+    return scorer
+
+
+def test_a_missing_matrix_asks_for_the_fold_again(tmp_path, monkeypatch):
+    """A cached entry whose matrix is gone can only answer the cutoffs it was
+    folded at, and no re-read can change that. So a missing matrix triggers the
+    fold the same way a missing structure does when one was asked for."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.pae_store import pae_sidecar_path
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    calls = []
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", _matrix_trigger_scorer(calls))
+    kw = dict(cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=False)
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1
+
+    # Cached and matrixed: nothing to do.
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1, "a complete entry must not refold"
+
+    # Delete the matrix. The scores are still cached, so only the missing matrix
+    # can ask for this fold.
+    matrices = list(cache.glob("**/*.pae.npz"))
+    assert matrices, "the first fold stored nothing to delete"
+    for m in matrices:
+        m.unlink()
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 2, "a missing matrix must trigger the fold"
+    assert list(cache.glob("**/*.pae.npz")), "the refold must restore the matrix"
+    assert pae_sidecar_path  # imported for the reader's addressing, asserted by use above
+
+
+def test_a_folder_that_reports_no_matrix_is_not_refolded_forever(tmp_path, monkeypatch):
+    """The trigger must not become an indefinite refold. A folder that answers
+    without a PAE matrix will answer without one again, so the entry records
+    that and stops asking -- the failure AdvisoryStructureWriteError exists to
+    make loud, arrived at from the other side."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.pae_store import PAE_UNAVAILABLE_KEY
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    calls = []
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", _matrix_trigger_scorer(calls, store_matrix=False))
+    kw = dict(cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=False)
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1
+    assert not list(cache.glob("**/*.pae.npz")), "this folder stores no matrix, by construction"
+
+    cached = json.loads((cache / "consensus_fold_cache_esmfold2.json").read_text())
+    entry = next(iter(next(iter(cached["scores"].values())).values()))
+    assert entry.get(PAE_UNAVAILABLE_KEY) is True, "a matrixless fold must say so in its entry"
+
+    for _ in range(3):
+        cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1, "a folder that reports no matrix must not be refolded on every run"
