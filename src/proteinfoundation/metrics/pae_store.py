@@ -42,6 +42,7 @@ both slower and a second definition of a fact the writer already knew.
 
 import json
 import os
+import shutil
 
 import numpy as np
 from loguru import logger
@@ -185,6 +186,38 @@ def drop_structures_keeping_sidecars(directory: str) -> tuple[int, int]:
             except OSError as exc:
                 logger.warning(f"Could not remove {path}: {exc}")
     return removed, kept
+
+
+def carry_sidecars(produced: str, wanted: str) -> int:
+    """Copy a structure's stored companions to where the structure just went.
+
+    A harness folds into its own output directory and the advisory store then
+    copies the structure to the path it owns. The sidecars do not follow on
+    their own, and a matrix beside a path no cache entry records is a matrix
+    nobody will ever read: the entry names the copy, and
+    :func:`pae_family_from_store` looks beside the name in the entry. That is
+    not hypothetical -- it left every af2 advisory fold on CBLN1 with a stored
+    PAE the reader could not find, which is the refold-to-rescore bill this
+    module exists to prevent, paid anyway.
+
+    Returns how many companions were carried. Never raises: the structure is
+    already in place, and a copy that fails costs a re-read, not a fold.
+    """
+    carried = 0
+    if produced == wanted:
+        return carried
+    for suffix in (PAE_STORE_SUFFIX, CONFIDENCE_KEPT_SUFFIX):
+        source = f"{produced}{suffix}"
+        if not os.path.exists(source):
+            continue
+        target = f"{wanted}{suffix}"
+        try:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+            shutil.copyfile(source, target)
+            carried += 1
+        except OSError as exc:
+            logger.warning(f"Could not carry {source} to {target}: {exc}")
+    return carried
 
 
 def stored_pae_bytes(structure_path: str) -> int:

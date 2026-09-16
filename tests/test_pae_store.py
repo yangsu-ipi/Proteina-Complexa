@@ -449,3 +449,65 @@ def test_the_esmc_pin_narrows_the_name_and_never_breaks_scoring(monkeypatch):
     assert pinned_esmc_location("biohub/ESMC-6B") == "biohub/ESMC-6B", (
         "an unreachable pin must fall back to the name, not raise"
     )
+
+
+def test_a_relocated_structure_takes_its_sidecars_with_it(tmp_path):
+    """The advisory store copies a harness's structure to the path it owns, and
+    the cache entry records that path. A sidecar left at the harness's path is a
+    matrix under a name no reader looks up -- the fold is paid for and the
+    re-read it was supposed to buy is gone. This is what left every af2 advisory
+    fold on CBLN1 with 770 structures and zero findable matrices."""
+    from proteinfoundation.metrics.pae_store import CONFIDENCE_KEPT_SUFFIX, carry_sidecars
+
+    produced = tmp_path / "harness" / "model1.pdb"
+    produced.parent.mkdir(parents=True)
+    produced.write_text("ATOM\n")
+    pae = realistic_pae(target_len=8, binder_len=4)
+    save_pae(str(produced), pae, chain_lengths=[8, 4], backend="af2", model="model1")
+    (tmp_path / "harness" / f"model1.pdb{CONFIDENCE_KEPT_SUFFIX}").write_text('{"pTM": 0.5}')
+
+    wanted = tmp_path / "store" / "af2_complex" / "abc123_model1.pdb"
+    wanted.parent.mkdir(parents=True)
+    assert carry_sidecars(str(produced), str(wanted)) == 2
+
+    # The reader addresses the matrix by the path the cache entry records.
+    reread = load_pae(str(wanted))
+    assert reread is not None, "the matrix must be findable beside the recorded path"
+    assert np.abs(reread["pae"] - pae).max() <= PAE_QUANT_STEP / 2 + 1e-6
+    assert reread["chain_lengths"] == [8, 4]
+    assert os.path.exists(str(wanted) + CONFIDENCE_KEPT_SUFFIX)
+
+
+def test_carrying_sidecars_never_fails_a_fold_and_never_copies_onto_itself(tmp_path):
+    """A structure already at its final path has nothing to carry, and a
+    companion that cannot be copied costs a re-read, not the fold that just
+    produced it."""
+    from proteinfoundation.metrics.pae_store import carry_sidecars
+
+    produced = tmp_path / "model1.pdb"
+    produced.write_text("ATOM\n")
+    save_pae(str(produced), realistic_pae(target_len=6, binder_len=3), chain_lengths=[6, 3], backend="af2")
+
+    # Same path in and out: copying a file onto itself would truncate it.
+    assert carry_sidecars(str(produced), str(produced)) == 0
+    assert load_pae(str(produced)) is not None
+
+    # An unwritable destination is a warning, not an exception.
+    assert carry_sidecars(str(produced), "/proc/nonexistent-dir/model1.pdb") == 0
+
+
+def test_place_structure_carries_the_sidecars(tmp_path):
+    """The wiring, not just the helper: _place_structure is the single point
+    every harness-produced advisory structure passes through."""
+    from proteinfoundation.metrics.consensus_folding import _place_structure
+
+    produced = tmp_path / "harness" / "out.pdb"
+    produced.parent.mkdir(parents=True)
+    produced.write_text("ATOM\n")
+    save_pae(str(produced), realistic_pae(target_len=5, binder_len=3), chain_lengths=[5, 3], backend="af2")
+
+    wanted = tmp_path / "store" / "af2_complex" / "deadbeef_model2.pdb"
+    placed = _place_structure(str(produced), str(wanted))
+
+    assert placed == str(wanted)
+    assert load_pae(placed) is not None, "_place_structure dropped the matrix it was copying past"

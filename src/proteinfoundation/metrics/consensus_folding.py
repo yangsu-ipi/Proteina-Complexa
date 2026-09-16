@@ -82,7 +82,7 @@ from proteinfoundation.metrics.ensembling import (
     PLACEMENT_METRICS,
     mean_chain_plddt,
 )
-from proteinfoundation.metrics.pae_store import save_pae
+from proteinfoundation.metrics.pae_store import carry_sidecars, save_pae
 from proteinfoundation.metrics.tmol_interface import TMOL_METRIC_COLS, tmol_interface_metrics
 from proteinfoundation.result_analysis.binder_analysis_utils import COMPLEX_BACKEND_COLUMN, complex_backend_of
 
@@ -759,11 +759,17 @@ def _place_structure(produced: str, wanted: str | None) -> str:
     copied to the path the caller asked for rather than the caller being told to
     look somewhere else. Without a requested path the harness's own is reported,
     which is what a run with keep_folding_outputs off gets.
+
+    The sidecars come along. They are addressed by the structure's path, and the
+    cache entry records the path this returns, so leaving them behind stores a
+    PAE matrix under a name nothing looks up -- the fold is paid for and the
+    re-read it bought is not available.
     """
     if not (wanted and os.path.exists(produced)):
         return produced
     os.makedirs(os.path.dirname(wanted), exist_ok=True)
     shutil.copy(produced, wanted)
+    carry_sidecars(produced, wanted)
     return wanted
 
 
