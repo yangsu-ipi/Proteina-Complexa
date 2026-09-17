@@ -108,21 +108,12 @@ def average_af2_stats(per_model: list[dict]) -> dict:
     }
 
 
-# Placement asks whether the binder landed where it was designed to. A binder
-# that lands correctly in one model of five has not been placed correctly, so the
-# reduction is the worst model rather than the typical one.
-#
-# Measured, not assumed. Meaning these over five models compressed the
-# distribution asymmetrically: designs already under 2 A barely moved (median
-# +0.01 A, none crossing into failure), while 24 sequences crossed from failing
-# complex_scRMSD_ca to passing it -- twelve of those from 4-8 A on a single
-# model. The 2.0 A thresholds were calibrated against single-model geometry
-# where misplaced designs sat at 4.6-11.6 A, which is exactly the band a mean
-# pulls toward the cutoff. The max restores that discrimination, and is strictly
-# harder to satisfy than the single model ever was.
-#
-# complex_scRMSD is the legacy alias of complex_scRMSD_ca and has to reduce the
-# same way, or one row would carry two different answers to one question.
+# Placement asks whether the binder landed where it was designed to:
+# complex_scRMSD_ca (with its legacy alias complex_scRMSD) and
+# binder_scRMSD_target_aligned_ca. The set is kept because the thresholds and the
+# docs name this family, and because what the reduction gives up is specific to
+# it -- but nothing switches a reduction on it any more. See
+# :func:`reduce_rmsd_over_models` for what changed and what it costs.
 PLACEMENT_METRICS = frozenset(
     {
         "complex_scRMSD_ca",
@@ -145,23 +136,41 @@ PLACEMENT_METRICS = frozenset(
 # back -- the silent-stale-cache case this constant exists to prevent, in the one
 # family it had just been proven wrong for. Re-derives from kept structures; no
 # refolding.
-GEOMETRY_REDUCTION_VERSION = 3
+#
+# 4: every RMSD reduces by mean. The placement metrics used to take the worst
+# draw; they now take the typical one, like every other RMSD. This moves numbers
+# that a threshold reads, in the permissive direction, so a campaign holding
+# version-3 numbers must re-derive rather than serve them beside version-4 ones.
+# Re-derives from kept structures; no refolding.
+GEOMETRY_REDUCTION_VERSION = 4
 
 
 def reduce_rmsd_over_models(per_model: list[dict]) -> dict:
-    """Collapse per-model RMSDs, by mean or by worst case depending on the metric.
+    """Collapse per-model RMSDs by mean, for every metric.
 
-    Placement metrics (:data:`PLACEMENT_METRICS`) take the max: every model has
-    to agree the binder is where it belongs. Everything else -- fold quality
-    against the designed backbone -- takes the mean, where the spread between
-    models is uncertainty about one structure rather than disagreement about a
-    location.
+    One rule, no exceptions: the spread between models is uncertainty about one
+    structure, and the number a row reports is the typical model rather than the
+    worst one.
+
+    Placement used to be the exception, taking the max of PLACEMENT_METRICS so
+    that every model had to agree the binder was where it belonged. What that
+    bought is worth stating, because it is what a mean gives up: a design
+    misplaced in four models of five is now pulled toward the cutoff instead of
+    failing outright, and the 2.0 A thresholds were originally calibrated against
+    single-model geometry where misplaced designs sat at 4.6-11.6 A. A mean is
+    the more permissive reduction, and it is permissive exactly where placement
+    is ambiguous between draws.
+
+    Measured on two production campaigns before the switch: on AF2 the two
+    reductions barely differ, because the initial guess pins every model to the
+    designed pose (median max-mean 0.03-0.05 A on complex_scRMSD_ca). On
+    ESMFold2 they differ by an order of magnitude more (median 0.26-0.39 A, p90
+    up to 3.0 A), so this changes the advisory columns far more than the primary
+    ones.
 
     A model that produced no usable number is dropped rather than folded in, so
     one NaN cannot cost four good measurements, and a metric with nothing finite
-    behind it stays NaN rather than becoming a plausible-looking zero. That holds
-    for the max too: a failed model leaves the worst case unknown, not zero --
-    and a NaN placement fails its threshold regardless.
+    behind it stays NaN rather than becoming a plausible-looking zero.
     """
     if not per_model:
         return {}
@@ -172,12 +181,7 @@ def reduce_rmsd_over_models(per_model: list[dict]) -> dict:
         values = [
             model[key] for model in per_model if isinstance(model.get(key), (int, float)) and math.isfinite(model[key])
         ]
-        if not values:
-            reduced[key] = float("nan")
-        elif key in PLACEMENT_METRICS:
-            reduced[key] = max(values)
-        else:
-            reduced[key] = sum(values) / len(values)
+        reduced[key] = sum(values) / len(values) if values else float("nan")
     return reduced
 
 
@@ -321,9 +325,9 @@ def per_model_paths_from_first(first_path: str, n_models: int) -> list[str] | No
     """The sibling structures of a model-1 path, or None if any is missing.
 
     predict_binder_complex names them ``{design}_model{n}.pdb``, so the set is
-    derivable from the one path the stats keep. All-or-nothing: recomputing a
-    worst-case over three of five models would quietly report a better number
-    than the design earned.
+    derivable from the one path the stats keep. All-or-nothing: a mean over three
+    of five models is a different number from a mean over five, and nothing in
+    the row would say which one it is.
     """
     if not first_path or not first_path.endswith("_model1.pdb"):
         return None

@@ -188,10 +188,11 @@ def test_each_draw_gets_its_own_structure_path(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_confidence_pools_by_mean_and_placement_by_worst_case():
-    """The rule reduce_rmsd_over_models gives, now applied to every draw of every
-    folder rather than only to AF2's models: a binder that lands correctly in one
-    draw of five has not been placed correctly, and a mean pulls it to the cutoff.
+def test_everything_numeric_pools_by_mean_including_placement():
+    """The rule reduce_rmsd_over_models gives, applied to every draw of every
+    folder. Placement used to take the worst draw here; this side is where that
+    change is felt, because ESMFold2's seeds disagree about where the binder went
+    far more than AF2's models do.
     """
     assert "scRMSD_ca" in CONSENSUS_PLACEMENT_SUFFIXES
     got = reduce_over_draws({
@@ -199,13 +200,14 @@ def test_confidence_pools_by_mean_and_placement_by_worst_case():
         "model2": {"i_pTM": 0.5, "scRMSD_ca": 8.0},
     })
     assert got["i_pTM"] == pytest.approx(0.7)
-    assert got["scRMSD_ca"] == pytest.approx(8.0), "placement takes the worst draw"
+    assert got["scRMSD_ca"] == pytest.approx(4.25), "placement takes the mean too"
 
 
 def test_the_placement_set_is_mapped_from_the_primary_sides_not_retyped():
     """One definition of 'this metric is about placement'. The primary side calls
     it complex_scRMSD_ca and the advisory slot calls it scRMSD_ca, so a second
-    hardcoded list would agree only by inspection and drift silently."""
+    hardcoded list would agree only by inspection and drift silently. The set no
+    longer selects a reduction; it still names the family."""
     from proteinfoundation.metrics.ensembling import PLACEMENT_METRICS
 
     expected = {s for k, s in cf.CONSENSUS_RMSD_SUFFIXES.items() if k in PLACEMENT_METRICS}
@@ -213,8 +215,8 @@ def test_the_placement_set_is_mapped_from_the_primary_sides_not_retyped():
 
 
 def test_fold_quality_is_not_placement():
-    """binder_scRMSD_ca asks how well the binder folded, not where it landed, so
-    the spread between draws is uncertainty about one structure."""
+    """binder_scRMSD_ca asks how well the binder folded, not where it landed.
+    Both reduce by mean now, so this pins the value rather than the distinction."""
     got = reduce_over_draws({"a": {"binder_scRMSD_ca": 1.0}, "b": {"binder_scRMSD_ca": 3.0}})
     assert got["binder_scRMSD_ca"] == pytest.approx(2.0)
 

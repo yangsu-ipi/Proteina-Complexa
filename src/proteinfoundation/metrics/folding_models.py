@@ -645,10 +645,10 @@ def colabfold_model_siblings(pdb_path: str | None) -> list[str]:
 
     Returns ``[pdb_path]`` when the name is not ColabFold's or nothing else is on
     disk, so a single-model backend is the one-element case rather than a special
-    case. A SHORT set is returned and warned about rather than refused: unlike
-    the holo side's all-or-nothing rule, which protects a worst-case reduction
-    that three of five models would flatter, every reduction here is a mean, and
-    a mean of three real predictions beats discarding them.
+    case. A SHORT set is returned and warned about rather than refused: the holo
+    side is all-or-nothing about its model set for a different reason (see
+    per_model_paths_from_first), while here a mean of three real predictions
+    beats discarding them.
     """
     if not pdb_path or COLABFOLD_RANK_MARKER not in pdb_path or "_seed_" not in pdb_path:
         return [pdb_path] if pdb_path else []

@@ -317,11 +317,12 @@ def _mean_over_models(values) -> float:
 def _rmsd_over_models(paths: list[str], ref_coors, ref_mask, rmsd_modes: list[str]) -> dict[str, float]:
     """Each mode's RMSD, meaned over the predictions of one sequence.
 
-    Mean rather than the worst case, which is what the holo track reserves for
-    PLACEMENT metrics: there is no target here and nothing to be placed against,
-    so the spread between models is uncertainty about one structure rather than
-    disagreement about a location. It is also the reduction ESMFold2's seeds
-    already get from average_folds, which keeps the two apo backends comparable.
+    Mean, which is now what every RMSD gets on the holo track too -- the
+    placement metrics there used to take the worst model. Nothing here was ever
+    placed against anything, so the spread between models is uncertainty about
+    one structure rather than disagreement about a location. It is also the
+    reduction ESMFold2's seeds already get from average_folds, which keeps the
+    two apo backends comparable.
 
     A structure that could not be read is skipped; inf only when none could, which
     is the value the caller already uses for a fold that did not happen.

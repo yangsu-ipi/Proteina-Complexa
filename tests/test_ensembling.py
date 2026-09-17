@@ -144,17 +144,18 @@ def test_fold_quality_is_meaned_over_the_models():
     assert reduce_rmsd_over_models(per_model)["binder_scRMSD_ca"] == pytest.approx(2.0)
 
 
-def test_placement_takes_the_worst_model_not_the_typical_one():
-    """A binder that lands correctly in one model of five has not been placed
-    correctly. Meaning it instead let 24 sequences cross from failing
-    complex_scRMSD_ca to passing it on a real campaign, twelve of them from
-    4-8 A on a single model -- the 2.0 A thresholds were calibrated against
-    single-model geometry, and a mean pulls exactly that band to the cutoff."""
+def test_placement_is_meaned_like_every_other_rmsd():
+    """Placement used to take the worst model, so that a binder landing correctly
+    in one model of five did not count as placed. It now takes the typical one.
+    What that gives up is real and is the reason this test names the old numbers:
+    on a production campaign the max was what kept 24 sequences from crossing
+    from failing complex_scRMSD_ca to passing it, twelve of them from 4-8 A on a
+    single model."""
     per_model = [{"complex_scRMSD_ca": 0.5}, {"complex_scRMSD_ca": 0.6}, {"complex_scRMSD_ca": 9.0}]
-    assert reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"] == pytest.approx(9.0)
+    assert reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"] == pytest.approx(10.1 / 3)
 
     aligned = [{"binder_scRMSD_target_aligned_ca": 1.0}, {"binder_scRMSD_target_aligned_ca": 4.0}]
-    assert reduce_rmsd_over_models(aligned)["binder_scRMSD_target_aligned_ca"] == pytest.approx(4.0)
+    assert reduce_rmsd_over_models(aligned)["binder_scRMSD_target_aligned_ca"] == pytest.approx(2.5)
 
 
 def test_the_legacy_alias_reduces_like_the_metric_it_aliases():
@@ -165,15 +166,17 @@ def test_the_legacy_alias_reduces_like_the_metric_it_aliases():
         {"complex_scRMSD": 9.0, "complex_scRMSD_ca": 9.0},
     ]
     out = reduce_rmsd_over_models(per_model)
-    assert out["complex_scRMSD"] == out["complex_scRMSD_ca"] == pytest.approx(9.0)
+    assert out["complex_scRMSD"] == out["complex_scRMSD_ca"] == pytest.approx(4.75)
 
 
-def test_a_placement_reduction_never_flatters_a_single_bad_model():
-    """Strictly harder to satisfy than the single model the gate used to read."""
+def test_a_mean_lets_one_bad_model_be_outvoted():
+    """The documented cost of the switch, pinned to a number. Four models place
+    the binder well and the fifth does not; the mean passes the 2.0 A gate that
+    the old worst-case reduction failed."""
     per_model = [{"complex_scRMSD_ca": v} for v in (0.4, 0.5, 0.6, 0.7, 2.4)]
     reduced = reduce_rmsd_over_models(per_model)["complex_scRMSD_ca"]
-    assert reduced >= max(m["complex_scRMSD_ca"] for m in per_model[:1]), "not below model 1"
-    assert reduced == pytest.approx(2.4), "and it fails the 2.0 gate the mean would have passed"
+    assert reduced == pytest.approx(0.92)
+    assert reduced < 2.0 <= max(m["complex_scRMSD_ca"] for m in per_model)
 
 
 def test_one_unusable_model_does_not_erase_the_others():
@@ -670,14 +673,15 @@ def test_every_gated_placement_criterion_is_in_the_placement_set():
     joined = {f"{spec['column_prefix']}_{spec['metric']}" for spec in DEFAULT_PROTEIN_BINDER_THRESHOLDS.values()}
     assert {"complex_scRMSD_ca", "binder_scRMSD_target_aligned_ca"} <= joined, "both placement criteria are still gated"
     assert {"complex_scRMSD_ca", "binder_scRMSD_target_aligned_ca"} <= PLACEMENT_METRICS, (
-        "and both are reduced by worst case, not by mean"
+        "and the set still names the placement family, though nothing reduces on it"
     )
     assert "binder_scRMSD_ca" in joined and "binder_scRMSD_ca" not in PLACEMENT_METRICS
 
 
 def test_fold_quality_criteria_stay_out_of_the_placement_set():
     """binder_scRMSD_ca asks whether the sequence folds as designed, not where
-    it sits. Its 1.5 A threshold was calibrated on a mean."""
+    it sits. The set no longer selects a reduction, but it still names which
+    criteria are about placement."""
     assert "binder_scRMSD_ca" not in PLACEMENT_METRICS
     assert "apo_scRMSD_ca" not in PLACEMENT_METRICS
 

@@ -1299,7 +1299,12 @@ CONSENSUS_TMOL_SUFFIXES: tuple[str, ...] = tuple(TMOL_METRIC_COLS)
 
 # Bumped when the derivation of any registered metric changes without its name
 # changing, which the name alone cannot express.
-CONSENSUS_DERIVATION_VERSION = 1
+#
+# 2: the placement metrics reduce by mean rather than by the worst draw, like
+# every other RMSD -- see ensembling.reduce_rmsd_over_models. An entry written
+# under version 1 holds a max where this run wants a mean, and the two are not
+# comparable in one column. Re-derives from the kept structures; no refolding.
+CONSENSUS_DERIVATION_VERSION = 2
 
 
 def consensus_derived_suffixes(include_tmol: bool = False) -> tuple[str, ...]:
@@ -1626,11 +1631,12 @@ def write_consensus_cache(
 # =============================================================================
 
 
-# The advisory names of the metrics that reduce by worst case rather than by
-# mean, mapped from the primary side's PLACEMENT_METRICS through the same table
-# that renames them. One definition of "this metric is about placement", not two
-# lists that agree only by inspection -- the primary side calls it
-# complex_scRMSD_ca and the advisory slot calls it scRMSD_ca.
+# The advisory names of the placement metrics, mapped from the primary side's
+# PLACEMENT_METRICS through the same table that renames them. One definition of
+# "this metric is about placement", not two lists that agree only by inspection
+# -- the primary side calls it complex_scRMSD_ca and the advisory slot calls it
+# scRMSD_ca. Nothing reduces on it any more; it names the family for readers and
+# for the threshold docs.
 CONSENSUS_PLACEMENT_SUFFIXES = frozenset(
     suffix for key, suffix in CONSENSUS_RMSD_SUFFIXES.items() if key in PLACEMENT_METRICS
 )
@@ -1641,9 +1647,9 @@ def draws_by_metric(by_draw: dict[str, dict[str, float | str]]) -> dict[str, lis
 
     The un-reduced form of :func:`reduce_over_draws`, for a caller that wants the
     draws themselves in the artifact so the reduction can be re-asked later.
-    Which reduction is right is a formulation over recorded values -- mean here,
-    worst case there -- and a formulation belongs with the thresholds in analyze,
-    where changing it costs a re-read rather than a refold. That is the same
+    Which reduction is right is a formulation over recorded values -- a mean
+    today, for every metric -- and a formulation belongs with the thresholds in
+    analyze, where changing it costs a re-read rather than a refold. That is the same
     argument pick_headline_sequence makes for choosing among sequences.
 
     Draws a metric is missing from hold NaN at that position, so every list is
@@ -1674,13 +1680,11 @@ def reduce_over_draws(by_draw: dict[str, dict[str, float | str]]) -> dict[str, f
     draw, and one of them has to be the one a reader is pointed at, while the
     engine and radii are identical across draws by construction.
 
-    Placement reduces by worst case, by the rule and for the reason
-    reduce_rmsd_over_models gives: every draw has to agree the binder is where it
-    belongs, and a mean pulls a misplaced design toward the cutoff. That rule
-    used to apply only to AF2's models, because only AF2 had more than one
-    structure per prediction in reach. It now applies to every draw of every
-    folder, which is a real change to ESMFold2's multi-seed placement columns --
-    strictly harder to satisfy, and measurable against the baselines.
+    Placement reduces by mean like every other RMSD, by the rule and for the
+    reason reduce_rmsd_over_models gives. It used to take the worst draw. This
+    side is where that change is felt: ESMFold2's seeds disagree about placement
+    by an order of magnitude more than AF2's models do, so the advisory placement
+    columns move where the primary ones barely do.
 
     Note what does NOT belong here: this is a reduction over repeat predictions
     of ONE sequence. Choosing among sequences is analyze's, and stays there.
@@ -1711,8 +1715,6 @@ def reduce_over_draws(by_draw: dict[str, dict[str, float | str]]) -> dict[str, f
         numeric = [float(v) for v in values if isinstance(v, (int, float)) and v == v]
         if not numeric:
             out[key] = values[0]
-        elif key in CONSENSUS_PLACEMENT_SUFFIXES:
-            out[key] = max(numeric)
         else:
             out[key] = sum(numeric) / len(numeric)
     # Same name the primary side uses (ensembling.average_interface_rows): how

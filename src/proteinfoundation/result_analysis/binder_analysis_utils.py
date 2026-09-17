@@ -232,55 +232,16 @@ DEFAULT_LIGAND_BINDER_THRESHOLDS = {
 # for five. Recording the draws is what makes changing this rule a re-read.
 
 
-def is_placement_column(column: str) -> bool:
-    """Whether *column* measures WHERE the binder landed rather than how it folded.
+def reduce_draws(values: list) -> Any:
+    """Collapse one sequence's draws to the scalar a row reports, by mean.
 
-    Placement reduces by worst case: every draw has to agree the binder is where
-    it belongs, and a mean pulls a design that is misplaced in four draws of five
-    toward the cutoff. Fold quality against the designed backbone takes the mean,
-    where the spread between draws is uncertainty about one structure.
-
-    Matched on the name against both spellings of the same set -- the primary
-    slot's ``complex_scRMSD_ca`` and the advisory slot's ``scRMSD_ca`` -- so one
-    definition of "this is about placement" serves both and neither drifts.
-
-    By LONGEST match, not by any match, because these names nest:
-    ``binder_scRMSD_ca`` ends with ``scRMSD_ca``. Asking whether the column ends
-    with a placement name answered yes for the binder's own fold quality, which
-    would have switched it from a mean to a worst case across every campaign --
-    silently, since both are plausible numbers. The longest name the column ends
-    with is the metric it carries, and only that one decides.
-    """
-    from proteinfoundation.metrics.consensus_folding import (
-        CONSENSUS_DERIVED_SUFFIXES,
-        CONSENSUS_METRIC_SUFFIXES,
-        CONSENSUS_PLACEMENT_SUFFIXES,
-        CONSENSUS_RMSD_SUFFIXES,
-    )
-    from proteinfoundation.metrics.ensembling import PLACEMENT_METRICS
-
-    stem = column[: -len("_all")] if column.endswith("_all") else column
-    placement = {*PLACEMENT_METRICS, *CONSENSUS_PLACEMENT_SUFFIXES}
-    known = {
-        *placement,
-        *CONSENSUS_METRIC_SUFFIXES,
-        *CONSENSUS_DERIVED_SUFFIXES,
-        *CONSENSUS_RMSD_SUFFIXES,
-        *CONSENSUS_RMSD_SUFFIXES.values(),
-    }
-    matched = [name for name in known if stem.endswith(name)]
-    if not matched:
-        return False
-    return max(matched, key=len) in placement
-
-
-def reduce_draws(values: list, placement: bool) -> Any:
-    """Collapse one sequence's draws to the scalar a row reports.
+    One rule for every metric, including the placement RMSDs that used to take
+    the worst draw -- see ensembling.reduce_rmsd_over_models for what that
+    exception bought and what dropping it gives up.
 
     A draw that produced no usable number is dropped rather than folded in, so
     one NaN cannot cost four good measurements, and a metric with nothing finite
-    behind it stays NaN rather than becoming a plausible-looking zero. That holds
-    for the worst case too: a failed draw leaves it unknown, not zero.
+    behind it stays NaN rather than becoming a plausible-looking zero.
 
     Non-numeric draws (a structure path, the SASA engine) take the first, which
     is what a reader pointed at "the" structure gets; and a value that is not a
@@ -299,7 +260,7 @@ def reduce_draws(values: list, placement: bool) -> Any:
     if not numeric:
         non_numeric = [v for v in values if not isinstance(v, (int, float, bool))]
         return non_numeric[0] if non_numeric else float("nan")
-    return max(numeric) if placement else sum(numeric) / len(numeric)
+    return sum(numeric) / len(numeric)
 
 
 def _object_column(values: list) -> "np.ndarray":
@@ -383,7 +344,6 @@ def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
     # depends on it, and a caller that forgot would see no error -- only NaN.
     df = parse_all_columns(df)
     for column in [c for c in df.columns if c.endswith("_all")]:
-        placement = is_placement_column(column)
         reduced = []
         touched = False
         for cell in df[column]:
@@ -393,10 +353,10 @@ def reduce_draws_in_frame(df: "pd.DataFrame") -> "pd.DataFrame":
                 reduced.append(cell)
                 continue
             touched = True
-            reduced.append([reduce_draws(v, placement) for v in cell])
+            reduced.append([reduce_draws(v) for v in cell])
         if touched:
             df[column] = _object_column(reduced)
-            logger.debug(f"Reduced per-draw values in {column} ({'worst case' if placement else 'mean'})")
+            logger.debug(f"Reduced per-draw values in {column} (mean)")
     return df
 
 

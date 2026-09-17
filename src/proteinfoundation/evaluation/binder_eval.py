@@ -1312,11 +1312,11 @@ def compute_binder_metrics(
                         reference_pdb_path=pdb_path,
                         derive_tmol=derive_consensus_tmol,
                         # The draws themselves, not a scalar per metric. Which
-                        # reduction is right -- mean for confidence, worst case
-                        # for placement -- is a formulation over recorded values,
-                        # and analyze re-asks it on every run for the cost of a
-                        # re-read. Freezing it here is what made AF2's five
-                        # models unrecoverable without predicting them again.
+                        # reduction is right -- a mean today, for every metric --
+                        # is a formulation over recorded values, and analyze
+                        # re-asks it on every run for the cost of a re-read.
+                        # Freezing it here is what made AF2's five models
+                        # unrecoverable without predicting them again.
                         reduce=False,
                         # What a folder needs beyond the sequences. ESMFold2
                         # ignores every field and folds from sequence; AF2

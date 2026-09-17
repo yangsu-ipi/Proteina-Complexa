@@ -3184,10 +3184,10 @@ def main(cfg: DictConfig) -> None:
 
         # Collapse each folder's draws first, so every _all cell below is the
         # per-sequence list the rest of this contract assumes. Evaluate records
-        # one value per prediction and reduces none: whether five AF2 parameter
-        # sets are meaned or their worst case taken is a formulation over recorded
-        # numbers, like the ranking and the thresholds, so changing it is an
-        # analyze run rather than a refold of the campaign. A frame whose cells
+        # one value per prediction and reduces none: how five AF2 parameter sets
+        # collapse to one number is a formulation over recorded values, like the
+        # ranking and the thresholds, so changing it is an analyze run rather
+        # than a refold of the campaign. Every metric means today. A frame whose cells
         # are already scalars passes through untouched.
         combined_df = reduce_draws_in_frame(combined_df)
 
