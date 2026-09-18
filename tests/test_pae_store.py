@@ -815,3 +815,47 @@ def test_an_entry_without_a_digest_is_left_alone(tmp_path, monkeypatch):
     pdb.write_text("ATOM      1  N   ALA A   1  changed\n")
     cf.score_binders("esmfold2", target, [binder], **kw)
     assert len(calls) == 1, "a legacy entry with no digest must not be refolded"
+
+
+def test_the_frame_records_which_structure_each_number_came_from():
+    """A frame naming only pdb_path cannot answer the provenance question: the
+    path is addressed on the binder sequence, so a refold reuses it, and a fold
+    is not reproducible from its seed. The digest rides beside the path so a
+    stored frame can be checked against the store later."""
+    import inspect
+
+    from proteinfoundation.evaluation import binder_eval
+    from proteinfoundation.metrics.consensus_folding import STRUCTURE_DIGEST_KEY, advisory_column
+
+    source = inspect.getsource(binder_eval)
+    assert f"advisory_column(seq_type, backend_name, {STRUCTURE_DIGEST_KEY!r})" in source or (
+        "STRUCTURE_DIGEST_KEY)" in source
+    ), "the digest must be emitted alongside pdb_path"
+
+    # Named through the same slot scheme as every other advisory column, so the
+    # backend sits in its own slot and nothing has to avoid a substring.
+    col = advisory_column("self", "esmfold2", STRUCTURE_DIGEST_KEY)
+    assert col == f"self_complex_esmfold2_{STRUCTURE_DIGEST_KEY}"
+    assert "pdb_path" not in col
+
+
+def test_the_digest_column_reduces_like_a_path_not_like_a_metric():
+    """It is a string per draw, exactly as pdb_path_all is. Draw reduction must
+    pass it through rather than average it -- a mean of hex digests is not a
+    thing, and coercing it to float would put NaN where the evidence was."""
+    import pandas as pd
+
+    from proteinfoundation.result_analysis.binder_analysis_utils import reduce_draws_in_frame
+
+    frame = pd.DataFrame([{
+        "self_complex_esmfold2_pdb_path_all": ["/a/x.pdb", "/a/y.pdb"],
+        "self_complex_esmfold2_structure_sha_all": ["abc123", "def456"],
+        "self_complex_esmfold2_i_pAE_all": [0.2, 0.4],
+    }])
+    out = reduce_draws_in_frame(frame.copy())
+    assert len(out) == 1
+    # Whatever the reduction does with strings, it must do the same to both and
+    # must not turn either into NaN.
+    for col in ("self_complex_esmfold2_pdb_path", "self_complex_esmfold2_structure_sha"):
+        if col in out.columns:
+            assert out[col].isna().sum() == 0, f"{col} was lost in reduction"

@@ -67,6 +67,7 @@ from proteinfoundation.metrics.column_names import backend_for_folding_method, f
 from proteinfoundation.metrics.consensus_folding import (
     CONSENSUS_METRIC_SUFFIXES,
     CONSENSUS_PROVENANCE_SUFFIXES,
+    STRUCTURE_DIGEST_KEY,
     ComplexFoldContext,
     advisory_column,
     available_backends,
@@ -1364,6 +1365,16 @@ def compute_binder_metrics(
                     path_col = advisory_column(seq_type, backend_name, "pdb_path")
                     row_dict[f"{path_col}_all"] = [m.get("pdb_path") for m in advisory]
                     new_cols.append(f"{path_col}_all")
+                    # Which structure, not just which path. A refold writes the
+                    # same name -- the path is addressed on the binder sequence,
+                    # not on the prediction -- and a fold is not reproducible from
+                    # its seed, so a frame naming only the path cannot say whether
+                    # the file beside it today is the one these numbers came from.
+                    # With the digest it can, and a mismatch is detectable instead
+                    # of silent.
+                    sha_col = advisory_column(seq_type, backend_name, STRUCTURE_DIGEST_KEY)
+                    row_dict[f"{sha_col}_all"] = [m.get(STRUCTURE_DIGEST_KEY) for m in advisory]
+                    new_cols.append(f"{sha_col}_all")
                     if idx == 0:
                         # The contract of these columns is that they cannot change a
                         # pass/fail decision. Checked against the columns the criteria
