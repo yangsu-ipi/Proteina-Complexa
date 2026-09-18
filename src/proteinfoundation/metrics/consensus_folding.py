@@ -383,9 +383,14 @@ def _score_esmfold2(
         # primary backend can be looked at rather than only read as numbers.
         # Same call run_esmfold2 uses for monomers.
         try:
-            os.makedirs(os.path.dirname(out_pdb_path), exist_ok=True)
-            results[best].complex.to_protein_complex().to_pdb(out_pdb_path)
+            complex_out = results[best].complex.to_protein_complex()
+            write_structure_atomically(complex_out.to_pdb, out_pdb_path)
             scored[best]["pdb_path"] = out_pdb_path
+            # Of the bytes just written, so the entry can later be checked
+            # against the file it claims to describe.
+            digest = structure_digest(out_pdb_path)
+            if digest:
+                scored[best][STRUCTURE_DIGEST_KEY] = digest
         except Exception as exc:
             # Not a warning. keep_folding_outputs asked for this file, and a
             # missing structure is what triggers the refold -- so swallowing the
@@ -748,6 +753,7 @@ def _score_af2(
         produced = (model_paths or [None])[0]
         if produced:
             metrics["pdb_path"] = _place_structure(produced, out_pdb_path)
+            _record_digest(metrics)
         return metrics
 
     draws: dict[str, dict[str, float]] = {}
@@ -763,6 +769,7 @@ def _score_af2(
             # five times and call it an ensemble.
             wanted = out_path_for(draw_id) if out_path_for else (out_pdb_path if draw_id == str(draw) else None)
             metrics["pdb_path"] = _place_structure(produced, wanted)
+            _record_digest(metrics)
         draws[draw_id] = metrics
     return {"draws": draws}
 
@@ -782,6 +789,15 @@ def _unwrap_sequence_envelope(entry) -> dict:
     return inner[0] if len(inner) == 1 else entry
 
 
+def _record_digest(metrics: dict) -> None:
+    """Stamp a structure-bearing metrics dict with the digest of that structure."""
+    path = metrics.get("pdb_path")
+    if isinstance(path, str):
+        digest = structure_digest(path)
+        if digest:
+            metrics[STRUCTURE_DIGEST_KEY] = digest
+
+
 def _place_structure(produced: str, wanted: str | None) -> str:
     """Put a harness-produced structure where the advisory store wants it.
 
@@ -797,8 +813,10 @@ def _place_structure(produced: str, wanted: str | None) -> str:
     """
     if not (wanted and os.path.exists(produced)):
         return produced
-    os.makedirs(os.path.dirname(wanted), exist_ok=True)
-    shutil.copy(produced, wanted)
+    # Through a temporary name for the same reason the folder's own writes are:
+    # a copy interrupted half way leaves a structure that exists and is wrong,
+    # and existence is what tells the next run not to refold.
+    write_structure_atomically(lambda tmp: shutil.copy(produced, tmp), wanted)
     carry_sidecars(produced, wanted)
     return wanted
 
@@ -1728,6 +1746,51 @@ def reduce_over_draws(by_draw: dict[str, dict[str, float | str]]) -> dict[str, f
 mean_over_seeds = reduce_over_draws  # pre-draw-axis name
 
 
+STRUCTURE_DIGEST_KEY = "structure_sha"
+
+
+def structure_digest(path: str) -> str | None:
+    """A short content digest of one kept structure, or None if it is unreadable.
+
+    Recorded in the cache entry beside ``pdb_path`` so a reader can ask the one
+    question the entry otherwise cannot answer: is this metric describing THIS
+    file. The two are written at different moments -- the structure inside the
+    fold, the entry after the whole design's batch -- so a run killed in between
+    leaves a new structure under an old entry, and nothing detects it. A fold is
+    not reproducible from its seed, so the mismatch is real rather than cosmetic:
+    the cached numbers describe a prediction that no longer exists on disk.
+    """
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def write_structure_atomically(write, path: str) -> None:
+    """Put a structure at *path* only once it is completely written.
+
+    *write* is called with a temporary path in the same directory, so the
+    rename is within one filesystem and therefore atomic. Without it a run
+    killed mid-write leaves a truncated PDB that exists -- which is worse than
+    one that does not, because existence is what suppresses the refold.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp-{os.getpid()}"
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def advisory_structure_path(cache_dir: str, backend: str, binder_seq: str, draw: str | None = None) -> str:
     """Where a backend's folded complex for this binder and draw goes.
 
@@ -2037,6 +2100,37 @@ def score_binders(
     # one set of columns no file on disk can recompute, so an entry without its
     # matrix is frozen at the cutoffs it happened to be folded at. Asking for a
     # cutoff it does not carry has exactly one answer, and it is this fold.
+    # An entry whose structure is no longer the one it was measured from. The
+    # structure is written inside the fold and the entry after the whole design's
+    # batch, so a run killed in between leaves exactly this: a new prediction on
+    # disk under the previous run's numbers. Nothing else detects it -- the draw
+    # is present and the file exists, which is all the other two checks ask --
+    # and because a fold is not reproducible from its seed the numbers describe a
+    # structure that no longer exists rather than an identical one.
+    #
+    # Silent on entries written before digests were recorded: absent is not
+    # mismatched, and treating it as such would refold every campaign once.
+    def _stale_structure(seq: str, draw: str) -> bool:
+        if not cache_dir:
+            return False
+        entry = scores.get(seq, {}).get(draw) or {}
+        recorded = entry.get(STRUCTURE_DIGEST_KEY)
+        if not recorded:
+            return False
+        path = entry.get("pdb_path") or existing_advisory_structure(cache_dir, backend, seq, draw)
+        if not (isinstance(path, str) and os.path.exists(path)):
+            # Absent is the other checks' business; this one only judges
+            # disagreement between an entry and a file that is both there.
+            return False
+        actual = structure_digest(path)
+        if actual is None or actual == recorded:
+            return False
+        logger.warning(
+            f"Advisory {backend} structure for draw {draw} changed since its metrics were cached "
+            f"({recorded} -> {actual}); refolding so the entry describes the file beside it"
+        )
+        return True
+
     def _needs_matrix(seq: str, draw: str) -> bool:
         if not cache_dir:
             return False
@@ -2059,7 +2153,10 @@ def score_binders(
         for seq in dict.fromkeys(binder_seqs)
         if seq
         for draw in draws_for(seq)
-        if draw not in scores.get(seq, {}) or _needs_structure(seq, draw) or _needs_matrix(seq, draw)
+        if draw not in scores.get(seq, {})
+        or _needs_structure(seq, draw)
+        or _needs_matrix(seq, draw)
+        or _stale_structure(seq, draw)
     ]
     if pending:
         scorer = CONSENSUS_BACKENDS[backend]
@@ -2082,6 +2179,11 @@ def score_binders(
                 # it up explicitly. Entries written before structures were kept
                 # simply lack the key.
                 usable["pdb_path"] = metrics["pdb_path"]
+            if usable and metrics.get(STRUCTURE_DIGEST_KEY):
+                # Rides with pdb_path: an entry that names a structure must also
+                # say which one, or the check on the next read has nothing to
+                # compare against.
+                usable[STRUCTURE_DIGEST_KEY] = metrics[STRUCTURE_DIGEST_KEY]
             if usable and metrics.get("pae_path"):
                 # Recorded separately because it outlives pdb_path: a run with
                 # keep_folding_outputs off stores the matrix and no structure, so

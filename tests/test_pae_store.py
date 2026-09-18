@@ -694,3 +694,124 @@ def test_a_folder_that_reports_no_matrix_is_not_refolded_forever(tmp_path, monke
     for _ in range(3):
         cf.score_binders("esmfold2", target, [binder], **kw)
     assert len(calls) == 1, "a folder that reports no matrix must not be refolded on every run"
+
+
+# ---------------------------------------------------------------------------
+# A cached metric must describe the structure actually beside it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_structure_is_only_visible_once_it_is_complete(tmp_path):
+    """A run killed mid-write must not leave a truncated structure in place.
+    Existence is what suppresses the refold, so a half-written file is worse
+    than none: it is reused forever and never repaired."""
+    from proteinfoundation.metrics.consensus_folding import write_structure_atomically
+
+    target = tmp_path / "deep" / "complex.pdb"
+
+    def explode(tmp):
+        open(tmp, "w").write("ATOM      1  N   ALA A   1\n")
+        raise RuntimeError("killed mid-write")
+
+    with pytest.raises(RuntimeError):
+        write_structure_atomically(explode, str(target))
+    assert not target.exists(), "a failed write must leave nothing at the final path"
+    assert not list(target.parent.glob("*.tmp-*")), "the temporary must not survive"
+
+    write_structure_atomically(lambda tmp: open(tmp, "w").write("ATOM\n"), str(target))
+    assert target.read_text() == "ATOM\n"
+    assert not list(target.parent.glob("*.tmp-*"))
+
+
+def test_an_entry_records_which_structure_it_measured(tmp_path, monkeypatch):
+    """The digest is of the bytes the fold wrote, and it reaches the cache."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.consensus_folding import STRUCTURE_DIGEST_KEY, structure_digest
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, pae_path=None, **_):
+        cf.write_structure_atomically(lambda t: open(t, "w").write("ATOM      1  N   ALA A   1\n"), out_pdb)
+        return {"i_pTM": 0.5, "pTM": 0.6, "pdb_path": out_pdb,
+                STRUCTURE_DIGEST_KEY: structure_digest(out_pdb)}
+
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", scorer)
+    kw = dict(cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=True)
+    cf.score_binders("esmfold2", target, [binder], **kw)
+
+    cached = json.loads((cache / "consensus_fold_cache_esmfold2.json").read_text())
+    entry = next(iter(next(iter(cached["scores"].values())).values()))
+    pdb = entry["pdb_path"]
+    assert entry[STRUCTURE_DIGEST_KEY] == structure_digest(pdb), "the entry must name the file it measured"
+
+
+def test_a_structure_that_changed_under_its_entry_is_refolded(tmp_path, monkeypatch):
+    """The crash window: the structure is written inside the fold, the entry
+    after the whole batch. Killed in between, disk holds a new prediction under
+    the previous run's numbers -- and since a fold is not reproducible from its
+    seed, those numbers describe a structure that is gone."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.consensus_folding import STRUCTURE_DIGEST_KEY, structure_digest
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    calls = []
+
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, pae_path=None, **_):
+        calls.append(draw)
+        cf.write_structure_atomically(
+            lambda t: open(t, "w").write(f"ATOM      1  N   ALA A   1  fold{len(calls)}\n"), out_pdb)
+        return {"i_pTM": 0.5, "pTM": 0.6, "pdb_path": out_pdb,
+                STRUCTURE_DIGEST_KEY: structure_digest(out_pdb)}
+
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", scorer)
+    kw = dict(cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=True)
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1, "an entry that matches its structure must not refold"
+
+    # Simulate the crash: the structure on disk moves on, the entry does not.
+    pdb = next(cache.glob("**/esmfold2_complex/*.pdb"))
+    pdb.write_text("ATOM      1  N   ALA A   1  interrupted\n")
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 2, "a structure that changed under its entry must be refolded"
+
+    cached = json.loads((cache / "consensus_fold_cache_esmfold2.json").read_text())
+    entry = next(iter(next(iter(cached["scores"].values())).values()))
+    assert entry[STRUCTURE_DIGEST_KEY] == structure_digest(entry["pdb_path"]), "must end consistent"
+
+
+def test_an_entry_without_a_digest_is_left_alone(tmp_path, monkeypatch):
+    """Every campaign cached before this existed has no digest. Absent is not
+    mismatched: reading it as such would refold every one of them once."""
+    from proteinfoundation.metrics import consensus_folding as cf
+    from proteinfoundation.metrics.consensus_folding import STRUCTURE_DIGEST_KEY
+
+    target, binder = ["MKVTARGETSEQ"], "AAAACCCCGGGG"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    calls = []
+
+    def scorer(target_seqs, seq, cfg, out_pdb, draw, context=None, out_path_for=None, pae_path=None, **_):
+        calls.append(draw)
+        cf.write_structure_atomically(lambda t: open(t, "w").write("ATOM      1  N   ALA A   1\n"), out_pdb)
+        return {"i_pTM": 0.5, "pTM": 0.6, "pdb_path": out_pdb}   # pre-digest entry
+
+    monkeypatch.setitem(cf.CONSENSUS_BACKENDS, "esmfold2", scorer)
+    kw = dict(cfg={"n_seeds": 1}, cache_dir=str(cache), keep_structures=True)
+
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    cached = json.loads((cache / "consensus_fold_cache_esmfold2.json").read_text())
+    entry = next(iter(next(iter(cached["scores"].values())).values()))
+    assert STRUCTURE_DIGEST_KEY not in entry
+
+    pdb = next(cache.glob("**/esmfold2_complex/*.pdb"))
+    pdb.write_text("ATOM      1  N   ALA A   1  changed\n")
+    cf.score_binders("esmfold2", target, [binder], **kw)
+    assert len(calls) == 1, "a legacy entry with no digest must not be refolded"
